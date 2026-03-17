@@ -218,11 +218,7 @@ impl DataSourceReadStats {
       .inner
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let average_read_size = if state.read_count == 0 {
-      0
-    } else {
-      state.read_bytes / state.read_count
-    };
+    let average_read_size = state.read_bytes.checked_div(state.read_count).unwrap_or(0);
     let average_offset_distance_bytes = if state.read_count <= 1 {
       0
     } else {
