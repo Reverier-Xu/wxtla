@@ -31,7 +31,7 @@ impl EwfHashSection {
     }
 
     Ok(Self {
-      md5: data[..16].try_into().unwrap(),
+      md5: copy_array::<16>(&data[..16])?,
     })
   }
 }
@@ -64,8 +64,17 @@ impl EwfDigestSection {
     }
 
     Ok(Self {
-      md5: data[..16].try_into().unwrap(),
-      sha1: data[16..36].try_into().unwrap(),
+      md5: copy_array::<16>(&data[..16])?,
+      sha1: copy_array::<20>(&data[16..36])?,
     })
   }
+}
+
+fn copy_array<const N: usize>(data: &[u8]) -> Result<[u8; N]> {
+  data.try_into().map_err(|_| {
+    Error::InvalidFormat(format!(
+      "ewf fixed-size array conversion failed: expected {N} bytes, got {}",
+      data.len()
+    ))
+  })
 }

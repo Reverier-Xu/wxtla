@@ -158,10 +158,12 @@ fn resolve_initial_source(
   match (naming_info, hints.resolver()) {
     (Some(info), Some(resolver)) if info.segment_number != 1 => {
       let segment_one_name = info.file_name_for_segment(1)?;
-      let path = hints
-        .source_identity()
-        .expect("source identity must exist when naming info exists")
-        .sibling_path(segment_one_name)?;
+      let identity = hints.source_identity().ok_or_else(|| {
+        Error::InvalidSourceReference(
+          "ewf source identity is missing while resolving the first segment".to_string(),
+        )
+      })?;
+      let path = identity.sibling_path(segment_one_name)?;
       resolver
         .resolve(&RelatedSourceRequest::new(
           RelatedSourcePurpose::Segment,

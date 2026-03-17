@@ -22,6 +22,7 @@ pub struct GptVolumeSystem {
   source: DataSourceHandle,
   block_size: u32,
   active_header_location: GptHeaderLocation,
+  active_header: GptHeader,
   primary_header: Option<GptHeader>,
   backup_header: Option<GptHeader>,
   volumes: Vec<VolumeRecord>,
@@ -39,11 +40,24 @@ impl GptVolumeSystem {
       .iter()
       .map(|partition| partition.record.clone())
       .collect();
+    let active_header = match active_header_location {
+      GptHeaderLocation::Primary => primary_header.clone().unwrap_or_else(|| {
+        backup_header
+          .clone()
+          .expect("validated active gpt header missing")
+      }),
+      GptHeaderLocation::Backup => backup_header.clone().unwrap_or_else(|| {
+        primary_header
+          .clone()
+          .expect("validated active gpt header missing")
+      }),
+    };
 
     Self {
       source,
       block_size,
       active_header_location,
+      active_header,
       primary_header,
       backup_header,
       volumes,
@@ -58,13 +72,7 @@ impl GptVolumeSystem {
 
   /// Return the active header used for parsing.
   pub fn header(&self) -> &GptHeader {
-    match self.active_header_location {
-      GptHeaderLocation::Primary => self
-        .primary_header
-        .as_ref()
-        .expect("primary header missing"),
-      GptHeaderLocation::Backup => self.backup_header.as_ref().expect("backup header missing"),
-    }
+    &self.active_header
   }
 
   /// Return the parsed primary header.

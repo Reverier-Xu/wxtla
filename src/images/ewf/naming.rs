@@ -120,12 +120,22 @@ impl EwfSegmentNamingScheme {
           "ewf segment number {segment_number} exceeds the supported naming schema"
         )));
       }
-      format!(
-        "{}{}{}",
-        char::from_u32(first_codepoint).unwrap(),
-        char::from_u32(second).unwrap(),
-        char::from_u32(third).unwrap(),
-      )
+      let first_character = char::from_u32(first_codepoint).ok_or_else(|| {
+        Error::InvalidSourceReference(format!(
+          "ewf segment number {segment_number} produced an invalid extension prefix"
+        ))
+      })?;
+      let second_character = char::from_u32(second).ok_or_else(|| {
+        Error::InvalidSourceReference(format!(
+          "ewf segment number {segment_number} produced an invalid extension middle character"
+        ))
+      })?;
+      let third_character = char::from_u32(third).ok_or_else(|| {
+        Error::InvalidSourceReference(format!(
+          "ewf segment number {segment_number} produced an invalid extension suffix"
+        ))
+      })?;
+      format!("{}{}{}", first_character, second_character, third_character,)
     };
 
     Ok(extension)

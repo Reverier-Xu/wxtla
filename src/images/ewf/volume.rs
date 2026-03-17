@@ -58,7 +58,7 @@ impl EwfVolumeInfo {
       media_flags: data[36],
       compression_level: data[52],
       error_granularity: read_u32_le(data, 56),
-      set_identifier: data[64..80].try_into().unwrap(),
+      set_identifier: copy_array::<16>(&data[64..80])?,
     })
   }
 
@@ -107,6 +107,15 @@ impl EwfVolumeInfo {
       .checked_mul(u64::from(self.bytes_per_sector))
       .ok_or_else(|| Error::InvalidRange("ewf media size overflow".to_string()))
   }
+}
+
+fn copy_array<const N: usize>(data: &[u8]) -> Result<[u8; N]> {
+  data.try_into().map_err(|_| {
+    Error::InvalidFormat(format!(
+      "ewf fixed-size array conversion failed: expected {N} bytes, got {}",
+      data.len()
+    ))
+  })
 }
 
 fn read_u32_le(data: &[u8], offset: usize) -> u32 {
