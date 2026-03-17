@@ -1,14 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Concurrent read-only parsing foundations for filesystem, partition table,
+//! and image drivers.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod core;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use core::{
+  DataSource, DataSourceCapabilities, DataSourceReadConcurrency, DataSourceReadStats,
+  DataSourceReadStatsSnapshot, DataSourceSeekCost, Error, LocalDataSource, ObservedDataSource,
+  ProbeCachedDataSource, Result, SharedDataSource, SliceDataSource, open_local_file,
+};

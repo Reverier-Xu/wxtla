@@ -18,3 +18,4 @@ strip         = true
 
 
 [dependencies]
+thiserror = "2.0"
