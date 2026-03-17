@@ -1,9 +1,23 @@
-//! Built-in format descriptors and early detection helpers.
+//! Built-in format descriptors, inventory, and probe registration helpers.
 
-mod builtins;
+pub mod apm;
+pub mod ewf;
+pub mod ext;
+pub mod fat;
+pub mod gpt;
+pub mod hfs;
+pub mod inventory;
+pub mod mbr;
+pub mod ntfs;
+pub mod qcow;
+pub mod registry;
+pub mod sparseimage;
+pub mod udif;
+pub mod vhd;
+pub mod vhdx;
+pub mod vmdk;
 
-pub use builtins::{
-  APM_VOLUME_SYSTEM, EWF_IMAGE, EXT_FILESYSTEM, FAT_FILESYSTEM, GPT_VOLUME_SYSTEM, HFS_FILESYSTEM,
-  HFS_PLUS_FILESYSTEM, MBR_VOLUME_SYSTEM, NTFS_FILESYSTEM, QCOW_IMAGE, SPARSE_IMAGE, UDIF_IMAGE,
-  VHD_IMAGE, VHDX_IMAGE, VMDK_IMAGE, builtin_probe_registry,
-};
+mod probe_support;
+
+pub use inventory::{FormatInventory, FormatInventoryEntry, builtin_inventory};
+pub use registry::{builtin_probe_registry, probe_registry_from_inventory};
