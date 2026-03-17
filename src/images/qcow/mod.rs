@@ -1,4 +1,15 @@
-//! QCOW image descriptor and probe registration.
+//! QCOW image driver and probe registration.
+
+mod cache;
+mod constants;
+mod driver;
+mod header;
+mod image;
+mod parser;
+
+pub use driver::QcowDriver;
+pub use header::QcowHeader;
+pub use image::QcowImage;
 
 use crate::{
   FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
@@ -12,13 +23,11 @@ inventory::submit! {
   crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
 }
 
-const MAGIC: &[u8] = b"QFI\xfb";
-
 fn register_probes(registry: &mut ProbeRegistry) {
   registry.register(OffsetMagicProbe::new(
     DESCRIPTOR,
     0,
-    MAGIC,
+    constants::FILE_HEADER_MAGIC,
     ProbeConfidence::Exact,
     "qcow header found",
   ));
