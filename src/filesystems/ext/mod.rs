@@ -13,7 +13,7 @@ inventory::submit! {
   crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
 }
 
-const SUPERBLOCK_MAGIC_LE: [u8; 2] = [0x53, 0xef];
+const SUPERBLOCK_MAGIC_LE: [u8; 2] = [0x53, 0xEF];
 
 fn register_probes(registry: &mut ProbeRegistry) {
   registry.register(ExtProbe);

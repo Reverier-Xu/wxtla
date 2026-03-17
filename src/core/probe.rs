@@ -142,15 +142,15 @@ impl ProbeReport {
   }
 }
 
-/// Optional metadata and adapters that influence probing.
+/// Optional source metadata and adapters shared by probes and driver opens.
 #[derive(Clone, Copy, Default)]
-pub struct ProbeOptions<'a> {
+pub struct SourceHints<'a> {
   resolver: Option<&'a dyn RelatedSourceResolver>,
   source_identity: Option<&'a SourceIdentity>,
 }
 
-impl<'a> ProbeOptions<'a> {
-  /// Create empty probe options.
+impl<'a> SourceHints<'a> {
+  /// Create empty source hints.
   pub fn new() -> Self {
     Self::default()
   }
@@ -168,11 +168,14 @@ impl<'a> ProbeOptions<'a> {
   }
 }
 
+/// Backwards-compatible alias for source hints used while probing.
+pub type ProbeOptions<'a> = SourceHints<'a>;
+
 /// Shared probe helper that provides cached small-window reads.
 pub struct ProbeContext<'a> {
   source: &'a dyn DataSource,
   cached: ProbeCachedDataSource<'a>,
-  options: ProbeOptions<'a>,
+  options: SourceHints<'a>,
 }
 
 impl<'a> ProbeContext<'a> {
@@ -185,18 +188,18 @@ impl<'a> ProbeContext<'a> {
   /// let header = context.header(512)?;
   /// ```
   pub fn new(source: &'a dyn DataSource) -> Self {
-    Self::with_options(source, ProbeOptions::new())
+    Self::with_options(source, SourceHints::new())
   }
 
   /// Create a new probe context around a source and related-source resolver.
   pub fn with_resolver(
     source: &'a dyn DataSource, resolver: &'a dyn RelatedSourceResolver,
   ) -> Self {
-    Self::with_options(source, ProbeOptions::new().with_resolver(resolver))
+    Self::with_options(source, SourceHints::new().with_resolver(resolver))
   }
 
   /// Create a new probe context from explicit options.
-  pub fn with_options(source: &'a dyn DataSource, options: ProbeOptions<'a>) -> Self {
+  pub fn with_options(source: &'a dyn DataSource, options: SourceHints<'a>) -> Self {
     Self {
       source,
       cached: ProbeCachedDataSource::new(source),
@@ -312,19 +315,19 @@ impl ProbeRegistry {
 
   /// Probe all registered formats and return the ordered report.
   pub fn probe_all(&self, source: &dyn DataSource) -> Result<ProbeReport> {
-    self.probe_all_with_options(source, ProbeOptions::new())
+    self.probe_all_with_options(source, SourceHints::new())
   }
 
   /// Probe all registered formats with a related-source resolver.
   pub fn probe_all_with_resolver(
     &self, source: &dyn DataSource, resolver: &dyn RelatedSourceResolver,
   ) -> Result<ProbeReport> {
-    self.probe_all_with_options(source, ProbeOptions::new().with_resolver(resolver))
+    self.probe_all_with_options(source, SourceHints::new().with_resolver(resolver))
   }
 
   /// Probe all registered formats with explicit probe options.
   pub fn probe_all_with_options(
-    &self, source: &dyn DataSource, options: ProbeOptions<'_>,
+    &self, source: &dyn DataSource, options: SourceHints<'_>,
   ) -> Result<ProbeReport> {
     let context = ProbeContext::with_options(source, options);
     self.probe_all_with_context(&context)
@@ -369,7 +372,7 @@ impl ProbeRegistry {
 
   /// Return the best probe match for a source, if any, using explicit options.
   pub fn probe_best_with_options(
-    &self, source: &dyn DataSource, options: ProbeOptions<'_>,
+    &self, source: &dyn DataSource, options: SourceHints<'_>,
   ) -> Result<Option<ProbeMatch>> {
     Ok(self.probe_all_with_options(source, options)?.best_match())
   }
@@ -519,7 +522,7 @@ mod tests {
     };
     let identity = SourceIdentity::from_relative_path("segments/disk.raw.000").unwrap();
     let context =
-      ProbeContext::with_options(&source, ProbeOptions::new().with_source_identity(&identity));
+      ProbeContext::with_options(&source, SourceHints::new().with_source_identity(&identity));
 
     assert_eq!(context.entry_name_hint(), Some("disk.raw.000"));
     assert_eq!(context.source_identity().unwrap().extension(), Some("000"));

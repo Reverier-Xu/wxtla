@@ -29,7 +29,7 @@ impl FormatProbe for MbrProbe {
       return Ok(ProbeResult::rejected());
     };
 
-    if signature == [0x55, 0xaa] {
+    if signature == [0x55, 0xAA] {
       Ok(ProbeResult::matched(ProbeMatch::new(
         DESCRIPTOR,
         ProbeConfidence::Weak,

@@ -1,8 +1,9 @@
 //! QCOW image descriptor and probe registration.
 
-use crate::{FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry};
-
-use crate::formats::probe_support::OffsetMagicProbe;
+use crate::{
+  FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
+  formats::probe_support::OffsetMagicProbe,
+};
 
 /// QCOW image descriptor.
 pub const DESCRIPTOR: FormatDescriptor = FormatDescriptor::new("image.qcow", FormatKind::Image);

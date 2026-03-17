@@ -13,7 +13,7 @@ pub use data_source::{
 pub use error::{Error, Result};
 pub use probe::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
-  ProbeOptions, ProbeRegistry, ProbeReport, ProbeResult,
+  ProbeOptions, ProbeRegistry, ProbeReport, ProbeResult, SourceHints,
 };
 pub use resolver::{
   DataSourceHandle, RelatedPathBuf, RelatedSourcePurpose, RelatedSourceRequest,

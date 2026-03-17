@@ -14,5 +14,5 @@ pub use core::{
   FormatKind, FormatProbe, ObservedDataSource, ProbeCachedDataSource, ProbeConfidence,
   ProbeContext, ProbeMatch, ProbeOptions, ProbeRegistry, ProbeReport, ProbeResult, RelatedPathBuf,
   RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SharedDataSource,
-  SliceDataSource, SourceIdentity,
+  SliceDataSource, SourceHints, SourceIdentity,
 };

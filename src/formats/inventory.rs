@@ -1,6 +1,6 @@
 //! Built-in format inventory.
 
-use crate::{FormatDescriptor, ProbeRegistry};
+use crate::{FormatDescriptor, FormatKind, ProbeRegistry};
 
 /// A single inventory entry for a built-in format.
 #[derive(Clone, Copy)]
@@ -28,6 +28,7 @@ impl FormatInventoryEntry {
 inventory::collect!(FormatInventoryEntry);
 
 /// Inventory of built-in formats.
+#[derive(Clone)]
 pub struct FormatInventory {
   entries: Vec<&'static FormatInventoryEntry>,
 }
@@ -46,6 +47,17 @@ impl FormatInventory {
   /// Return the number of known formats.
   pub fn len(&self) -> usize {
     self.entries.len()
+  }
+
+  /// Iterate over entries belonging to a specific format kind.
+  pub fn entries_of_kind(
+    &self, kind: FormatKind,
+  ) -> impl Iterator<Item = &'static FormatInventoryEntry> + '_ {
+    self
+      .entries
+      .iter()
+      .copied()
+      .filter(move |entry| entry.descriptor.kind == kind)
   }
 
   /// Return `true` when the inventory is empty.
@@ -85,5 +97,17 @@ mod tests {
         .iter()
         .any(|entry| entry.descriptor == ewf::DESCRIPTOR)
     );
+  }
+
+  #[test]
+  fn builtin_inventory_filters_entries_by_kind() {
+    let inventory = builtin_inventory();
+    let image_ids = inventory
+      .entries_of_kind(FormatKind::Image)
+      .map(|entry| entry.descriptor.id)
+      .collect::<Vec<_>>();
+
+    assert!(image_ids.contains(&ewf::DESCRIPTOR.id));
+    assert!(!image_ids.contains(&gpt::DESCRIPTOR.id));
   }
 }

@@ -9,7 +9,8 @@ pub enum Error {
   #[error("I/O error: {0}")]
   Io(#[from] std::io::Error),
 
-  /// A read operation reached the end of a source before enough bytes were available.
+  /// A read operation reached the end of a source before enough bytes were
+  /// available.
   #[error("unexpected end of data at offset {offset}: expected {expected} bytes, got {actual}")]
   UnexpectedEof {
     /// Byte offset where the short read began.

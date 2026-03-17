@@ -2,7 +2,8 @@ mod support;
 
 use support::{FileDataSource, FixtureResolver, fixture_identity, fixture_path};
 use wxtla::{
-  FormatDescriptor, ProbeConfidence, ProbeOptions, filesystems, formats, images, volumes,
+  FormatDescriptor, FormatKind, ProbeConfidence, ProbeOptions, filesystems, formats, images,
+  volumes,
 };
 
 #[test]
@@ -137,4 +138,24 @@ fn splitraw_probe_requires_identity_and_resolver_hints() {
 
   assert_eq!(hinted_match.format, images::splitraw::DESCRIPTOR);
   assert_eq!(unhinted_match.format, filesystems::ext::DESCRIPTOR);
+}
+
+#[test]
+fn category_specific_registries_limit_probe_scope() {
+  let inventory = formats::builtin_inventory();
+  let images_registry =
+    formats::probe_registry_from_inventory_for_kind(&inventory, FormatKind::Image);
+  let volumes_registry =
+    formats::probe_registry_from_inventory_for_kind(&inventory, FormatKind::VolumeSystem);
+  let source = FileDataSource::open(fixture_path("gpt/gpt.raw")).unwrap();
+
+  assert!(images_registry.probe_best(&source).unwrap().is_none());
+  assert_eq!(
+    volumes_registry
+      .probe_best(&source)
+      .unwrap()
+      .unwrap()
+      .format,
+    volumes::gpt::DESCRIPTOR
+  );
 }

@@ -1,5 +1,7 @@
 //! Image and image-container format modules.
 
+mod driver;
+
 pub mod ewf;
 pub mod pdi;
 pub mod qcow;
@@ -10,3 +12,5 @@ pub mod udif;
 pub mod vhd;
 pub mod vhdx;
 pub mod vmdk;
+
+pub use driver::{Image, ImageDriver};

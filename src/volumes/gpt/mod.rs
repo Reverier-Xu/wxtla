@@ -1,8 +1,9 @@
 //! GPT volume-system descriptor and probe registration.
 
-use crate::{FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry};
-
-use crate::formats::probe_support::OffsetMagicProbe;
+use crate::{
+  FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
+  formats::probe_support::OffsetMagicProbe,
+};
 
 /// GPT volume-system descriptor.
 pub const DESCRIPTOR: FormatDescriptor =

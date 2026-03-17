@@ -30,7 +30,7 @@ impl FormatProbe for NtfsProbe {
     let Ok(signature) = context.read_bytes_at(510, 2) else {
       return Ok(ProbeResult::rejected());
     };
-    if signature != [0x55, 0xaa] {
+    if signature != [0x55, 0xAA] {
       return Ok(ProbeResult::rejected());
     }
 

@@ -1,8 +1,9 @@
 //! VMDK image descriptor and probe registration.
 
-use crate::{FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry};
-
-use crate::formats::probe_support::OffsetMagicProbe;
+use crate::{
+  FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
+  formats::probe_support::OffsetMagicProbe,
+};
 
 /// VMDK image descriptor.
 pub const DESCRIPTOR: FormatDescriptor = FormatDescriptor::new("image.vmdk", FormatKind::Image);
