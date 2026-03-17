@@ -1,4 +1,20 @@
-//! EWF image descriptor and probe registration.
+//! EWF image driver and probe registration.
+
+mod cache;
+mod constants;
+mod driver;
+mod file_header;
+mod hash;
+mod image;
+mod parser;
+mod section;
+mod table;
+mod types;
+mod volume;
+
+pub use driver::EwfDriver;
+pub use image::EwfImage;
+pub use types::{EwfChunkDescriptor, EwfChunkEncoding, EwfMediaType};
 
 use crate::{
   FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
@@ -12,13 +28,11 @@ inventory::submit! {
   crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
 }
 
-const MAGIC: &[u8] = b"EVF\t\r\n\xff\0";
-
 fn register_probes(registry: &mut ProbeRegistry) {
   registry.register(OffsetMagicProbe::new(
     DESCRIPTOR,
     0,
-    MAGIC,
+    constants::FILE_HEADER_MAGIC,
     ProbeConfidence::Exact,
     "ewf segment header found",
   ));
