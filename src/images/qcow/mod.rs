@@ -6,6 +6,7 @@ mod driver;
 mod header;
 mod image;
 mod parser;
+mod validation;
 
 pub use driver::QcowDriver;
 pub use header::QcowHeader;

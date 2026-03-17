@@ -8,6 +8,7 @@ use super::{
     QCOW_INCOMPAT_DATA_FILE, QCOW_INCOMPAT_DIRTY, QCOW_INCOMPAT_EXTL2,
   },
   header::QcowHeader,
+  validation::{validate_cluster_alignment, validate_header_layout, validate_range},
 };
 use crate::{DataSource, DataSourceHandle, Error, Result};
 
@@ -25,6 +26,7 @@ pub struct ParsedQcow {
 pub fn parse(source: DataSourceHandle) -> Result<ParsedQcow> {
   let header = QcowHeader::read(source.as_ref())?;
   validate_supported_features(&header)?;
+  validate_header_layout(source.as_ref(), &header)?;
   let backing_file_name = read_backing_file_name(source.as_ref(), &header)?;
   let l1_table = read_l1_table(source.as_ref(), &header)?;
 
@@ -104,10 +106,39 @@ fn read_l1_table(source: &dyn DataSource, header: &QcowHeader) -> Result<Arc<[u6
 
   let entries = raw
     .chunks_exact(8)
-    .map(|chunk| {
-      Ok(u64::from_be_bytes([
+    .enumerate()
+    .map(|(index, chunk)| {
+      let raw_entry = u64::from_be_bytes([
         chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-      ]))
+      ]);
+      let offset_mask = if header.version == 1 {
+        (1u64 << 63) - 1
+      } else {
+        0x00FF_FFFF_FFFF_FE00
+      };
+      if header.version != 1 {
+        let reserved_bits = raw_entry & !(offset_mask | (1u64 << 63));
+        if reserved_bits != 0 {
+          return Err(Error::InvalidFormat(format!(
+            "qcow l1 entry {index} uses reserved bits"
+          )));
+        }
+      }
+      let l2_offset = raw_entry & offset_mask;
+      if l2_offset != 0 {
+        validate_cluster_alignment(l2_offset, header.cluster_size()?, "qcow l2 table")?;
+        validate_range(
+          source.size()?,
+          l2_offset,
+          header
+            .l2_entry_count()?
+            .checked_mul(8)
+            .ok_or_else(|| Error::InvalidRange("qcow l2 table size overflow".to_string()))?,
+          &format!("qcow l2 table {index}"),
+        )?;
+      }
+
+      Ok(raw_entry)
     })
     .collect::<Result<Vec<_>>>()?;
 
@@ -157,5 +188,50 @@ mod tests {
     assert_eq!(parsed.header.virtual_size, 4_194_304);
     assert_eq!(parsed.l1_table.len(), 1);
     assert_eq!(parsed.backing_file_name, None);
+  }
+
+  #[test]
+  fn rejects_misaligned_l2_offsets() {
+    let source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_invalid_v3_qcow(0x40001, 1),
+    });
+
+    let result = parse(source);
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
+
+  #[test]
+  fn rejects_missing_refcount_clusters_in_qcow2() {
+    let source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_invalid_v3_qcow(0x40000, 0),
+    });
+
+    let result = parse(source);
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
+
+  fn build_invalid_v3_qcow(l2_offset: u64, refcount_table_clusters: u32) -> Vec<u8> {
+    let mut data = vec![0u8; 0x0006_0000];
+    data[0..4].copy_from_slice(b"QFI\xfb");
+    data[4..8].copy_from_slice(&3u32.to_be_bytes());
+    data[20..24].copy_from_slice(&16u32.to_be_bytes());
+    data[24..32].copy_from_slice(&65_536u64.to_be_bytes());
+    data[32..36].copy_from_slice(&0u32.to_be_bytes());
+    data[36..40].copy_from_slice(&1u32.to_be_bytes());
+    data[40..48].copy_from_slice(&0x0003_0000u64.to_be_bytes());
+    data[48..56].copy_from_slice(&0x0001_0000u64.to_be_bytes());
+    data[56..60].copy_from_slice(&refcount_table_clusters.to_be_bytes());
+    data[60..64].copy_from_slice(&0u32.to_be_bytes());
+    data[64..72].copy_from_slice(&0u64.to_be_bytes());
+    data[72..80].copy_from_slice(&0u64.to_be_bytes());
+    data[80..88].copy_from_slice(&0u64.to_be_bytes());
+    data[88..96].copy_from_slice(&0u64.to_be_bytes());
+    data[96..100].copy_from_slice(&4u32.to_be_bytes());
+    data[100..104].copy_from_slice(&112u32.to_be_bytes());
+    data[104] = 0;
+    data[0x0003_0000..0x0003_0008].copy_from_slice(&l2_offset.to_be_bytes());
+    data
   }
 }
