@@ -12,7 +12,8 @@ use crate::{
 pub struct GptVolumeSystem {
   source: DataSourceHandle,
   block_size: u32,
-  header: GptHeader,
+  primary_header: GptHeader,
+  backup_header: GptHeader,
   volumes: Vec<VolumeRecord>,
   partitions: Vec<GptPartitionInfo>,
 }
@@ -20,7 +21,8 @@ pub struct GptVolumeSystem {
 impl GptVolumeSystem {
   /// Create a new open GPT volume system.
   pub fn new(
-    source: DataSourceHandle, block_size: u32, header: GptHeader, partitions: Vec<GptPartitionInfo>,
+    source: DataSourceHandle, block_size: u32, primary_header: GptHeader, backup_header: GptHeader,
+    partitions: Vec<GptPartitionInfo>,
   ) -> Self {
     let volumes = partitions
       .iter()
@@ -30,7 +32,8 @@ impl GptVolumeSystem {
     Self {
       source,
       block_size,
-      header,
+      primary_header,
+      backup_header,
       volumes,
       partitions,
     }
@@ -38,12 +41,17 @@ impl GptVolumeSystem {
 
   /// Return the parsed primary header.
   pub fn header(&self) -> &GptHeader {
-    &self.header
+    &self.primary_header
+  }
+
+  /// Return the parsed backup header.
+  pub fn backup_header(&self) -> &GptHeader {
+    &self.backup_header
   }
 
   /// Return the GPT disk GUID.
   pub fn disk_guid(&self) -> GptGuid {
-    self.header.disk_guid
+    self.primary_header.disk_guid
   }
 
   /// Return the parsed GPT partition metadata.

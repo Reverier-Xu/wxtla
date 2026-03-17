@@ -16,7 +16,7 @@ impl GptDriver {
     Self
   }
 
-  /// Open a GPT source using the default 512-byte block size.
+  /// Open a GPT source using inferred logical block size.
   pub fn open(source: DataSourceHandle) -> Result<GptVolumeSystem> {
     parser::open(source)
   }
@@ -46,7 +46,14 @@ mod tests {
   use std::{path::Path, sync::Arc};
 
   use super::*;
-  use crate::{DataSource, Error, Result};
+  use crate::{DataSource, Error, Result, volumes::gpt::integrity};
+
+  const LINUX_FILESYSTEM_GUID: [u8; 16] = [
+    0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
+  ];
+  const TEST_DISK_GUID: [u8; 16] = [
+    0x7A, 0x65, 0x6E, 0xE8, 0x40, 0xD8, 0x09, 0x4C, 0xAF, 0xE3, 0xA1, 0xA5, 0xF6, 0x65, 0xCF, 0x44,
+  ];
 
   struct MemDataSource {
     data: Vec<u8>,
@@ -87,11 +94,18 @@ mod tests {
     Arc::new(MemDataSource { data: bytes })
   }
 
-  fn write_protective_mbr(disk: &mut [u8]) {
+  fn write_protective_mbr(disk: &mut [u8], protective_sectors: u32) {
     disk[446 + 4] = 0xEE;
     disk[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
-    disk[446 + 12..446 + 16].copy_from_slice(&4095u32.to_le_bytes());
+    disk[446 + 12..446 + 16].copy_from_slice(&protective_sectors.to_le_bytes());
     disk[510..512].copy_from_slice(&[0x55, 0xAA]);
+  }
+
+  fn write_hybrid_mbr(disk: &mut [u8], protective_sectors: u32) {
+    write_protective_mbr(disk, protective_sectors);
+    disk[462 + 4] = 0xAF;
+    disk[462 + 8..462 + 12].copy_from_slice(&40u32.to_le_bytes());
+    disk[462 + 12..462 + 16].copy_from_slice(&20u32.to_le_bytes());
   }
 
   struct TestHeaderSpec {
@@ -102,33 +116,32 @@ mod tests {
     first_usable_lba: u64,
     last_usable_lba: u64,
     entry_count: u32,
+    entry_array_crc32: u32,
+    disk_guid: [u8; 16],
   }
 
   fn write_header(disk: &mut [u8], spec: TestHeaderSpec) {
-    let TestHeaderSpec {
-      offset,
-      current_lba,
-      backup_lba,
-      entry_array_start_lba,
-      first_usable_lba,
-      last_usable_lba,
-      entry_count,
-    } = spec;
-    let header = &mut disk[offset..offset + 92];
+    let header = &mut disk[spec.offset..spec.offset + 92];
     header[0..8].copy_from_slice(b"EFI PART");
     header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
     header[12..16].copy_from_slice(&92u32.to_le_bytes());
-    header[24..32].copy_from_slice(&current_lba.to_le_bytes());
-    header[32..40].copy_from_slice(&backup_lba.to_le_bytes());
-    header[40..48].copy_from_slice(&first_usable_lba.to_le_bytes());
-    header[48..56].copy_from_slice(&last_usable_lba.to_le_bytes());
-    header[56..72].copy_from_slice(&[
-      0x7A, 0x65, 0x6E, 0xE8, 0x40, 0xD8, 0x09, 0x4C, 0xAF, 0xE3, 0xA1, 0xA5, 0xF6, 0x65, 0xCF,
-      0x44,
-    ]);
-    header[72..80].copy_from_slice(&entry_array_start_lba.to_le_bytes());
-    header[80..84].copy_from_slice(&entry_count.to_le_bytes());
+    header[24..32].copy_from_slice(&spec.current_lba.to_le_bytes());
+    header[32..40].copy_from_slice(&spec.backup_lba.to_le_bytes());
+    header[40..48].copy_from_slice(&spec.first_usable_lba.to_le_bytes());
+    header[48..56].copy_from_slice(&spec.last_usable_lba.to_le_bytes());
+    header[56..72].copy_from_slice(&spec.disk_guid);
+    header[72..80].copy_from_slice(&spec.entry_array_start_lba.to_le_bytes());
+    header[80..84].copy_from_slice(&spec.entry_count.to_le_bytes());
     header[84..88].copy_from_slice(&128u32.to_le_bytes());
+    header[88..92].copy_from_slice(&spec.entry_array_crc32.to_le_bytes());
+    let header_crc32 = integrity::crc32(&header_crc_input(header));
+    header[16..20].copy_from_slice(&header_crc32.to_le_bytes());
+  }
+
+  fn header_crc_input(header: &[u8]) -> Vec<u8> {
+    let mut input = header[..92].to_vec();
+    input[16..20].fill(0);
+    input
   }
 
   fn write_entry(
@@ -144,6 +157,62 @@ mod tests {
       let start = 56 + index * 2;
       entry[start..start + 2].copy_from_slice(&code_unit.to_le_bytes());
     }
+  }
+
+  fn synthetic_gpt(block_size: usize) -> Vec<u8> {
+    let total_blocks = 96usize;
+    let mut disk = vec![0u8; total_blocks * block_size];
+    let protective_sectors = u32::try_from(total_blocks - 1).unwrap();
+    write_protective_mbr(&mut disk, protective_sectors);
+
+    let primary_entries_offset = 2 * block_size;
+    write_entry(
+      &mut disk,
+      primary_entries_offset,
+      LINUX_FILESYSTEM_GUID,
+      [1; 16],
+      40,
+      47,
+      "linux",
+    );
+    let primary_entry_crc32 =
+      integrity::crc32(&disk[primary_entries_offset..primary_entries_offset + 128]);
+
+    let backup_entries_lba = (total_blocks - 2) as u64;
+    let backup_entries_offset = (backup_entries_lba as usize) * block_size;
+    let primary_entry_bytes = disk[primary_entries_offset..primary_entries_offset + 128].to_vec();
+    disk[backup_entries_offset..backup_entries_offset + 128].copy_from_slice(&primary_entry_bytes);
+
+    write_header(
+      &mut disk,
+      TestHeaderSpec {
+        offset: block_size,
+        current_lba: 1,
+        backup_lba: (total_blocks - 1) as u64,
+        entry_array_start_lba: 2,
+        first_usable_lba: 34,
+        last_usable_lba: backup_entries_lba - 1,
+        entry_count: 1,
+        entry_array_crc32: primary_entry_crc32,
+        disk_guid: TEST_DISK_GUID,
+      },
+    );
+    write_header(
+      &mut disk,
+      TestHeaderSpec {
+        offset: (total_blocks - 1) * block_size,
+        current_lba: (total_blocks - 1) as u64,
+        backup_lba: 1,
+        entry_array_start_lba: backup_entries_lba,
+        first_usable_lba: 34,
+        last_usable_lba: backup_entries_lba - 1,
+        entry_count: 1,
+        entry_array_crc32: primary_entry_crc32,
+        disk_guid: TEST_DISK_GUID,
+      },
+    );
+
+    disk
   }
 
   #[test]
@@ -164,6 +233,7 @@ mod tests {
       system.disk_guid().to_string(),
       "b182deb3-9c86-4892-9e88-9297a4909855"
     );
+    assert_eq!(system.backup_header().current_lba, 8191);
   }
 
   #[test]
@@ -175,48 +245,57 @@ mod tests {
   }
 
   #[test]
-  fn rejects_overlapping_gpt_partitions() {
-    let mut disk = vec![0u8; 512 * 4096];
-    write_protective_mbr(&mut disk);
-    write_header(
-      &mut disk,
-      TestHeaderSpec {
-        offset: 512,
-        current_lba: 1,
-        backup_lba: 4095,
-        entry_array_start_lba: 2,
-        first_usable_lba: 34,
-        last_usable_lba: 4062,
-        entry_count: 4,
-      },
-    );
-    write_entry(
-      &mut disk,
-      1024,
-      [
-        0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D,
-        0xE4,
-      ],
-      [1; 16],
-      100,
-      200,
-      "one",
-    );
-    write_entry(
-      &mut disk,
-      1024 + 128,
-      [
-        0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99,
-        0xC7,
-      ],
-      [2; 16],
-      150,
-      250,
-      "two",
-    );
+  fn infers_4096_block_size_from_valid_layout() {
+    let system = GptDriver::open(synthetic_source(synthetic_gpt(4096))).unwrap();
+
+    assert_eq!(system.block_size(), 4096);
+    assert_eq!(system.partitions().len(), 1);
+    assert_eq!(system.partitions()[0].record.name.as_deref(), Some("linux"));
+  }
+
+  #[test]
+  fn rejects_missing_protective_mbr() {
+    let mut disk = synthetic_gpt(512);
+    disk[446 + 4] = 0x00;
 
     let result = GptDriver::open(synthetic_source(disk));
 
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
+
+  #[test]
+  fn rejects_header_crc_mismatch() {
+    let mut disk = synthetic_gpt(512);
+    disk[512 + 16] ^= 0xFF;
+
+    let result = GptDriver::open(synthetic_source(disk));
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
+
+  #[test]
+  fn rejects_backup_header_mismatch() {
+    let mut disk = synthetic_gpt(512);
+    let backup_header_offset = disk.len() - 512;
+    disk[backup_header_offset + 56] ^= 0x01;
+    let backup_header = &mut disk[backup_header_offset..backup_header_offset + 92];
+    backup_header[16..20].fill(0);
+    let backup_crc32 = integrity::crc32(&header_crc_input(backup_header));
+    backup_header[16..20].copy_from_slice(&backup_crc32.to_le_bytes());
+
+    let result = GptDriver::open(synthetic_source(disk));
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
+
+  #[test]
+  fn allows_hybrid_protective_mbr_layouts() {
+    let mut disk = synthetic_gpt(512);
+    let protective_sectors = u32::try_from((disk.len() / 512) - 1).unwrap();
+    write_hybrid_mbr(&mut disk, protective_sectors);
+
+    let system = GptDriver::open(synthetic_source(disk)).unwrap();
+
+    assert_eq!(system.partitions().len(), 1);
   }
 }

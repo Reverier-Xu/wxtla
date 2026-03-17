@@ -1,6 +1,7 @@
 //! Constants shared by the GPT parser.
 
 pub(super) const DEFAULT_BLOCK_SIZE: u32 = 512;
+pub(super) const SUPPORTED_BLOCK_SIZES: [u32; 2] = [512, 4096];
 
 pub(super) const HEADER_SIGNATURE: &[u8] = b"EFI PART";
 pub(super) const HEADER_MIN_SIZE: usize = 92;
