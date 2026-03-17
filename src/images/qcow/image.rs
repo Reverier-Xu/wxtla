@@ -8,8 +8,8 @@ use super::{
   DESCRIPTOR,
   cache::QcowCache,
   constants::{
-    DEFAULT_CLUSTER_CACHE_CAPACITY, DEFAULT_L2_CACHE_CAPACITY, QCOW_OFFSET_MASK,
-    QCOW_OFLAG_COMPRESSED, QCOW_OFLAG_COPIED,
+    DEFAULT_CLUSTER_CACHE_CAPACITY, DEFAULT_L2_CACHE_CAPACITY, QCOW_OFLAG_COMPRESSED,
+    QCOW_OFLAG_COPIED,
   },
   header::QcowHeader,
   parser::{ParsedQcow, parse},
@@ -119,6 +119,22 @@ impl QcowImage {
     self.header.l2_entry_count()
   }
 
+  fn l1_offset_mask(&self) -> u64 {
+    if self.header.version == super::constants::QCOW_VERSION_1 {
+      (1u64 << 63) - 1
+    } else {
+      0x00FF_FFFF_FFFF_FE00
+    }
+  }
+
+  fn l2_standard_offset_mask(&self) -> u64 {
+    if self.header.version == super::constants::QCOW_VERSION_1 {
+      (1u64 << 63) - 1
+    } else {
+      0x00FF_FFFF_FFFF_FE00
+    }
+  }
+
   fn read_l2_table(&self, l1_index: u64) -> Result<Option<Arc<Vec<u64>>>> {
     let raw_l1 = *self
       .l1_table
@@ -127,7 +143,7 @@ impl QcowImage {
           .map_err(|_| Error::InvalidRange("qcow l1 index conversion overflow".to_string()))?,
       )
       .ok_or_else(|| Error::InvalidRange(format!("qcow l1 index {l1_index} is out of bounds")))?;
-    let l2_offset = raw_l1 & QCOW_OFFSET_MASK;
+    let l2_offset = raw_l1 & self.l1_offset_mask();
     if l2_offset == 0 {
       return Ok(None);
     }
@@ -184,30 +200,55 @@ impl QcowImage {
     }
 
     let zero = (raw & 1) != 0;
-    let compressed = (raw & QCOW_OFLAG_COMPRESSED) != 0;
+    let compressed = if self.header.version == super::constants::QCOW_VERSION_1 {
+      (raw & QCOW_OFLAG_COPIED) != 0
+    } else {
+      (raw & QCOW_OFLAG_COMPRESSED) != 0
+    };
 
     if compressed {
       let cluster_bits = self.header.cluster_bits;
-      let host_offset_bits = 70u32.checked_sub(cluster_bits).ok_or_else(|| {
-        Error::InvalidFormat("qcow compressed cluster bits are invalid".to_string())
-      })?;
+      let host_offset_bits = if self.header.version == super::constants::QCOW_VERSION_1 {
+        63u32.checked_sub(cluster_bits).ok_or_else(|| {
+          Error::InvalidFormat("qcow v1 compressed cluster bits are invalid".to_string())
+        })?
+      } else {
+        70u32.checked_sub(cluster_bits).ok_or_else(|| {
+          Error::InvalidFormat("qcow compressed cluster bits are invalid".to_string())
+        })?
+      };
       if host_offset_bits == 0 || host_offset_bits >= 62 {
         return Err(Error::InvalidFormat(
           "qcow compressed cluster offset bit count is invalid".to_string(),
         ));
       }
       let host_offset_mask = (1u64 << host_offset_bits) - 1;
-      let descriptor = raw & !QCOW_OFLAG_COPIED & !QCOW_OFLAG_COMPRESSED;
+      let descriptor = if self.header.version == super::constants::QCOW_VERSION_1 {
+        raw & !QCOW_OFLAG_COPIED
+      } else {
+        raw & !QCOW_OFLAG_COPIED & !QCOW_OFLAG_COMPRESSED
+      };
       let host_offset = descriptor & host_offset_mask;
-      let additional_sectors = descriptor >> host_offset_bits;
-      let stored_size = usize::try_from(
-        u64::from(512u16)
-          .checked_mul(additional_sectors.saturating_add(1))
-          .ok_or_else(|| {
-            Error::InvalidRange("qcow compressed cluster size overflow".to_string())
-          })?,
-      )
-      .map_err(|_| Error::InvalidRange("qcow compressed cluster size is too large".to_string()))?;
+      let stored_size = if self.header.version == super::constants::QCOW_VERSION_1 {
+        usize::try_from(descriptor >> host_offset_bits).map_err(|_| {
+          Error::InvalidRange("qcow compressed cluster size is too large".to_string())
+        })?
+      } else {
+        let additional_sectors = descriptor >> host_offset_bits;
+        usize::try_from(
+          u64::from(512u16)
+            .checked_mul(additional_sectors.saturating_add(1))
+            .ok_or_else(|| {
+              Error::InvalidRange("qcow compressed cluster size overflow".to_string())
+            })?,
+        )
+        .map_err(|_| Error::InvalidRange("qcow compressed cluster size is too large".to_string()))?
+      };
+      if stored_size == 0 {
+        return Err(Error::InvalidFormat(
+          "qcow compressed cluster size must be non-zero".to_string(),
+        ));
+      }
 
       return Ok(ParsedL2Entry::Compressed {
         host_offset,
@@ -215,7 +256,7 @@ impl QcowImage {
       });
     }
 
-    let cluster_offset = raw & QCOW_OFFSET_MASK;
+    let cluster_offset = raw & self.l2_standard_offset_mask();
     if cluster_offset == 0 && zero {
       return Ok(ParsedL2Entry::Zero);
     }
@@ -490,6 +531,29 @@ mod tests {
     assert_eq!(image.read_all().unwrap(), cluster);
   }
 
+  #[test]
+  fn reads_version_one_qcow_clusters() {
+    let cluster = repeat_byte(0x42, 65_536);
+    let image = QcowImage::open(Arc::new(MemDataSource {
+      data: build_synthetic_qcow_v1(SyntheticCluster::Standard(&cluster)),
+    }))
+    .unwrap();
+
+    assert_eq!(image.header().version, constants::QCOW_VERSION_1);
+    assert_eq!(image.read_all().unwrap(), cluster);
+  }
+
+  #[test]
+  fn reads_version_one_compressed_qcow_clusters() {
+    let cluster = repeat_byte(0x24, 65_536);
+    let image = QcowImage::open(Arc::new(MemDataSource {
+      data: build_synthetic_qcow_v1(SyntheticCluster::Compressed(&cluster)),
+    }))
+    .unwrap();
+
+    assert_eq!(image.read_all().unwrap(), cluster);
+  }
+
   fn repeat_byte(byte: u8, size: usize) -> Vec<u8> {
     vec![byte; size]
   }
@@ -584,5 +648,52 @@ mod tests {
     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(data).unwrap();
     encoder.finish().unwrap()
+  }
+
+  fn build_synthetic_qcow_v1(cluster: SyntheticCluster<'_>) -> Vec<u8> {
+    const CLUSTER_BITS: u8 = 16;
+    const L2_BITS: u8 = 13;
+    const CLUSTER_SIZE: usize = 1 << (CLUSTER_BITS as usize);
+    const VIRTUAL_SIZE: u64 = CLUSTER_SIZE as u64;
+    const L1_OFFSET: u64 = 0x0003_0000;
+    const L2_OFFSET: u64 = 0x0004_0000;
+    const DATA_OFFSET: u64 = 0x0005_0000;
+    let mut data = vec![0u8; 0x0006_0000];
+
+    data[0..4].copy_from_slice(b"QFI\xfb");
+    data[4..8].copy_from_slice(&1u32.to_be_bytes());
+    data[20..24].copy_from_slice(&0u32.to_be_bytes());
+    data[24..32].copy_from_slice(&VIRTUAL_SIZE.to_be_bytes());
+    data[32] = CLUSTER_BITS;
+    data[33] = L2_BITS;
+    data[36..40].copy_from_slice(&0u32.to_be_bytes());
+    data[40..48].copy_from_slice(&L1_OFFSET.to_be_bytes());
+
+    data[L1_OFFSET as usize..L1_OFFSET as usize + 8].copy_from_slice(&L2_OFFSET.to_be_bytes());
+    let l2_entry = match cluster {
+      SyntheticCluster::Sparse => 0,
+      SyntheticCluster::Standard(_) => DATA_OFFSET,
+      SyntheticCluster::Compressed(cluster_data) => {
+        let compressed = deflate_cluster(cluster_data);
+        let shift = 63 - u32::from(CLUSTER_BITS);
+        let stored_size = u64::try_from(compressed.len()).unwrap();
+        (1u64 << 63) | (stored_size << shift) | DATA_OFFSET
+      }
+    };
+    data[L2_OFFSET as usize..L2_OFFSET as usize + 8].copy_from_slice(&l2_entry.to_be_bytes());
+    match cluster {
+      SyntheticCluster::Sparse => {}
+      SyntheticCluster::Standard(cluster_data) => {
+        data[DATA_OFFSET as usize..DATA_OFFSET as usize + cluster_data.len()]
+          .copy_from_slice(cluster_data);
+      }
+      SyntheticCluster::Compressed(cluster_data) => {
+        let compressed = deflate_cluster(cluster_data);
+        data[DATA_OFFSET as usize..DATA_OFFSET as usize + compressed.len()]
+          .copy_from_slice(&compressed);
+      }
+    }
+
+    data
   }
 }

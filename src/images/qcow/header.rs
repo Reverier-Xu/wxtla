@@ -1,9 +1,9 @@
 //! QCOW header parsing.
 
 use super::constants::{
-  QCOW_COMPRESSION_ZLIB, QCOW_CRYPT_NONE, QCOW_V2_HEADER_SIZE, QCOW_V3_HEADER_MIN_SIZE,
-  QCOW_V3_HEADER_WITH_COMPRESSION, QCOW_VERSION_2, QCOW_VERSION_3, SUPPORTED_CLUSTER_BITS,
-  SUPPORTED_REFCOUNT_ORDER,
+  QCOW_COMPRESSION_ZLIB, QCOW_CRYPT_NONE, QCOW_V1_HEADER_SIZE, QCOW_V2_HEADER_SIZE,
+  QCOW_V3_HEADER_MIN_SIZE, QCOW_V3_HEADER_WITH_COMPRESSION, QCOW_VERSION_1, QCOW_VERSION_2,
+  QCOW_VERSION_3, SUPPORTED_CLUSTER_BITS, SUPPORTED_REFCOUNT_ORDER,
 };
 use crate::{DataSource, Error, Result};
 
@@ -22,6 +22,8 @@ pub struct QcowHeader {
   pub cluster_bits: u32,
   /// Virtual image size.
   pub virtual_size: u64,
+  /// Number of level 2 table bits.
+  pub l2_table_bits: u32,
   /// Encryption method.
   pub encryption_method: u32,
   /// Number of L1 entries.
@@ -57,7 +59,7 @@ impl QcowHeader {
 
   /// Parse a QCOW header from an in-memory prefix.
   pub fn parse(data: &[u8]) -> Result<Self> {
-    if data.len() < QCOW_V2_HEADER_SIZE {
+    if data.len() < QCOW_V1_HEADER_SIZE {
       return Err(Error::InvalidFormat(format!(
         "qcow header is too small: {}",
         data.len()
@@ -70,33 +72,60 @@ impl QcowHeader {
     }
 
     let version = read_u32_be(data, 4)?;
-    if version != QCOW_VERSION_2 && version != QCOW_VERSION_3 {
+    if version != QCOW_VERSION_1 && version != QCOW_VERSION_2 && version != QCOW_VERSION_3 {
       return Err(Error::InvalidFormat(format!(
         "unsupported qcow version: {version}"
       )));
     }
 
-    let header_size = if version == QCOW_VERSION_2 {
+    let header_size = if version == QCOW_VERSION_1 {
+      QCOW_V1_HEADER_SIZE as u32
+    } else if version == QCOW_VERSION_2 {
       QCOW_V2_HEADER_SIZE as u32
     } else {
       read_u32_be(data, 100)?
     };
     let header_size_usize = usize::try_from(header_size)
       .map_err(|_| Error::InvalidRange("qcow header size is too large".to_string()))?;
-    if header_size_usize < QCOW_V3_HEADER_MIN_SIZE || header_size_usize > data.len() {
+    if header_size_usize > data.len() {
+      return Err(Error::InvalidFormat(format!(
+        "unsupported qcow header size: {header_size}"
+      )));
+    }
+    if version == QCOW_VERSION_3 && header_size_usize < QCOW_V3_HEADER_MIN_SIZE {
       return Err(Error::InvalidFormat(format!(
         "unsupported qcow header size: {header_size}"
       )));
     }
 
-    let cluster_bits = read_u32_be(data, 20)?;
+    let cluster_bits = if version == QCOW_VERSION_1 {
+      u32::from(*data.get(32).ok_or_else(|| {
+        Error::InvalidFormat("qcow v1 header is missing cluster bits".to_string())
+      })?)
+    } else {
+      read_u32_be(data, 20)?
+    };
     if !SUPPORTED_CLUSTER_BITS.contains(&cluster_bits) {
       return Err(Error::InvalidFormat(format!(
         "unsupported qcow cluster bit count: {cluster_bits}"
       )));
     }
 
-    let encryption_method = read_u32_be(data, 32)?;
+    let l2_table_bits = if version == QCOW_VERSION_1 {
+      u32::from(*data.get(33).ok_or_else(|| {
+        Error::InvalidFormat("qcow v1 header is missing l2 table bits".to_string())
+      })?)
+    } else {
+      cluster_bits
+        .checked_sub(3)
+        .ok_or_else(|| Error::InvalidFormat("qcow cluster bits are too small".to_string()))?
+    };
+
+    let encryption_method = if version == QCOW_VERSION_1 {
+      read_u32_be(data, 36)?
+    } else {
+      read_u32_be(data, 32)?
+    };
     if encryption_method != QCOW_CRYPT_NONE {
       return Err(Error::InvalidFormat(format!(
         "unsupported qcow encryption method: {encryption_method}"
@@ -133,13 +162,34 @@ impl QcowHeader {
       backing_file_size: read_u32_be(data, 16)?,
       cluster_bits,
       virtual_size: read_u64_be(data, 24)?,
+      l2_table_bits,
       encryption_method,
-      l1_entry_count: read_u32_be(data, 36)?,
+      l1_entry_count: if version == QCOW_VERSION_1 {
+        compute_v1_l1_entry_count(read_u64_be(data, 24)?, cluster_bits, l2_table_bits)?
+      } else {
+        read_u32_be(data, 36)?
+      },
       l1_table_offset: read_u64_be(data, 40)?,
-      refcount_table_offset: read_u64_be(data, 48)?,
-      refcount_table_clusters: read_u32_be(data, 56)?,
-      snapshot_count: read_u32_be(data, 60)?,
-      snapshot_table_offset: read_u64_be(data, 64)?,
+      refcount_table_offset: if version == QCOW_VERSION_1 {
+        0
+      } else {
+        read_u64_be(data, 48)?
+      },
+      refcount_table_clusters: if version == QCOW_VERSION_1 {
+        0
+      } else {
+        read_u32_be(data, 56)?
+      },
+      snapshot_count: if version == QCOW_VERSION_1 {
+        0
+      } else {
+        read_u32_be(data, 60)?
+      },
+      snapshot_table_offset: if version == QCOW_VERSION_1 {
+        0
+      } else {
+        read_u64_be(data, 64)?
+      },
       incompatible_features: if version == QCOW_VERSION_3 {
         read_u64_be(data, 72)?
       } else {
@@ -169,11 +219,28 @@ impl QcowHeader {
 
   /// Return the number of L2 entries per table for standard 8-byte entries.
   pub fn l2_entry_count(&self) -> Result<u64> {
-    self
-      .cluster_size()?
-      .checked_div(8)
-      .ok_or_else(|| Error::InvalidRange("qcow l2 entry count division failed".to_string()))
+    1u64
+      .checked_shl(self.l2_table_bits)
+      .ok_or_else(|| Error::InvalidRange("qcow l2 entry count overflow".to_string()))
   }
+}
+
+fn compute_v1_l1_entry_count(
+  virtual_size: u64, cluster_bits: u32, l2_table_bits: u32,
+) -> Result<u32> {
+  let cluster_size = 1u64
+    .checked_shl(cluster_bits)
+    .ok_or_else(|| Error::InvalidRange("qcow v1 cluster size overflow".to_string()))?;
+  let l2_entry_count = 1u64
+    .checked_shl(l2_table_bits)
+    .ok_or_else(|| Error::InvalidRange("qcow v1 l2 entry count overflow".to_string()))?;
+  let guest_size_per_l1_entry = cluster_size
+    .checked_mul(l2_entry_count)
+    .ok_or_else(|| Error::InvalidRange("qcow v1 l1 coverage overflow".to_string()))?;
+  let l1_entry_count = virtual_size.div_ceil(guest_size_per_l1_entry);
+
+  u32::try_from(l1_entry_count)
+    .map_err(|_| Error::InvalidRange("qcow v1 l1 entry count is too large".to_string()))
 }
 
 fn read_u32_be(data: &[u8], offset: usize) -> Result<u32> {
@@ -215,5 +282,26 @@ mod tests {
     assert_eq!(header.cluster_size().unwrap(), 65_536);
     assert_eq!(header.l2_entry_count().unwrap(), 8_192);
     assert_eq!(header.refcount_order, 4);
+  }
+
+  #[test]
+  fn parses_version_one_header() {
+    let mut data = vec![0u8; 48];
+    data[0..4].copy_from_slice(b"QFI\xfb");
+    data[4..8].copy_from_slice(&1u32.to_be_bytes());
+    data[20..24].copy_from_slice(&0x6633_916Au32.to_be_bytes());
+    data[24..32].copy_from_slice(&65_536u64.to_be_bytes());
+    data[32] = 16;
+    data[33] = 13;
+    data[36..40].copy_from_slice(&0u32.to_be_bytes());
+    data[40..48].copy_from_slice(&0x0000_0000_0003_0000u64.to_be_bytes());
+    let header = QcowHeader::parse(&data).unwrap();
+
+    assert_eq!(header.version, 1);
+    assert_eq!(header.virtual_size, 65_536);
+    assert_eq!(header.cluster_bits, 16);
+    assert_eq!(header.l2_table_bits, 13);
+    assert_eq!(header.l1_entry_count, 1);
+    assert_eq!(header.l1_table_offset, 0x30000);
   }
 }
