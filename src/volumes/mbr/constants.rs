@@ -14,4 +14,5 @@ pub(super) const PARTITION_TYPE_EXTENDED_LBA: u8 = 0x0F;
 pub(super) const PARTITION_TYPE_EXTENDED_LINUX: u8 = 0x85;
 pub(super) const PARTITION_TYPE_GPT_PROTECTIVE: u8 = 0xEE;
 
-pub(super) const DEFAULT_BYTES_PER_SECTOR: u32 = 512;
+pub(super) const SUPPORTED_BYTES_PER_SECTOR: [u32; 4] = [512, 1024, 2048, 4096];
+pub(super) const MAX_LOGICAL_PARTITIONS: usize = 1024;

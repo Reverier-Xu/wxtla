@@ -1,11 +1,8 @@
 //! MBR driver open flow.
 
-use super::{
-  DESCRIPTOR, boot_record::MbrBootRecord, constants::DEFAULT_BYTES_PER_SECTOR,
-  entry::MbrPartitionInfo, system::MbrVolumeSystem,
-};
+use super::{DESCRIPTOR, parser, system::MbrVolumeSystem};
 use crate::{
-  DataSourceHandle, Error, Result, SourceHints,
+  DataSourceHandle, Result, SourceHints,
   volumes::{VolumeSystem, VolumeSystemDriver},
 };
 
@@ -19,45 +16,16 @@ impl MbrDriver {
     Self
   }
 
-  /// Open an MBR source using the default 512-byte sector size.
-  pub fn open_primary(source: DataSourceHandle) -> Result<MbrVolumeSystem> {
-    Self::open_with_sector_size(source, DEFAULT_BYTES_PER_SECTOR)
+  /// Open an MBR source using inferred bytes-per-sector semantics.
+  pub fn open(source: DataSourceHandle) -> Result<MbrVolumeSystem> {
+    parser::open(source)
   }
 
   /// Open an MBR source using an explicit bytes-per-sector value.
   pub fn open_with_sector_size(
     source: DataSourceHandle, bytes_per_sector: u32,
   ) -> Result<MbrVolumeSystem> {
-    let boot_record = MbrBootRecord::read(source.as_ref(), 0)?;
-    let source_size = source.size()?;
-    let mut partitions = Vec::new();
-
-    for (index, entry) in boot_record.entries().iter().copied().enumerate() {
-      if entry.is_unused() {
-        continue;
-      }
-
-      let partition = MbrPartitionInfo::from_primary(index, entry, bytes_per_sector)?;
-      let Some(end_offset) = partition.record.span.end_offset() else {
-        return Err(Error::InvalidRange(
-          "mbr partition end offset overflow".to_string(),
-        ));
-      };
-      if end_offset > source_size {
-        return Err(Error::InvalidFormat(format!(
-          "mbr partition {index} exceeds source size"
-        )));
-      }
-
-      partitions.push(partition);
-    }
-
-    Ok(MbrVolumeSystem::new(
-      source,
-      bytes_per_sector,
-      boot_record.disk_signature(),
-      partitions,
-    ))
+    parser::open_with_sector_size(source, bytes_per_sector)
   }
 }
 
@@ -69,7 +37,7 @@ impl VolumeSystemDriver for MbrDriver {
   fn open(
     &self, source: DataSourceHandle, _hints: SourceHints<'_>,
   ) -> Result<Box<dyn VolumeSystem>> {
-    Ok(Box::new(Self::open_primary(source)?))
+    Ok(Box::new(Self::open(source)?))
   }
 }
 
@@ -78,7 +46,7 @@ mod tests {
   use std::{path::Path, sync::Arc};
 
   use super::*;
-  use crate::{DataSource, Result, volumes::VolumeRole};
+  use crate::{DataSource, Error, Result, volumes::VolumeRole};
 
   struct MemDataSource {
     data: Vec<u8>,
@@ -115,33 +83,104 @@ mod tests {
     Arc::new(MemDataSource::from_fixture(relative_path))
   }
 
+  fn synthetic_source(bytes: Vec<u8>) -> DataSourceHandle {
+    Arc::new(MemDataSource { data: bytes })
+  }
+
+  fn write_partition_entry(
+    sector: &mut [u8], slot: usize, boot_indicator: u8, partition_type: u8, start_lba: u32,
+    sector_count: u32,
+  ) {
+    let offset = 446 + slot * 16;
+    sector[offset] = boot_indicator;
+    sector[offset + 4] = partition_type;
+    sector[offset + 8..offset + 12].copy_from_slice(&start_lba.to_le_bytes());
+    sector[offset + 12..offset + 16].copy_from_slice(&sector_count.to_le_bytes());
+  }
+
+  fn write_boot_signature(disk: &mut [u8], offset: usize) {
+    disk[offset + 510..offset + 512].copy_from_slice(&[0x55, 0xAA]);
+  }
+
   #[test]
-  fn opens_primary_partitions_from_fixture() {
-    let system = MbrDriver::open_primary(sample_source("mbr/mbr.raw")).unwrap();
+  fn opens_primary_and_logical_partitions_from_fixture() {
+    let system = MbrDriver::open(sample_source("mbr/mbr.raw")).unwrap();
 
     assert_eq!(system.bytes_per_sector(), 512);
-    assert_eq!(system.partitions().len(), 2);
+    assert_eq!(system.partitions().len(), 3);
     assert_eq!(system.partitions()[0].record.role, VolumeRole::Primary);
     assert_eq!(system.partitions()[0].record.span.byte_offset, 512);
     assert_eq!(
       system.partitions()[1].record.role,
       VolumeRole::ExtendedContainer
     );
+    assert_eq!(system.partitions()[2].record.role, VolumeRole::Logical);
+    assert_eq!(system.partitions()[2].absolute_start_lba, 2051);
   }
 
   #[test]
-  fn opens_volume_slices_from_primary_entries() {
-    let system = MbrDriver::open_primary(sample_source("mbr/mbr.raw")).unwrap();
-    let volume = system.open_volume(0).unwrap();
+  fn opens_volume_slices_from_logical_entries() {
+    let system = MbrDriver::open(sample_source("mbr/mbr.raw")).unwrap();
+    let volume = system.open_volume(2).unwrap();
 
-    assert_eq!(volume.size().unwrap(), 2049 * 512);
+    assert_eq!(volume.size().unwrap(), 3073 * 512);
   }
 
   #[test]
   fn classifies_protective_primary_entries() {
-    let system = MbrDriver::open_primary(sample_source("gpt/gpt.raw")).unwrap();
+    let system = MbrDriver::open(sample_source("gpt/gpt.raw")).unwrap();
 
     assert_eq!(system.partitions().len(), 1);
     assert_eq!(system.partitions()[0].record.role, VolumeRole::Protective);
+  }
+
+  #[test]
+  fn infers_4096_sector_size_from_extended_partition_chain() {
+    let bytes_per_sector = 4096usize;
+    let mut disk = vec![0u8; 64 * bytes_per_sector];
+
+    write_partition_entry(&mut disk, 0, 0x00, 0x05, 1, 10);
+    write_boot_signature(&mut disk, 0);
+
+    let ebr_offset = bytes_per_sector;
+    write_partition_entry(&mut disk[ebr_offset..ebr_offset + 512], 0, 0x00, 0x83, 1, 2);
+    write_boot_signature(&mut disk, ebr_offset);
+
+    let logical_offset = 2 * bytes_per_sector;
+    disk[logical_offset + 1024 + 56..logical_offset + 1024 + 58].copy_from_slice(&[0x53, 0xEF]);
+
+    let system = MbrDriver::open(synthetic_source(disk)).unwrap();
+
+    assert_eq!(system.bytes_per_sector(), 4096);
+    assert_eq!(system.partitions().len(), 2);
+    assert_eq!(system.partitions()[1].record.role, VolumeRole::Logical);
+  }
+
+  #[test]
+  fn rejects_overlapping_primary_partitions() {
+    let mut disk = vec![0u8; 4096 * 4];
+    write_partition_entry(&mut disk, 0, 0x00, 0x83, 1, 100);
+    write_partition_entry(&mut disk, 1, 0x00, 0x07, 50, 100);
+    write_boot_signature(&mut disk, 0);
+
+    let result = MbrDriver::open_with_sector_size(synthetic_source(disk), 512);
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
+
+  #[test]
+  fn allows_hybrid_overlap_with_a_protective_partition() {
+    let mut disk = vec![0u8; 512 * 5000];
+    write_partition_entry(&mut disk, 0, 0x00, 0xEE, 1, 4000);
+    write_partition_entry(&mut disk, 1, 0x80, 0xAF, 40, 200);
+    write_boot_signature(&mut disk, 0);
+    disk[512..520].copy_from_slice(b"EFI PART");
+    disk[40 * 512 + 1024..40 * 512 + 1026].copy_from_slice(b"H+");
+
+    let system = MbrDriver::open_with_sector_size(synthetic_source(disk), 512).unwrap();
+
+    assert_eq!(system.partitions().len(), 2);
+    assert_eq!(system.partitions()[0].record.role, VolumeRole::Protective);
+    assert_eq!(system.partitions()[1].record.role, VolumeRole::Primary);
   }
 }

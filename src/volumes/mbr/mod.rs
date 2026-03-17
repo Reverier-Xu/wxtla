@@ -4,7 +4,9 @@ mod boot_record;
 mod constants;
 mod driver;
 mod entry;
+mod parser;
 mod system;
+mod validation;
 
 pub use driver::MbrDriver;
 pub use entry::{MbrPartitionEntry, MbrPartitionInfo, MbrPartitionOrigin};
