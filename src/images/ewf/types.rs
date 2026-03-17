@@ -44,6 +44,8 @@ pub enum EwfChunkEncoding {
 pub struct EwfChunkDescriptor {
   /// Stable chunk index in logical image order.
   pub chunk_index: u32,
+  /// Segment number containing the stored payload.
+  pub segment_number: u16,
   /// Start offset of the chunk within the logical image.
   pub media_offset: u64,
   /// Logical chunk size in bytes.

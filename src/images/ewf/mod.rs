@@ -6,6 +6,7 @@ mod driver;
 mod file_header;
 mod hash;
 mod image;
+mod naming;
 mod parser;
 mod section;
 mod table;
@@ -17,8 +18,8 @@ pub use image::EwfImage;
 pub use types::{EwfChunkDescriptor, EwfChunkEncoding, EwfMediaType};
 
 use crate::{
-  FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
-  formats::probe_support::OffsetMagicProbe,
+  FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
+  ProbeRegistry, ProbeResult, Result,
 };
 
 /// EWF image descriptor.
@@ -29,11 +30,29 @@ inventory::submit! {
 }
 
 fn register_probes(registry: &mut ProbeRegistry) {
-  registry.register(OffsetMagicProbe::new(
-    DESCRIPTOR,
-    0,
-    constants::FILE_HEADER_MAGIC,
-    ProbeConfidence::Exact,
-    "ewf segment header found",
-  ));
+  registry.register(EwfProbe);
+}
+
+struct EwfProbe;
+
+impl FormatProbe for EwfProbe {
+  fn descriptor(&self) -> FormatDescriptor {
+    DESCRIPTOR
+  }
+
+  fn probe(&self, context: &ProbeContext<'_>) -> Result<ProbeResult> {
+    let Ok(signature) = context.read_bytes_at(0, constants::FILE_HEADER_MAGIC.len()) else {
+      return Ok(ProbeResult::rejected());
+    };
+
+    if signature == constants::FILE_HEADER_MAGIC || signature == constants::FILE_HEADER_MAGIC_LVF {
+      Ok(ProbeResult::matched(ProbeMatch::new(
+        DESCRIPTOR,
+        ProbeConfidence::Exact,
+        "ewf segment header found",
+      )))
+    } else {
+      Ok(ProbeResult::rejected())
+    }
+  }
 }

@@ -2,6 +2,7 @@
 
 pub(super) const FILE_HEADER_SIZE: usize = 13;
 pub(super) const FILE_HEADER_MAGIC: &[u8] = b"EVF\t\r\n\xff\0";
+pub(super) const FILE_HEADER_MAGIC_LVF: &[u8] = b"LVF\t\r\n\xff\0";
 
 pub(super) const SECTION_DESCRIPTOR_SIZE: usize = 76;
 

@@ -1,6 +1,6 @@
 //! Read-only EWF image surface.
 
-use std::{io::Read, sync::Arc};
+use std::{collections::HashMap, io::Read, sync::Arc};
 
 use adler2::adler32_slice;
 use flate2::read::ZlibDecoder;
@@ -9,17 +9,17 @@ use super::{
   DESCRIPTOR,
   cache::EwfChunkCache,
   constants::DEFAULT_CHUNK_CACHE_CAPACITY,
-  parser::{ParsedEwf, parse},
+  parser::{ParsedEwfSources, parse, parse_with_hints},
   types::{EwfChunkDescriptor, EwfChunkEncoding, EwfMediaType},
 };
 use crate::{
   DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
-  images::Image,
+  SourceHints, images::Image,
 };
 
 /// Read-only EWF image surface.
 pub struct EwfImage {
-  source: DataSourceHandle,
+  segment_sources: HashMap<u16, DataSourceHandle>,
   segment_number: u16,
   media_type: EwfMediaType,
   chunk_count: u32,
@@ -35,15 +35,23 @@ pub struct EwfImage {
 impl EwfImage {
   /// Open an EWF image from a single segment source.
   pub fn open(source: DataSourceHandle) -> Result<Self> {
-    let parsed = parse(source.as_ref())?;
-    Self::from_parsed(source, parsed)
+    Self::from_parsed(parse(source)?)
   }
 
-  fn from_parsed(source: DataSourceHandle, parsed: ParsedEwf) -> Result<Self> {
+  /// Open an EWF image using source hints for multi-segment resolution.
+  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+    Self::from_parsed(parse_with_hints(source, hints)?)
+  }
+
+  fn from_parsed(parsed: ParsedEwfSources) -> Result<Self> {
+    let ParsedEwfSources {
+      parsed,
+      segment_sources,
+    } = parsed;
     let media_size = parsed.volume.media_size()?;
 
     Ok(Self {
-      source,
+      segment_sources,
       segment_number: parsed.segment_number,
       media_type: parsed.volume.media_type,
       chunk_count: parsed.volume.chunk_count,
@@ -57,9 +65,14 @@ impl EwfImage {
     })
   }
 
-  /// Return the EWF segment number of the opened source.
+  /// Return the EWF segment number of the first segment source.
   pub fn segment_number(&self) -> u16 {
     self.segment_number
+  }
+
+  /// Return the number of resolved segment sources.
+  pub fn segment_count(&self) -> usize {
+    self.segment_sources.len()
   }
 
   /// Return the parsed media type.
@@ -102,9 +115,16 @@ impl EwfImage {
   }
 
   fn load_chunk(&self, chunk: &EwfChunkDescriptor) -> Result<Arc<[u8]>> {
-    let stored = self
-      .source
-      .read_bytes_at(chunk.stored_offset, chunk.stored_size as usize)?;
+    let source = self
+      .segment_sources
+      .get(&chunk.segment_number)
+      .ok_or_else(|| {
+        Error::NotFound(format!(
+          "ewf segment {} is missing for chunk {}",
+          chunk.segment_number, chunk.chunk_index
+        ))
+      })?;
+    let stored = source.read_bytes_at(chunk.stored_offset, chunk.stored_size as usize)?;
 
     match chunk.encoding {
       EwfChunkEncoding::Compressed => self.decompress_chunk(chunk, &stored),
@@ -116,8 +136,6 @@ impl EwfImage {
     let mut decoder = ZlibDecoder::new(stored);
     let mut data = vec![0u8; chunk.logical_size as usize];
     decoder.read_exact(&mut data).map_err(Error::Io)?;
-    let mut trailing = Vec::new();
-    decoder.read_to_end(&mut trailing).map_err(Error::Io)?;
 
     Ok(Arc::from(data))
   }
@@ -168,7 +186,7 @@ impl DataSource for EwfImage {
         break;
       }
 
-      let chunk_size = u64::from(self.sectors_per_chunk * self.bytes_per_sector);
+      let chunk_size = u64::from(self.sectors_per_chunk) * u64::from(self.bytes_per_sector);
       let chunk_index = u32::try_from(absolute_offset / chunk_size)
         .map_err(|_| Error::InvalidRange("ewf chunk index overflow".to_string()))?;
       let chunk_offset = usize::try_from(absolute_offset % chunk_size)
@@ -254,6 +272,7 @@ mod tests {
     let image = EwfImage::open(sample_source("ewf/ext2.E01")).unwrap();
 
     assert_eq!(image.segment_number(), 1);
+    assert_eq!(image.segment_count(), 1);
     assert_eq!(image.media_type(), EwfMediaType::Fixed);
     assert_eq!(image.chunk_count(), 128);
     assert_eq!(image.sectors_per_chunk(), 64);
