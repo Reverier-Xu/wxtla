@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use super::{
   constants::{
-    QCOW_CRYPT_NONE, QCOW_INCOMPAT_COMPRESSION, QCOW_INCOMPAT_CORRUPT, QCOW_INCOMPAT_DATA_FILE,
-    QCOW_INCOMPAT_DIRTY, QCOW_INCOMPAT_EXTL2,
+    QCOW_COMPRESSION_ZLIB, QCOW_CRYPT_NONE, QCOW_INCOMPAT_COMPRESSION, QCOW_INCOMPAT_CORRUPT,
+    QCOW_INCOMPAT_DATA_FILE, QCOW_INCOMPAT_DIRTY, QCOW_INCOMPAT_EXTL2,
   },
   header::QcowHeader,
 };
@@ -56,10 +56,13 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
       "qcow extended l2 entries are not supported yet".to_string(),
     ));
   }
-  if (header.incompatible_features & QCOW_INCOMPAT_COMPRESSION) != 0 {
-    return Err(Error::InvalidFormat(
-      "qcow compressed clusters are not supported in this stage".to_string(),
-    ));
+  if (header.incompatible_features & QCOW_INCOMPAT_COMPRESSION) != 0
+    && header.compression_method != QCOW_COMPRESSION_ZLIB
+  {
+    return Err(Error::InvalidFormat(format!(
+      "unsupported qcow compressed-cluster method: {}",
+      header.compression_method
+    )));
   }
   if (header.incompatible_features & QCOW_INCOMPAT_DIRTY) != 0 {
     return Err(Error::InvalidFormat(

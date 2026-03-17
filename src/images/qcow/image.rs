@@ -1,6 +1,8 @@
 //! Read-only QCOW image surface.
 
-use std::sync::Arc;
+use std::{io::Read, sync::Arc};
+
+use flate2::read::DeflateDecoder;
 
 use super::{
   DESCRIPTOR,
@@ -26,6 +28,19 @@ pub struct QcowImage {
   l1_table: Arc<[u64]>,
   l2_cache: QcowCache<Vec<u64>>,
   cluster_cache: QcowCache<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedL2Entry {
+  Sparse,
+  Zero,
+  Standard {
+    cluster_offset: u64,
+  },
+  Compressed {
+    host_offset: u64,
+    stored_size: usize,
+  },
 }
 
 impl QcowImage {
@@ -145,13 +160,13 @@ impl QcowImage {
     })
   }
 
-  fn read_l2_entry(&self, cluster_index: u64) -> Result<Option<u64>> {
+  fn read_l2_entry(&self, cluster_index: u64) -> Result<ParsedL2Entry> {
     let l2_entries_per_table = self.l2_entries_per_table()?;
     let l1_index = cluster_index / l2_entries_per_table;
     let l2_index = cluster_index % l2_entries_per_table;
     let l2_table = match self.read_l2_table(l1_index)? {
       Some(table) => table,
-      None => return Ok(None),
+      None => return Ok(ParsedL2Entry::Sparse),
     };
     let raw = *l2_table
       .get(
@@ -160,7 +175,66 @@ impl QcowImage {
       )
       .ok_or_else(|| Error::InvalidRange(format!("qcow l2 index {l2_index} is out of bounds")))?;
 
-    Ok(Some(raw))
+    self.parse_l2_entry(raw)
+  }
+
+  fn parse_l2_entry(&self, raw: u64) -> Result<ParsedL2Entry> {
+    if raw == 0 {
+      return Ok(ParsedL2Entry::Sparse);
+    }
+
+    let zero = (raw & 1) != 0;
+    let compressed = (raw & QCOW_OFLAG_COMPRESSED) != 0;
+
+    if compressed {
+      let cluster_bits = self.header.cluster_bits;
+      let host_offset_bits = 70u32.checked_sub(cluster_bits).ok_or_else(|| {
+        Error::InvalidFormat("qcow compressed cluster bits are invalid".to_string())
+      })?;
+      if host_offset_bits == 0 || host_offset_bits >= 62 {
+        return Err(Error::InvalidFormat(
+          "qcow compressed cluster offset bit count is invalid".to_string(),
+        ));
+      }
+      let host_offset_mask = (1u64 << host_offset_bits) - 1;
+      let descriptor = raw & !QCOW_OFLAG_COPIED & !QCOW_OFLAG_COMPRESSED;
+      let host_offset = descriptor & host_offset_mask;
+      let additional_sectors = descriptor >> host_offset_bits;
+      let stored_size = usize::try_from(
+        u64::from(512u16)
+          .checked_mul(additional_sectors.saturating_add(1))
+          .ok_or_else(|| {
+            Error::InvalidRange("qcow compressed cluster size overflow".to_string())
+          })?,
+      )
+      .map_err(|_| Error::InvalidRange("qcow compressed cluster size is too large".to_string()))?;
+
+      return Ok(ParsedL2Entry::Compressed {
+        host_offset,
+        stored_size,
+      });
+    }
+
+    let cluster_offset = raw & QCOW_OFFSET_MASK;
+    if cluster_offset == 0 && zero {
+      return Ok(ParsedL2Entry::Zero);
+    }
+    if cluster_offset == 0 {
+      return Ok(ParsedL2Entry::Sparse);
+    }
+
+    Ok(ParsedL2Entry::Standard { cluster_offset })
+  }
+
+  fn read_compressed_cluster(&self, host_offset: u64, stored_size: usize) -> Result<Arc<Vec<u8>>> {
+    let compressed = self.source.read_bytes_at(host_offset, stored_size)?;
+    let cluster_size = usize::try_from(self.cluster_size()?)
+      .map_err(|_| Error::InvalidRange("qcow cluster size is too large".to_string()))?;
+    let mut decoder = DeflateDecoder::new(compressed.as_slice());
+    let mut cluster = vec![0u8; cluster_size];
+    decoder.read_exact(&mut cluster).map_err(Error::Io)?;
+
+    Ok(Arc::new(cluster))
   }
 }
 
@@ -203,31 +277,30 @@ impl DataSource for QcowImage {
       );
 
       match self.read_l2_entry(cluster_index)? {
-        None => {
+        ParsedL2Entry::Sparse => {
           if let Some(backing_image) = &self.backing_image {
             backing_image.read_exact_at(absolute_offset, &mut buf[copied..copied + available])?;
           } else {
             buf[copied..copied + available].fill(0);
           }
         }
-        Some(raw_l2_entry) => {
-          if raw_l2_entry == 0 {
-            if let Some(backing_image) = &self.backing_image {
-              backing_image.read_exact_at(absolute_offset, &mut buf[copied..copied + available])?;
-            } else {
-              buf[copied..copied + available].fill(0);
-            }
-          } else if (raw_l2_entry & QCOW_OFLAG_COMPRESSED) != 0 {
-            return Err(Error::InvalidFormat(
-              "compressed qcow clusters are not supported in this stage".to_string(),
-            ));
-          } else {
-            let cluster_data_offset = raw_l2_entry & QCOW_OFFSET_MASK;
-            let cluster = self.read_cluster(cluster_data_offset)?;
-            buf[copied..copied + available]
-              .copy_from_slice(&cluster[cluster_offset..cluster_offset + available]);
-          }
-          let _ = raw_l2_entry & QCOW_OFLAG_COPIED;
+        ParsedL2Entry::Zero => {
+          buf[copied..copied + available].fill(0);
+        }
+        ParsedL2Entry::Standard {
+          cluster_offset: host_cluster_offset,
+        } => {
+          let cluster = self.read_cluster(host_cluster_offset)?;
+          buf[copied..copied + available]
+            .copy_from_slice(&cluster[cluster_offset..cluster_offset + available]);
+        }
+        ParsedL2Entry::Compressed {
+          host_offset,
+          stored_size,
+        } => {
+          let cluster = self.read_compressed_cluster(host_offset, stored_size)?;
+          buf[copied..copied + available]
+            .copy_from_slice(&cluster[cluster_offset..cluster_offset + available]);
         }
       }
 
@@ -272,9 +345,11 @@ impl Image for QcowImage {
 
 #[cfg(test)]
 mod tests {
-  use std::{collections::HashMap, path::Path, sync::Arc};
+  use std::{collections::HashMap, io::Write, path::Path, sync::Arc};
 
-  use super::*;
+  use flate2::{Compression, write::DeflateEncoder};
+
+  use super::{super::constants, *};
   use crate::{RelatedSourceRequest, RelatedSourceResolver, SourceIdentity};
 
   struct MemDataSource {
@@ -404,11 +479,38 @@ mod tests {
     assert_eq!(image.read_all().unwrap(), overlay_data);
   }
 
+  #[test]
+  fn reads_compressed_clusters_from_synthetic_qcow() {
+    let cluster = repeat_byte(0x7E, 65_536);
+    let image = QcowImage::open(Arc::new(MemDataSource {
+      data: build_synthetic_qcow_from_cluster(SyntheticCluster::Compressed(&cluster), None),
+    }))
+    .unwrap();
+
+    assert_eq!(image.read_all().unwrap(), cluster);
+  }
+
   fn repeat_byte(byte: u8, size: usize) -> Vec<u8> {
     vec![byte; size]
   }
 
+  enum SyntheticCluster<'a> {
+    Sparse,
+    Standard(&'a [u8]),
+    Compressed(&'a [u8]),
+  }
+
   fn build_synthetic_qcow(cluster_data: Option<&[u8]>, backing_name: Option<&str>) -> Vec<u8> {
+    let cluster = match cluster_data {
+      Some(data) => SyntheticCluster::Standard(data),
+      None => SyntheticCluster::Sparse,
+    };
+    build_synthetic_qcow_from_cluster(cluster, backing_name)
+  }
+
+  fn build_synthetic_qcow_from_cluster(
+    cluster: SyntheticCluster<'_>, backing_name: Option<&str>,
+  ) -> Vec<u8> {
     const CLUSTER_BITS: u32 = 16;
     const CLUSTER_SIZE: usize = 1 << CLUSTER_BITS;
     const VIRTUAL_SIZE: u64 = CLUSTER_SIZE as u64;
@@ -448,17 +550,39 @@ mod tests {
 
     data[L1_OFFSET as usize..L1_OFFSET as usize + 8]
       .copy_from_slice(&(0x8000_0000_0004_0000u64).to_be_bytes());
-    let l2_entry = if cluster_data.is_some() {
-      0x8000_0000_0005_0000u64
-    } else {
-      0
+    let l2_entry = match cluster {
+      SyntheticCluster::Sparse => 0,
+      SyntheticCluster::Standard(_) => 0x8000_0000_0005_0000u64,
+      SyntheticCluster::Compressed(cluster_data) => {
+        let compressed = deflate_cluster(cluster_data);
+        let compressed_sectors = compressed.len().div_ceil(512);
+        let additional_sectors = compressed_sectors.saturating_sub(1);
+        data[72..80].copy_from_slice(&constants::QCOW_INCOMPAT_COMPRESSION.to_be_bytes());
+        constants::QCOW_OFLAG_COMPRESSED
+          | ((u64::try_from(additional_sectors).unwrap()) << (70 - CLUSTER_BITS))
+          | DATA_OFFSET
+      }
     };
     data[L2_OFFSET as usize..L2_OFFSET as usize + 8].copy_from_slice(&l2_entry.to_be_bytes());
-    if let Some(cluster_data) = cluster_data {
-      data[DATA_OFFSET as usize..DATA_OFFSET as usize + cluster_data.len()]
-        .copy_from_slice(cluster_data);
+    match cluster {
+      SyntheticCluster::Sparse => {}
+      SyntheticCluster::Standard(cluster_data) => {
+        data[DATA_OFFSET as usize..DATA_OFFSET as usize + cluster_data.len()]
+          .copy_from_slice(cluster_data);
+      }
+      SyntheticCluster::Compressed(cluster_data) => {
+        let compressed = deflate_cluster(cluster_data);
+        data[DATA_OFFSET as usize..DATA_OFFSET as usize + compressed.len()]
+          .copy_from_slice(&compressed);
+      }
     }
 
     data
+  }
+
+  fn deflate_cluster(data: &[u8]) -> Vec<u8> {
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
   }
 }
