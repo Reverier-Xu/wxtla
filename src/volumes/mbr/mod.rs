@@ -1,4 +1,14 @@
-//! MBR volume-system descriptor and probe registration.
+//! MBR volume-system driver and probe registration.
+
+mod boot_record;
+mod constants;
+mod driver;
+mod entry;
+mod system;
+
+pub use driver::MbrDriver;
+pub use entry::{MbrPartitionEntry, MbrPartitionInfo, MbrPartitionOrigin};
+pub use system::MbrVolumeSystem;
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
@@ -29,7 +39,7 @@ impl FormatProbe for MbrProbe {
       return Ok(ProbeResult::rejected());
     };
 
-    if signature == [0x55, 0xAA] {
+    if signature == constants::BOOT_SIGNATURE {
       Ok(ProbeResult::matched(ProbeMatch::new(
         DESCRIPTOR,
         ProbeConfidence::Weak,

@@ -25,9 +25,17 @@ pub enum Error {
   #[error("invalid data source range: {0}")]
   InvalidRange(String),
 
+  /// Parsed bytes do not match the structural requirements of a format.
+  #[error("invalid format: {0}")]
+  InvalidFormat(String),
+
   /// A parser requested an invalid related-source reference.
   #[error("invalid source reference: {0}")]
   InvalidSourceReference(String),
+
+  /// A requested item was not present in a parsed structure.
+  #[error("not found: {0}")]
+  NotFound(String),
 }
 
 /// Result alias used by the crate's core infrastructure.
