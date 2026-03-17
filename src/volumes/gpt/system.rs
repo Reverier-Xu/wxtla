@@ -35,25 +35,21 @@ impl GptVolumeSystem {
     source: DataSourceHandle, block_size: u32, active_header_location: GptHeaderLocation,
     primary_header: Option<GptHeader>, backup_header: Option<GptHeader>,
     partitions: Vec<GptPartitionInfo>,
-  ) -> Self {
+  ) -> Result<Self> {
     let volumes = partitions
       .iter()
       .map(|partition| partition.record.clone())
       .collect();
     let active_header = match active_header_location {
-      GptHeaderLocation::Primary => primary_header.clone().unwrap_or_else(|| {
-        backup_header
-          .clone()
-          .expect("validated active gpt header missing")
-      }),
-      GptHeaderLocation::Backup => backup_header.clone().unwrap_or_else(|| {
-        primary_header
-          .clone()
-          .expect("validated active gpt header missing")
-      }),
+      GptHeaderLocation::Primary => primary_header
+        .clone()
+        .ok_or_else(|| Error::InvalidFormat("gpt active primary header is missing".to_string()))?,
+      GptHeaderLocation::Backup => backup_header
+        .clone()
+        .ok_or_else(|| Error::InvalidFormat("gpt active backup header is missing".to_string()))?,
     };
 
-    Self {
+    Ok(Self {
       source,
       block_size,
       active_header_location,
@@ -62,7 +58,7 @@ impl GptVolumeSystem {
       backup_header,
       volumes,
       partitions,
-    }
+    })
   }
 
   /// Return which header was used to open the volume system.

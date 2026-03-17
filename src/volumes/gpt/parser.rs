@@ -39,41 +39,41 @@ pub(super) fn open_with_block_size(
   match (primary_candidate, backup_candidate) {
     (Ok(primary), Ok(backup)) => {
       if validate_header_pair(&primary.header, &backup.header).is_ok() {
-        Ok(GptVolumeSystem::new(
+        GptVolumeSystem::new(
           source,
           block_size,
           GptHeaderLocation::Primary,
           Some(primary.header),
           Some(backup.header),
           primary.partitions,
-        ))
+        )
       } else {
-        Ok(GptVolumeSystem::new(
+        GptVolumeSystem::new(
           source,
           block_size,
           GptHeaderLocation::Primary,
           Some(primary.header),
           None,
           primary.partitions,
-        ))
+        )
       }
     }
-    (Ok(primary), Err(_)) => Ok(GptVolumeSystem::new(
+    (Ok(primary), Err(_)) => GptVolumeSystem::new(
       source,
       block_size,
       GptHeaderLocation::Primary,
       Some(primary.header),
       None,
       primary.partitions,
-    )),
-    (Err(_), Ok(backup)) => Ok(GptVolumeSystem::new(
+    ),
+    (Err(_), Ok(backup)) => GptVolumeSystem::new(
       source,
       block_size,
       GptHeaderLocation::Backup,
       None,
       Some(backup.header),
       backup.partitions,
-    )),
+    ),
     (Err(_primary_error), Err(_backup_error)) => Err(Error::InvalidFormat(
       "unable to open a valid primary or backup gpt header".to_string(),
     )),
