@@ -2,8 +2,6 @@
 
 use crate::{FormatDescriptor, ProbeRegistry};
 
-use super::{apm, ewf, ext, fat, gpt, hfs, mbr, ntfs, qcow, sparseimage, udif, vhd, vhdx, vmdk};
-
 /// A single inventory entry for a built-in format.
 #[derive(Clone, Copy)]
 pub struct FormatInventoryEntry {
@@ -27,21 +25,22 @@ impl FormatInventoryEntry {
   }
 }
 
+inventory::collect!(FormatInventoryEntry);
+
 /// Inventory of built-in formats.
-#[derive(Clone, Copy)]
 pub struct FormatInventory {
-  entries: &'static [FormatInventoryEntry],
+  entries: Vec<&'static FormatInventoryEntry>,
 }
 
 impl FormatInventory {
-  /// Create an inventory from a static entry slice.
-  pub const fn new(entries: &'static [FormatInventoryEntry]) -> Self {
+  /// Create an inventory from discovered entries.
+  pub fn new(entries: Vec<&'static FormatInventoryEntry>) -> Self {
     Self { entries }
   }
 
   /// Return the inventory entries.
-  pub fn entries(&self) -> &'static [FormatInventoryEntry] {
-    self.entries
+  pub fn entries(&self) -> &[&'static FormatInventoryEntry] {
+    &self.entries
   }
 
   /// Return the number of known formats.
@@ -55,31 +54,19 @@ impl FormatInventory {
   }
 }
 
-const BUILTIN_ENTRIES: &[FormatInventoryEntry] = &[
-  ewf::INVENTORY,
-  qcow::INVENTORY,
-  vhd::INVENTORY,
-  vhdx::INVENTORY,
-  vmdk::INVENTORY,
-  sparseimage::INVENTORY,
-  udif::INVENTORY,
-  gpt::INVENTORY,
-  apm::INVENTORY,
-  mbr::INVENTORY,
-  fat::INVENTORY,
-  ntfs::INVENTORY,
-  ext::INVENTORY,
-  hfs::INVENTORY,
-];
-
 /// Return the built-in inventory of currently known formats.
 pub fn builtin_inventory() -> FormatInventory {
-  FormatInventory::new(BUILTIN_ENTRIES)
+  let mut entries: Vec<_> = inventory::iter::<FormatInventoryEntry>
+    .into_iter()
+    .collect();
+  entries.sort_by_key(|entry| (entry.descriptor.kind.probe_sort_rank(), entry.descriptor.id));
+  FormatInventory::new(entries)
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::{images::ewf, volumes::gpt};
 
   #[test]
   fn builtin_inventory_contains_known_formats() {

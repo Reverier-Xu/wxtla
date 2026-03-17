@@ -5,14 +5,13 @@ use crate::{
   ProbeRegistry, ProbeResult, Result,
 };
 
-use super::inventory::FormatInventoryEntry;
-
 /// FAT filesystem descriptor.
 pub const DESCRIPTOR: FormatDescriptor =
   FormatDescriptor::new("filesystem.fat", FormatKind::FileSystem);
 
-/// Inventory entry for the FAT format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const FAT12_MAGIC: &[u8] = b"FAT12   ";
 const FAT16_MAGIC: &[u8] = b"FAT16   ";

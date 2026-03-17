@@ -17,4 +17,5 @@ strip         = true
 
 
 [dependencies]
+inventory = "0.3"
 thiserror = "2.0"

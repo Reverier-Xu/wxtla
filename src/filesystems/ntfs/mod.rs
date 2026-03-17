@@ -5,14 +5,13 @@ use crate::{
   ProbeRegistry, ProbeResult, Result,
 };
 
-use super::inventory::FormatInventoryEntry;
-
 /// NTFS filesystem descriptor.
 pub const DESCRIPTOR: FormatDescriptor =
   FormatDescriptor::new("filesystem.ntfs", FormatKind::FileSystem);
 
-/// Inventory entry for the NTFS format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const OEM_ID: &[u8] = b"NTFS    ";
 

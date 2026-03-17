@@ -1,6 +1,9 @@
 //! Common probe traits and helpers for format detection.
 
-use super::{DataSource, ProbeCachedDataSource, Result};
+use super::{
+  DataSource, DataSourceHandle, ProbeCachedDataSource, RelatedPathBuf, RelatedSourcePurpose,
+  RelatedSourceRequest, RelatedSourceResolver, Result, SourceIdentity,
+};
 
 /// Broad category of a parser-visible format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,6 +35,20 @@ impl FormatDescriptor {
   /// Construct a format descriptor.
   pub const fn new(id: &'static str, kind: FormatKind) -> Self {
     Self { id, kind }
+  }
+}
+
+impl FormatKind {
+  /// Return the default registry ordering rank for this format kind.
+  pub const fn probe_sort_rank(self) -> u8 {
+    match self {
+      Self::Archive => 0,
+      Self::Image => 1,
+      Self::VolumeSystem => 2,
+      Self::VolumeManager => 3,
+      Self::FileSystem => 4,
+      Self::Helper => 5,
+    }
   }
 }
 
@@ -125,10 +142,37 @@ impl ProbeReport {
   }
 }
 
+/// Optional metadata and adapters that influence probing.
+#[derive(Clone, Copy, Default)]
+pub struct ProbeOptions<'a> {
+  resolver: Option<&'a dyn RelatedSourceResolver>,
+  source_identity: Option<&'a SourceIdentity>,
+}
+
+impl<'a> ProbeOptions<'a> {
+  /// Create empty probe options.
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Attach a related-source resolver.
+  pub fn with_resolver(mut self, resolver: &'a dyn RelatedSourceResolver) -> Self {
+    self.resolver = Some(resolver);
+    self
+  }
+
+  /// Attach a source identity hint.
+  pub fn with_source_identity(mut self, source_identity: &'a SourceIdentity) -> Self {
+    self.source_identity = Some(source_identity);
+    self
+  }
+}
+
 /// Shared probe helper that provides cached small-window reads.
 pub struct ProbeContext<'a> {
   source: &'a dyn DataSource,
   cached: ProbeCachedDataSource<'a>,
+  options: ProbeOptions<'a>,
 }
 
 impl<'a> ProbeContext<'a> {
@@ -141,15 +185,48 @@ impl<'a> ProbeContext<'a> {
   /// let header = context.header(512)?;
   /// ```
   pub fn new(source: &'a dyn DataSource) -> Self {
+    Self::with_options(source, ProbeOptions::new())
+  }
+
+  /// Create a new probe context around a source and related-source resolver.
+  pub fn with_resolver(
+    source: &'a dyn DataSource, resolver: &'a dyn RelatedSourceResolver,
+  ) -> Self {
+    Self::with_options(source, ProbeOptions::new().with_resolver(resolver))
+  }
+
+  /// Create a new probe context from explicit options.
+  pub fn with_options(source: &'a dyn DataSource, options: ProbeOptions<'a>) -> Self {
     Self {
       source,
       cached: ProbeCachedDataSource::new(source),
+      options,
     }
   }
 
   /// Access the underlying source.
   pub fn source(&self) -> &'a dyn DataSource {
     self.source
+  }
+
+  /// Access the resolver for related sources when one is available.
+  pub fn resolver(&self) -> Option<&'a dyn RelatedSourceResolver> {
+    self.options.resolver
+  }
+
+  /// Return `true` when a related-source resolver is available.
+  pub fn has_resolver(&self) -> bool {
+    self.options.resolver.is_some()
+  }
+
+  /// Access the source identity hint when one is available.
+  pub fn source_identity(&self) -> Option<&'a SourceIdentity> {
+    self.options.source_identity
+  }
+
+  /// Return the hinted entry name when one exists.
+  pub fn entry_name_hint(&self) -> Option<&'a str> {
+    self.source_identity().and_then(SourceIdentity::entry_name)
   }
 
   /// Read exactly `buf.len()` bytes through the probe cache.
@@ -170,6 +247,24 @@ impl<'a> ProbeContext<'a> {
   /// Return the total size of the source.
   pub fn size(&self) -> Result<u64> {
     self.source.size()
+  }
+
+  /// Resolve a parser-related source within the resolver scope.
+  pub fn resolve_related(
+    &self, request: &RelatedSourceRequest,
+  ) -> Result<Option<DataSourceHandle>> {
+    match self.options.resolver {
+      Some(resolver) => resolver.resolve(request),
+      None => Ok(None),
+    }
+  }
+
+  /// Resolve a parser-related source from a lexical path string.
+  pub fn resolve_related_path(
+    &self, purpose: RelatedSourcePurpose, path: &str,
+  ) -> Result<Option<DataSourceHandle>> {
+    let path = RelatedPathBuf::from_relative_path(path)?;
+    self.resolve_related(&RelatedSourceRequest::new(purpose, path))
   }
 }
 
@@ -217,11 +312,30 @@ impl ProbeRegistry {
 
   /// Probe all registered formats and return the ordered report.
   pub fn probe_all(&self, source: &dyn DataSource) -> Result<ProbeReport> {
-    let context = ProbeContext::new(source);
+    self.probe_all_with_options(source, ProbeOptions::new())
+  }
+
+  /// Probe all registered formats with a related-source resolver.
+  pub fn probe_all_with_resolver(
+    &self, source: &dyn DataSource, resolver: &dyn RelatedSourceResolver,
+  ) -> Result<ProbeReport> {
+    self.probe_all_with_options(source, ProbeOptions::new().with_resolver(resolver))
+  }
+
+  /// Probe all registered formats with explicit probe options.
+  pub fn probe_all_with_options(
+    &self, source: &dyn DataSource, options: ProbeOptions<'_>,
+  ) -> Result<ProbeReport> {
+    let context = ProbeContext::with_options(source, options);
+    self.probe_all_with_context(&context)
+  }
+
+  /// Probe all registered formats with a pre-built context.
+  pub fn probe_all_with_context(&self, context: &ProbeContext<'_>) -> Result<ProbeReport> {
     let mut hits = Vec::new();
 
     for (registration_index, probe) in self.probes.iter().enumerate() {
-      if let ProbeResult::Matched(probe_match) = probe.probe(&context)? {
+      if let ProbeResult::Matched(probe_match) = probe.probe(context)? {
         hits.push((registration_index, probe_match));
       }
     }
@@ -244,6 +358,20 @@ impl ProbeRegistry {
   /// Return the best probe match for a source, if any.
   pub fn probe_best(&self, source: &dyn DataSource) -> Result<Option<ProbeMatch>> {
     Ok(self.probe_all(source)?.best_match())
+  }
+
+  /// Return the best probe match for a source, if any, using a resolver.
+  pub fn probe_best_with_resolver(
+    &self, source: &dyn DataSource, resolver: &dyn RelatedSourceResolver,
+  ) -> Result<Option<ProbeMatch>> {
+    Ok(self.probe_all_with_resolver(source, resolver)?.best_match())
+  }
+
+  /// Return the best probe match for a source, if any, using explicit options.
+  pub fn probe_best_with_options(
+    &self, source: &dyn DataSource, options: ProbeOptions<'_>,
+  ) -> Result<Option<ProbeMatch>> {
+    Ok(self.probe_all_with_options(source, options)?.best_match())
   }
 }
 
@@ -293,6 +421,14 @@ mod tests {
     ));
 
     assert!(result.is_match());
+  }
+
+  struct RejectingResolver;
+
+  impl RelatedSourceResolver for RejectingResolver {
+    fn resolve(&self, _request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+      Ok(None)
+    }
   }
 
   struct RejectingProbe;
@@ -357,5 +493,35 @@ mod tests {
         .collect::<Vec<_>>(),
       vec!["test.exact", "test.exact.second", "test.weak"]
     );
+  }
+
+  #[test]
+  fn probe_context_exposes_related_source_resolution() {
+    let source = MemDataSource {
+      data: b"probe-data".to_vec(),
+    };
+    let resolver = RejectingResolver;
+    let context = ProbeContext::with_resolver(&source, &resolver);
+
+    assert!(context.has_resolver());
+    assert!(
+      context
+        .resolve_related_path(RelatedSourcePurpose::Metadata, "sidecar.bin")
+        .unwrap()
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn probe_context_exposes_source_identity_hints() {
+    let source = MemDataSource {
+      data: b"probe-data".to_vec(),
+    };
+    let identity = SourceIdentity::from_relative_path("segments/disk.raw.000").unwrap();
+    let context =
+      ProbeContext::with_options(&source, ProbeOptions::new().with_source_identity(&identity));
+
+    assert_eq!(context.entry_name_hint(), Some("disk.raw.000"));
+    assert_eq!(context.source_identity().unwrap().extension(), Some("000"));
   }
 }

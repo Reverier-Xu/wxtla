@@ -5,13 +5,12 @@ use crate::{
   ProbeRegistry, ProbeResult, Result,
 };
 
-use super::inventory::FormatInventoryEntry;
-
 /// VHD image descriptor.
 pub const DESCRIPTOR: FormatDescriptor = FormatDescriptor::new("image.vhd", FormatKind::Image);
 
-/// Inventory entry for the VHD format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const FOOTER_MAGIC: &[u8] = b"conectix";
 

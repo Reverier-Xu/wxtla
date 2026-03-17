@@ -2,14 +2,15 @@
 
 use crate::{FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry};
 
-use super::{inventory::FormatInventoryEntry, probe_support::OffsetMagicProbe};
+use crate::formats::probe_support::OffsetMagicProbe;
 
 /// Sparseimage descriptor.
 pub const DESCRIPTOR: FormatDescriptor =
   FormatDescriptor::new("image.sparseimage", FormatKind::Image);
 
-/// Inventory entry for the sparseimage format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const MAGIC: &[u8] = b"sprs";
 

@@ -1,14 +1,21 @@
 use std::{
   fs::File,
   path::{Path, PathBuf},
+  sync::Arc,
 };
 
-use wxtla::{DataSource, Result};
+use wxtla::{
+  DataSource, DataSourceHandle, RelatedSourceRequest, RelatedSourceResolver, Result, SourceIdentity,
+};
 
 pub fn fixture_path(relative: impl AsRef<Path>) -> PathBuf {
   Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("formats")
     .join(relative)
+}
+
+pub fn fixture_identity(relative: impl AsRef<Path>) -> SourceIdentity {
+  SourceIdentity::from_relative_path(&relative.as_ref().to_string_lossy()).unwrap()
 }
 
 pub struct FileDataSource {
@@ -23,6 +30,37 @@ impl FileDataSource {
     let size = file.metadata()?.len();
 
     Ok(Self { file, size })
+  }
+}
+
+pub struct FixtureResolver {
+  root: PathBuf,
+}
+
+impl FixtureResolver {
+  pub fn new(root: impl AsRef<Path>) -> Self {
+    Self {
+      root: root.as_ref().to_path_buf(),
+    }
+  }
+}
+
+impl RelatedSourceResolver for FixtureResolver {
+  fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    let mut path = self.root.clone();
+    for component in request.path.components() {
+      path.push(component);
+    }
+
+    if !path.exists() || !path.is_file() {
+      return Ok(None);
+    }
+
+    Ok(Some(Arc::new(FileDataSource::open(path)?)))
+  }
+
+  fn telemetry_name(&self) -> &'static str {
+    "tests.fixture_resolver"
   }
 }
 

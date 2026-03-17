@@ -102,6 +102,14 @@ impl RelatedPathBuf {
     self.components.is_empty()
   }
 
+  /// Return the final normal path component when one exists.
+  pub fn file_name(&self) -> Option<&str> {
+    self
+      .components
+      .last()
+      .and_then(RelatedPathComponent::normal_component)
+  }
+
   /// Iterate over the path components as strings.
   pub fn components(&self) -> impl Iterator<Item = &str> {
     self.components.iter().map(RelatedPathComponent::as_str)
@@ -112,6 +120,17 @@ impl RelatedPathBuf {
     let mut joined = self.clone();
     joined.components.extend(other.components.iter().cloned());
     joined
+  }
+
+  /// Return the lexical parent path when one exists.
+  pub fn parent(&self) -> Option<Self> {
+    if self.components.is_empty() {
+      return None;
+    }
+
+    let mut parent = self.clone();
+    parent.components.pop();
+    Some(parent)
   }
 }
 
@@ -141,6 +160,13 @@ impl RelatedPathComponent {
       Self::Normal(component) => component.as_str(),
     }
   }
+
+  fn normal_component(&self) -> Option<&str> {
+    match self {
+      Self::Normal(component) => Some(component.as_str()),
+      Self::Current | Self::Parent => None,
+    }
+  }
 }
 
 fn validate_normal_component(component: &str) -> Result<()> {
@@ -163,6 +189,51 @@ fn validate_normal_component(component: &str) -> Result<()> {
   }
 
   Ok(())
+}
+
+/// Host-agnostic identity hint for a source presented to a probe or parser.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SourceIdentity {
+  logical_path: RelatedPathBuf,
+}
+
+impl SourceIdentity {
+  /// Create a new source identity from a logical path.
+  pub fn new(logical_path: RelatedPathBuf) -> Self {
+    Self { logical_path }
+  }
+
+  /// Create a source identity from a relative path string.
+  pub fn from_relative_path(path: &str) -> Result<Self> {
+    Ok(Self::new(RelatedPathBuf::from_relative_path(path)?))
+  }
+
+  /// Return the logical path associated with this identity.
+  pub fn logical_path(&self) -> &RelatedPathBuf {
+    &self.logical_path
+  }
+
+  /// Return the final entry name when one exists.
+  pub fn entry_name(&self) -> Option<&str> {
+    self.logical_path.file_name()
+  }
+
+  /// Return the filename extension when one exists.
+  pub fn extension(&self) -> Option<&str> {
+    let (_, extension) = self.entry_name()?.rsplit_once('.')?;
+    if extension.is_empty() {
+      None
+    } else {
+      Some(extension)
+    }
+  }
+
+  /// Build a sibling path next to this source identity.
+  pub fn sibling_path(&self, entry_name: impl Into<String>) -> Result<RelatedPathBuf> {
+    let mut path = self.logical_path.parent().unwrap_or_default();
+    path.push_normal(entry_name)?;
+    Ok(path)
+  }
 }
 
 /// Why a parser is asking for another source.
@@ -251,5 +322,30 @@ mod tests {
     let right = RelatedPathBuf::from_relative_path("disk/segments").unwrap();
 
     assert_eq!(left.join(&right).to_string(), "images/disk/segments");
+  }
+
+  #[test]
+  fn related_path_reports_final_normal_component() {
+    let path = RelatedPathBuf::from_relative_path("images/disk.raw.000").unwrap();
+
+    assert_eq!(path.file_name(), Some("disk.raw.000"));
+  }
+
+  #[test]
+  fn source_identity_exposes_entry_name_and_extension() {
+    let identity = SourceIdentity::from_relative_path("segments/disk.raw.000").unwrap();
+
+    assert_eq!(identity.entry_name(), Some("disk.raw.000"));
+    assert_eq!(identity.extension(), Some("000"));
+  }
+
+  #[test]
+  fn source_identity_builds_sibling_paths() {
+    let identity = SourceIdentity::from_relative_path("segments/disk.raw.000").unwrap();
+
+    assert_eq!(
+      identity.sibling_path("disk.raw.001").unwrap().to_string(),
+      "segments/disk.raw.001"
+    );
   }
 }

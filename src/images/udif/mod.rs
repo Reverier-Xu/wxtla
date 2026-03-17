@@ -5,13 +5,12 @@ use crate::{
   ProbeRegistry, ProbeResult, Result,
 };
 
-use super::inventory::FormatInventoryEntry;
-
 /// UDIF / DMG image descriptor.
 pub const DESCRIPTOR: FormatDescriptor = FormatDescriptor::new("image.udif", FormatKind::Image);
 
-/// Inventory entry for the UDIF format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const TRAILER_MAGIC: &[u8] = b"koly";
 

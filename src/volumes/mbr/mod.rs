@@ -5,14 +5,13 @@ use crate::{
   ProbeRegistry, ProbeResult, Result,
 };
 
-use super::inventory::FormatInventoryEntry;
-
 /// MBR volume-system descriptor.
 pub const DESCRIPTOR: FormatDescriptor =
   FormatDescriptor::new("volume.mbr", FormatKind::VolumeSystem);
 
-/// Inventory entry for the MBR format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 fn register_probes(registry: &mut ProbeRegistry) {
   registry.register(MbrProbe);

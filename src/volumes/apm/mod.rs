@@ -5,14 +5,13 @@ use crate::{
   ProbeRegistry, ProbeResult, Result,
 };
 
-use super::inventory::FormatInventoryEntry;
-
 /// APM volume-system descriptor.
 pub const DESCRIPTOR: FormatDescriptor =
   FormatDescriptor::new("volume.apm", FormatKind::VolumeSystem);
 
-/// Inventory entry for the APM format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const DRIVER_DESCRIPTOR_MAGIC: &[u8] = b"ER";
 const PARTITION_MAP_MAGIC: &[u8] = b"PM";

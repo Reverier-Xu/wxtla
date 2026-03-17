@@ -5,14 +5,13 @@ use crate::{
   ProbeRegistry, ProbeResult, Result,
 };
 
-use super::inventory::FormatInventoryEntry;
-
 /// ext-family filesystem descriptor.
 pub const DESCRIPTOR: FormatDescriptor =
   FormatDescriptor::new("filesystem.ext", FormatKind::FileSystem);
 
-/// Inventory entry for the ext format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const SUPERBLOCK_MAGIC_LE: [u8; 2] = [0x53, 0xef];
 

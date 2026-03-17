@@ -2,13 +2,14 @@
 
 use crate::{FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry};
 
-use super::{inventory::FormatInventoryEntry, probe_support::OffsetMagicProbe};
+use crate::formats::probe_support::OffsetMagicProbe;
 
 /// EWF image descriptor.
 pub const DESCRIPTOR: FormatDescriptor = FormatDescriptor::new("image.ewf", FormatKind::Image);
 
-/// Inventory entry for the EWF format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const MAGIC: &[u8] = b"EVF\t\r\n\xff\0";
 

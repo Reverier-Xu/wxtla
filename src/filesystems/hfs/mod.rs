@@ -5,8 +5,6 @@ use crate::{
   ProbeRegistry, ProbeResult, Result,
 };
 
-use super::inventory::FormatInventoryEntry;
-
 /// Classic HFS filesystem descriptor.
 pub const DESCRIPTOR: FormatDescriptor =
   FormatDescriptor::new("filesystem.hfs", FormatKind::FileSystem);
@@ -14,8 +12,9 @@ pub const DESCRIPTOR: FormatDescriptor =
 pub const PLUS_DESCRIPTOR: FormatDescriptor =
   FormatDescriptor::new("filesystem.hfsplus", FormatKind::FileSystem);
 
-/// Inventory entry for the HFS format module.
-pub const INVENTORY: FormatInventoryEntry = FormatInventoryEntry::new(DESCRIPTOR, register_probes);
+inventory::submit! {
+  crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
+}
 
 const HFS_MAGIC: &[u8] = b"BD";
 const HFS_PLUS_MAGIC: &[u8] = b"H+";

@@ -13,9 +13,9 @@ pub use data_source::{
 pub use error::{Error, Result};
 pub use probe::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
-  ProbeRegistry, ProbeReport, ProbeResult,
+  ProbeOptions, ProbeRegistry, ProbeReport, ProbeResult,
 };
 pub use resolver::{
   DataSourceHandle, RelatedPathBuf, RelatedSourcePurpose, RelatedSourceRequest,
-  RelatedSourceResolver,
+  RelatedSourceResolver, SourceIdentity,
 };

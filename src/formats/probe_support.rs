@@ -4,7 +4,7 @@ use crate::{
   FormatDescriptor, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch, ProbeResult, Result,
 };
 
-pub(super) struct OffsetMagicProbe {
+pub(crate) struct OffsetMagicProbe {
   descriptor: FormatDescriptor,
   offset: u64,
   magic: &'static [u8],
@@ -13,7 +13,7 @@ pub(super) struct OffsetMagicProbe {
 }
 
 impl OffsetMagicProbe {
-  pub(super) const fn new(
+  pub(crate) const fn new(
     descriptor: FormatDescriptor, offset: u64, magic: &'static [u8], confidence: ProbeConfidence,
     detail: &'static str,
   ) -> Self {
