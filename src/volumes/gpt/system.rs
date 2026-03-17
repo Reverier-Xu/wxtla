@@ -8,12 +8,22 @@ use crate::{
   volumes::{VolumeRecord, VolumeSystem},
 };
 
+/// Which GPT header was used to open the volume system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GptHeaderLocation {
+  /// The primary header at LBA 1.
+  Primary,
+  /// The backup header at the end of the device.
+  Backup,
+}
+
 /// Open GPT volume system.
 pub struct GptVolumeSystem {
   source: DataSourceHandle,
   block_size: u32,
-  primary_header: GptHeader,
-  backup_header: GptHeader,
+  active_header_location: GptHeaderLocation,
+  primary_header: Option<GptHeader>,
+  backup_header: Option<GptHeader>,
   volumes: Vec<VolumeRecord>,
   partitions: Vec<GptPartitionInfo>,
 }
@@ -21,7 +31,8 @@ pub struct GptVolumeSystem {
 impl GptVolumeSystem {
   /// Create a new open GPT volume system.
   pub fn new(
-    source: DataSourceHandle, block_size: u32, primary_header: GptHeader, backup_header: GptHeader,
+    source: DataSourceHandle, block_size: u32, active_header_location: GptHeaderLocation,
+    primary_header: Option<GptHeader>, backup_header: Option<GptHeader>,
     partitions: Vec<GptPartitionInfo>,
   ) -> Self {
     let volumes = partitions
@@ -32,6 +43,7 @@ impl GptVolumeSystem {
     Self {
       source,
       block_size,
+      active_header_location,
       primary_header,
       backup_header,
       volumes,
@@ -39,19 +51,35 @@ impl GptVolumeSystem {
     }
   }
 
-  /// Return the parsed primary header.
+  /// Return which header was used to open the volume system.
+  pub fn active_header_location(&self) -> GptHeaderLocation {
+    self.active_header_location
+  }
+
+  /// Return the active header used for parsing.
   pub fn header(&self) -> &GptHeader {
-    &self.primary_header
+    match self.active_header_location {
+      GptHeaderLocation::Primary => self
+        .primary_header
+        .as_ref()
+        .expect("primary header missing"),
+      GptHeaderLocation::Backup => self.backup_header.as_ref().expect("backup header missing"),
+    }
+  }
+
+  /// Return the parsed primary header.
+  pub fn primary_header(&self) -> Option<&GptHeader> {
+    self.primary_header.as_ref()
   }
 
   /// Return the parsed backup header.
-  pub fn backup_header(&self) -> &GptHeader {
-    &self.backup_header
+  pub fn backup_header(&self) -> Option<&GptHeader> {
+    self.backup_header.as_ref()
   }
 
   /// Return the GPT disk GUID.
   pub fn disk_guid(&self) -> GptGuid {
-    self.primary_header.disk_guid
+    self.header().disk_guid
   }
 
   /// Return the parsed GPT partition metadata.

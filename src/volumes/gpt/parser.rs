@@ -5,10 +5,16 @@ use super::{
   entry::{GptPartitionEntry, GptPartitionInfo},
   header::GptHeader,
   integrity::{validate_entry_array_crc, validate_header_crc, validate_header_pair},
-  system::GptVolumeSystem,
+  system::{GptHeaderLocation, GptVolumeSystem},
   validation::validate_layout,
 };
 use crate::{DataSource, DataSourceHandle, Error, Result, volumes::mbr::MbrPartitionEntry};
+
+#[derive(Debug)]
+struct GptCandidate {
+  header: GptHeader,
+  partitions: Vec<GptPartitionInfo>,
+}
 
 pub(super) fn open(source: DataSourceHandle) -> Result<GptVolumeSystem> {
   for block_size in constants::SUPPORTED_BLOCK_SIZES {
@@ -27,31 +33,90 @@ pub(super) fn open_with_block_size(
 ) -> Result<GptVolumeSystem> {
   validate_protective_mbr(source.as_ref())?;
 
-  let (primary_header, primary_header_block) =
-    read_header_block(source.as_ref(), block_size, constants::PRIMARY_HEADER_LBA)?;
-  validate_header_crc(&primary_header_block, &primary_header)?;
+  let primary_candidate = read_candidate(source.as_ref(), block_size, GptHeaderLocation::Primary);
+  let backup_candidate = read_candidate(source.as_ref(), block_size, GptHeaderLocation::Backup);
 
-  let primary_entry_array = read_entry_array(source.as_ref(), block_size, &primary_header)?;
-  validate_entry_array_crc(&primary_entry_array, primary_header.entry_array_crc32)?;
-  let partitions = parse_partitions(&primary_entry_array, block_size, &primary_header)?;
+  match (primary_candidate, backup_candidate) {
+    (Ok(primary), Ok(backup)) => {
+      if validate_header_pair(&primary.header, &backup.header).is_ok() {
+        Ok(GptVolumeSystem::new(
+          source,
+          block_size,
+          GptHeaderLocation::Primary,
+          Some(primary.header),
+          Some(backup.header),
+          primary.partitions,
+        ))
+      } else {
+        Ok(GptVolumeSystem::new(
+          source,
+          block_size,
+          GptHeaderLocation::Primary,
+          Some(primary.header),
+          None,
+          primary.partitions,
+        ))
+      }
+    }
+    (Ok(primary), Err(_)) => Ok(GptVolumeSystem::new(
+      source,
+      block_size,
+      GptHeaderLocation::Primary,
+      Some(primary.header),
+      None,
+      primary.partitions,
+    )),
+    (Err(_), Ok(backup)) => Ok(GptVolumeSystem::new(
+      source,
+      block_size,
+      GptHeaderLocation::Backup,
+      None,
+      Some(backup.header),
+      backup.partitions,
+    )),
+    (Err(_primary_error), Err(_backup_error)) => Err(Error::InvalidFormat(
+      "unable to open a valid primary or backup gpt header".to_string(),
+    )),
+  }
+}
 
-  let (backup_header, backup_header_block) =
-    read_header_block(source.as_ref(), block_size, primary_header.backup_lba)?;
-  validate_header_crc(&backup_header_block, &backup_header)?;
-  validate_header_pair(&primary_header, &backup_header)?;
+fn read_candidate(
+  source: &dyn DataSource, block_size: u32, location: GptHeaderLocation,
+) -> Result<GptCandidate> {
+  let source_size = source.size()?;
+  let expected_current_lba = match location {
+    GptHeaderLocation::Primary => constants::PRIMARY_HEADER_LBA,
+    GptHeaderLocation::Backup => last_lba(source_size, block_size)?,
+  };
+  let (header, header_block) = read_header_block(source, block_size, expected_current_lba)?;
+  validate_header_crc(&header_block, &header)?;
 
-  let backup_entry_array = read_entry_array(source.as_ref(), block_size, &backup_header)?;
-  validate_entry_array_crc(&backup_entry_array, backup_header.entry_array_crc32)?;
+  let entry_array = read_entry_array(source, block_size, &header)?;
+  validate_entry_array_crc(&entry_array, header.entry_array_crc32)?;
+  let partitions = parse_partitions(&entry_array, block_size, &header)?;
 
-  validate_layout(source.size()?, block_size, &primary_header, &partitions)?;
-
-  Ok(GptVolumeSystem::new(
-    source,
+  validate_layout(
+    source_size,
     block_size,
-    primary_header,
-    backup_header,
-    partitions,
-  ))
+    expected_current_lba,
+    &header,
+    &partitions,
+  )?;
+
+  Ok(GptCandidate { header, partitions })
+}
+
+fn last_lba(source_size: u64, block_size: u32) -> Result<u64> {
+  let block_size = u64::from(block_size);
+  if source_size < block_size {
+    return Err(Error::InvalidFormat(
+      "source is too small to hold a gpt backup header".to_string(),
+    ));
+  }
+  let total_blocks = source_size / block_size;
+  total_blocks
+    .checked_sub(1)
+    .ok_or_else(|| Error::InvalidFormat("source does not contain a full gpt block".to_string()))
 }
 
 fn read_header_block(
@@ -133,4 +198,14 @@ fn validate_protective_mbr(source: &dyn DataSource) -> Result<()> {
   }
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn computes_last_lba_for_the_block_size() {
+    assert_eq!(last_lba(4096 * 64, 4096).unwrap(), 63);
+  }
 }

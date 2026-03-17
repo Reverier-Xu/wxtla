@@ -48,7 +48,7 @@ mod tests {
   use super::*;
   use crate::{
     DataSource, Error, Result,
-    volumes::gpt::{LINUX_FILESYSTEM, MICROSOFT_BASIC_DATA, integrity},
+    volumes::gpt::{GptHeaderLocation, LINUX_FILESYSTEM, MICROSOFT_BASIC_DATA, integrity},
   };
 
   const TEST_DISK_GUID: [u8; 16] = [
@@ -220,6 +220,7 @@ mod tests {
     let system = GptDriver::open(sample_source("gpt/gpt.raw")).unwrap();
 
     assert_eq!(system.block_size(), 512);
+    assert_eq!(system.active_header_location(), GptHeaderLocation::Primary);
     assert_eq!(system.partitions().len(), 2);
     assert_eq!(
       system.partitions()[0].record.name.as_deref(),
@@ -235,7 +236,7 @@ mod tests {
       system.disk_guid().to_string(),
       "b182deb3-9c86-4892-9e88-9297a4909855"
     );
-    assert_eq!(system.backup_header().current_lba, 8191);
+    assert_eq!(system.backup_header().unwrap().current_lba, 8191);
   }
 
   #[test]
@@ -270,9 +271,11 @@ mod tests {
     let mut disk = synthetic_gpt(512);
     disk[512 + 16] ^= 0xFF;
 
-    let result = GptDriver::open(synthetic_source(disk));
+    let system = GptDriver::open(synthetic_source(disk)).unwrap();
 
-    assert!(matches!(result, Err(Error::InvalidFormat(_))));
+    assert_eq!(system.active_header_location(), GptHeaderLocation::Backup);
+    assert!(system.primary_header().is_none());
+    assert!(system.backup_header().is_some());
   }
 
   #[test]
@@ -285,9 +288,11 @@ mod tests {
     let backup_crc32 = integrity::crc32(&header_crc_input(backup_header));
     backup_header[16..20].copy_from_slice(&backup_crc32.to_le_bytes());
 
-    let result = GptDriver::open(synthetic_source(disk));
+    let system = GptDriver::open(synthetic_source(disk)).unwrap();
 
-    assert!(matches!(result, Err(Error::InvalidFormat(_))));
+    assert_eq!(system.active_header_location(), GptHeaderLocation::Primary);
+    assert!(system.primary_header().is_some());
+    assert!(system.backup_header().is_none());
   }
 
   #[test]
@@ -299,5 +304,30 @@ mod tests {
     let system = GptDriver::open(synthetic_source(disk)).unwrap();
 
     assert_eq!(system.partitions().len(), 1);
+  }
+
+  #[test]
+  fn opens_from_backup_when_primary_header_signature_is_missing() {
+    let mut disk = synthetic_gpt(512);
+    disk[512..520].fill(0);
+
+    let system = GptDriver::open(synthetic_source(disk)).unwrap();
+
+    assert_eq!(system.active_header_location(), GptHeaderLocation::Backup);
+    assert!(system.primary_header().is_none());
+    assert!(system.backup_header().is_some());
+    assert_eq!(system.partitions().len(), 1);
+  }
+
+  #[test]
+  fn rejects_when_both_headers_are_corrupted() {
+    let mut disk = synthetic_gpt(512);
+    disk[512..520].fill(0);
+    let backup_header_offset = disk.len() - 512;
+    disk[backup_header_offset..backup_header_offset + 8].fill(0);
+
+    let result = GptDriver::open(synthetic_source(disk));
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
 }

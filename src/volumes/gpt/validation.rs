@@ -4,17 +4,20 @@ use super::{entry::GptPartitionInfo, header::GptHeader};
 use crate::{Error, Result};
 
 pub(super) fn validate_layout(
-  source_size: u64, block_size: u32, header: &GptHeader, partitions: &[GptPartitionInfo],
+  source_size: u64, block_size: u32, expected_current_lba: u64, header: &GptHeader,
+  partitions: &[GptPartitionInfo],
 ) -> Result<()> {
-  validate_header(source_size, block_size, header)?;
+  validate_header(source_size, block_size, expected_current_lba, header)?;
   validate_partitions(source_size, block_size, header, partitions)?;
   Ok(())
 }
 
-fn validate_header(source_size: u64, block_size: u32, header: &GptHeader) -> Result<()> {
-  if header.current_lba != 1 {
+fn validate_header(
+  source_size: u64, block_size: u32, expected_current_lba: u64, header: &GptHeader,
+) -> Result<()> {
+  if header.current_lba != expected_current_lba {
     return Err(Error::InvalidFormat(format!(
-      "gpt primary header is at unexpected lba {}",
+      "gpt header is at unexpected lba {}",
       header.current_lba
     )));
   }

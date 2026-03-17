@@ -15,7 +15,7 @@ pub use driver::GptDriver;
 pub use entry::{GptPartitionEntry, GptPartitionInfo};
 pub use guid::GptGuid;
 pub use header::GptHeader;
-pub use system::GptVolumeSystem;
+pub use system::{GptHeaderLocation, GptVolumeSystem};
 pub use type_guids::{
   BIOS_BOOT, EFI_SYSTEM, LINUX_FILESYSTEM, MICROSOFT_BASIC_DATA, MICROSOFT_RESERVED,
 };
