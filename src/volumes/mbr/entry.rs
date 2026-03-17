@@ -1,8 +1,9 @@
 //! MBR partition entry parsing and metadata.
 
 use super::constants::{
-  PARTITION_TYPE_EMPTY, PARTITION_TYPE_EXTENDED_CHS, PARTITION_TYPE_EXTENDED_LBA,
-  PARTITION_TYPE_EXTENDED_LINUX, PARTITION_TYPE_GPT_PROTECTIVE,
+  PARTITION_TYPE_EMPTY, PARTITION_TYPE_EXTENDED_CHS, PARTITION_TYPE_EXTENDED_HIDDEN_CHS,
+  PARTITION_TYPE_EXTENDED_HIDDEN_LBA, PARTITION_TYPE_EXTENDED_LBA, PARTITION_TYPE_EXTENDED_LINUX,
+  PARTITION_TYPE_GPT_PROTECTIVE,
 };
 use crate::{
   Error, Result,
@@ -36,8 +37,15 @@ impl MbrPartitionEntry {
       )));
     }
 
+    let boot_indicator = data[0];
+    if boot_indicator != 0x00 && boot_indicator != 0x80 {
+      return Err(Error::InvalidFormat(format!(
+        "mbr partition entry has invalid boot indicator: 0x{boot_indicator:02x}"
+      )));
+    }
+
     Ok(Self {
-      boot_indicator: data[0],
+      boot_indicator,
       start_chs: [data[1], data[2], data[3]],
       partition_type: data[4],
       end_chs: [data[5], data[6], data[7]],
@@ -60,7 +68,11 @@ impl MbrPartitionEntry {
   pub fn is_extended(self) -> bool {
     matches!(
       self.partition_type,
-      PARTITION_TYPE_EXTENDED_CHS | PARTITION_TYPE_EXTENDED_LBA | PARTITION_TYPE_EXTENDED_LINUX
+      PARTITION_TYPE_EXTENDED_CHS
+        | PARTITION_TYPE_EXTENDED_LBA
+        | PARTITION_TYPE_EXTENDED_LINUX
+        | PARTITION_TYPE_EXTENDED_HIDDEN_CHS
+        | PARTITION_TYPE_EXTENDED_HIDDEN_LBA
     )
   }
 
@@ -194,5 +206,26 @@ mod tests {
     assert_eq!(extended.primary_role(), VolumeRole::ExtendedContainer);
     assert!(protective.is_protective());
     assert_eq!(protective.primary_role(), VolumeRole::Protective);
+  }
+
+  #[test]
+  fn classifies_hidden_extended_entries() {
+    let extended = MbrPartitionEntry::parse(&[
+      0x00, 0x00, 0x00, 0x00, 0xC5, 0, 0, 0, 0x34, 0x12, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+    ])
+    .unwrap();
+
+    assert!(extended.is_extended());
+    assert_eq!(extended.primary_role(), VolumeRole::ExtendedContainer);
+  }
+
+  #[test]
+  fn rejects_invalid_boot_indicators() {
+    let result = MbrPartitionEntry::parse(&[
+      0x7F, 0x20, 0x21, 0x00, 0x07, 0xDF, 0x13, 0x0C, 0x00, 0x08, 0x00, 0x00, 0x00, 0x20, 0x03,
+      0x00,
+    ]);
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
 }

@@ -8,6 +8,7 @@ mod header;
 mod integrity;
 mod parser;
 mod system;
+mod type_guids;
 mod validation;
 
 pub use driver::GptDriver;
@@ -15,6 +16,9 @@ pub use entry::{GptPartitionEntry, GptPartitionInfo};
 pub use guid::GptGuid;
 pub use header::GptHeader;
 pub use system::GptVolumeSystem;
+pub use type_guids::{
+  BIOS_BOOT, EFI_SYSTEM, LINUX_FILESYSTEM, MICROSOFT_BASIC_DATA, MICROSOFT_RESERVED,
+};
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,

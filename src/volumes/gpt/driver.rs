@@ -46,11 +46,11 @@ mod tests {
   use std::{path::Path, sync::Arc};
 
   use super::*;
-  use crate::{DataSource, Error, Result, volumes::gpt::integrity};
+  use crate::{
+    DataSource, Error, Result,
+    volumes::gpt::{LINUX_FILESYSTEM, MICROSOFT_BASIC_DATA, integrity},
+  };
 
-  const LINUX_FILESYSTEM_GUID: [u8; 16] = [
-    0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
-  ];
   const TEST_DISK_GUID: [u8; 16] = [
     0x7A, 0x65, 0x6E, 0xE8, 0x40, 0xD8, 0x09, 0x4C, 0xAF, 0xE3, 0xA1, 0xA5, 0xF6, 0x65, 0xCF, 0x44,
   ];
@@ -169,7 +169,7 @@ mod tests {
     write_entry(
       &mut disk,
       primary_entries_offset,
-      LINUX_FILESYSTEM_GUID,
+      LINUX_FILESYSTEM.to_le_bytes(),
       [1; 16],
       40,
       47,
@@ -225,10 +225,12 @@ mod tests {
       system.partitions()[0].record.name.as_deref(),
       Some("Linux filesystem")
     );
+    assert_eq!(system.partitions()[0].type_guid, LINUX_FILESYSTEM);
     assert_eq!(
       system.partitions()[1].record.name.as_deref(),
       Some("Microsoft basic data")
     );
+    assert_eq!(system.partitions()[1].type_guid, MICROSOFT_BASIC_DATA);
     assert_eq!(
       system.disk_guid().to_string(),
       "b182deb3-9c86-4892-9e88-9297a4909855"

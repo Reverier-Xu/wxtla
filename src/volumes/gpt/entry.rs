@@ -1,9 +1,9 @@
 //! GPT partition-entry parsing and metadata.
 
-use super::{constants, guid::GptGuid};
+use super::{constants, guid::GptGuid, type_guids};
 use crate::{
   Error, Result,
-  volumes::{VolumeRecord, VolumeRole, VolumeSpan},
+  volumes::{VolumeRecord, VolumeSpan},
 };
 
 /// Raw GPT partition entry.
@@ -55,7 +55,7 @@ impl GptPartitionEntry {
 
   /// Return `true` when the entry is unused.
   pub fn is_unused(&self) -> bool {
-    self.type_guid.is_nil()
+    self.type_guid == type_guids::UNUSED
   }
 
   /// Convert the entry into a byte span for the given block size.
@@ -117,7 +117,11 @@ pub struct GptPartitionInfo {
 impl GptPartitionInfo {
   /// Build partition metadata from a parsed GPT entry.
   pub fn from_entry(entry: GptPartitionEntry, block_size: u32) -> Result<Self> {
-    let mut record = VolumeRecord::new(entry.index, entry.span(block_size)?, VolumeRole::Primary);
+    let mut record = VolumeRecord::new(
+      entry.index,
+      entry.span(block_size)?,
+      type_guids::volume_role_for_type_guid(entry.type_guid),
+    );
     if !entry.name.is_empty() {
       record = record.with_name(entry.name.clone());
     }
@@ -158,6 +162,10 @@ fn decode_name(data: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::volumes::{
+    VolumeRole,
+    gpt::{LINUX_FILESYSTEM, MICROSOFT_BASIC_DATA},
+  };
 
   #[test]
   fn parses_entry_fields_and_name() {
@@ -188,5 +196,42 @@ mod tests {
     assert_eq!(entry.first_lba, 2048);
     assert_eq!(entry.last_lba, 2175);
     assert_eq!(entry.name, "Linux filesystem");
+  }
+
+  #[test]
+  fn classifies_known_partition_type_roles() {
+    let linux_entry = GptPartitionEntry {
+      index: 0,
+      type_guid: LINUX_FILESYSTEM,
+      unique_guid: GptGuid::NIL,
+      first_lba: 40,
+      last_lba: 47,
+      attribute_flags: 0,
+      name: String::new(),
+    };
+    let microsoft_basic_data_entry = GptPartitionEntry {
+      index: 1,
+      type_guid: MICROSOFT_BASIC_DATA,
+      unique_guid: GptGuid::NIL,
+      first_lba: 48,
+      last_lba: 55,
+      attribute_flags: 0,
+      name: String::new(),
+    };
+
+    assert_eq!(
+      GptPartitionInfo::from_entry(linux_entry, 512)
+        .unwrap()
+        .record
+        .role,
+      VolumeRole::Primary
+    );
+    assert_eq!(
+      GptPartitionInfo::from_entry(microsoft_basic_data_entry, 512)
+        .unwrap()
+        .record
+        .role,
+      VolumeRole::Primary
+    );
   }
 }

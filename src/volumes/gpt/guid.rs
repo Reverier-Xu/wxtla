@@ -22,6 +22,16 @@ impl GptGuid {
     part4: [0; 8],
   };
 
+  /// Construct a GUID from already-normalized fields.
+  pub const fn from_fields(part1: u32, part2: u16, part3: u16, part4: [u8; 8]) -> Self {
+    Self {
+      part1,
+      part2,
+      part3,
+      part4,
+    }
+  }
+
   /// Parse a GPT GUID from 16 little-endian on-disk bytes.
   pub fn from_le_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != 16 {
@@ -39,6 +49,32 @@ impl GptGuid {
         data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
       ],
     })
+  }
+
+  /// Return the on-disk little-endian byte representation of this GUID.
+  pub const fn to_le_bytes(self) -> [u8; 16] {
+    let part1 = self.part1.to_le_bytes();
+    let part2 = self.part2.to_le_bytes();
+    let part3 = self.part3.to_le_bytes();
+
+    [
+      part1[0],
+      part1[1],
+      part1[2],
+      part1[3],
+      part2[0],
+      part2[1],
+      part3[0],
+      part3[1],
+      self.part4[0],
+      self.part4[1],
+      self.part4[2],
+      self.part4[3],
+      self.part4[4],
+      self.part4[5],
+      self.part4[6],
+      self.part4[7],
+    ]
   }
 
   /// Return `true` when the GUID is nil.
