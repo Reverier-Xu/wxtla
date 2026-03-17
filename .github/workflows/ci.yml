@@ -1,4 +1,4 @@
-name: ci
+name: quality_check
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: install rust toolchain
         uses: dtolnay/rust-toolchain@stable
