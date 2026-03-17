@@ -1,4 +1,19 @@
-//! GPT volume-system descriptor and probe registration.
+//! GPT volume-system driver and probe registration.
+
+mod constants;
+mod driver;
+mod entry;
+mod guid;
+mod header;
+mod parser;
+mod system;
+mod validation;
+
+pub use driver::GptDriver;
+pub use entry::{GptPartitionEntry, GptPartitionInfo};
+pub use guid::GptGuid;
+pub use header::GptHeader;
+pub use system::GptVolumeSystem;
 
 use crate::{
   FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
@@ -13,13 +28,11 @@ inventory::submit! {
   crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
 }
 
-const MAGIC: &[u8] = b"EFI PART";
-
 fn register_probes(registry: &mut ProbeRegistry) {
   registry.register(OffsetMagicProbe::new(
     DESCRIPTOR,
-    512,
-    MAGIC,
+    u64::from(constants::DEFAULT_BLOCK_SIZE),
+    constants::HEADER_SIGNATURE,
     ProbeConfidence::Exact,
     "gpt header found at lba1",
   ));
