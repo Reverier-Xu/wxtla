@@ -1,0 +1,255 @@
+//! Parser-facing resolution of related byte sources.
+
+use std::{fmt, sync::Arc};
+
+use super::{DataSource, Error, Result};
+
+/// Shared handle to a data source.
+pub type DataSourceHandle = Arc<dyn DataSource>;
+
+/// Lexical relative path used to look up parser-related sources.
+///
+/// This path type is host-agnostic. It models logical components such as
+/// sibling image segments, bundle bands, or backing files without embedding any
+/// platform path behavior into the parser core.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct RelatedPathBuf {
+  components: Vec<RelatedPathComponent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum RelatedPathComponent {
+  Current,
+  Parent,
+  Normal(String),
+}
+
+impl RelatedPathBuf {
+  /// Create an empty relative path.
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Parse a lexical relative path using `/` or `\` separators.
+  ///
+  /// # Example
+  ///
+  /// ```rust
+  /// use wxtla::RelatedPathBuf;
+  ///
+  /// let path = RelatedPathBuf::from_relative_path("bands/0").unwrap();
+  /// assert_eq!(path.to_string(), "bands/0");
+  /// ```
+  pub fn from_relative_path(path: &str) -> Result<Self> {
+    if path.is_empty() {
+      return Ok(Self::new());
+    }
+
+    if path.starts_with('/') || path.starts_with('\\') {
+      return Err(Error::InvalidSourceReference(format!(
+        "related path must be relative: {path}"
+      )));
+    }
+
+    let mut parsed = Self::new();
+    for component in path.split(['/', '\\']) {
+      if component.is_empty() {
+        return Err(Error::InvalidSourceReference(format!(
+          "related path contains an empty component: {path}"
+        )));
+      }
+
+      match component {
+        "." => {
+          parsed.push_current();
+        }
+        ".." => {
+          parsed.push_parent();
+        }
+        normal => {
+          parsed.push_normal(normal)?;
+        }
+      }
+    }
+
+    Ok(parsed)
+  }
+
+  /// Append a `.` path component.
+  pub fn push_current(&mut self) -> &mut Self {
+    self.components.push(RelatedPathComponent::Current);
+    self
+  }
+
+  /// Append a `..` path component.
+  pub fn push_parent(&mut self) -> &mut Self {
+    self.components.push(RelatedPathComponent::Parent);
+    self
+  }
+
+  /// Append a normal lexical path component.
+  pub fn push_normal(&mut self, component: impl Into<String>) -> Result<&mut Self> {
+    let component = component.into();
+    validate_normal_component(&component)?;
+    self
+      .components
+      .push(RelatedPathComponent::Normal(component));
+    Ok(self)
+  }
+
+  /// Return `true` when the path has no components.
+  pub fn is_empty(&self) -> bool {
+    self.components.is_empty()
+  }
+
+  /// Iterate over the path components as strings.
+  pub fn components(&self) -> impl Iterator<Item = &str> {
+    self.components.iter().map(RelatedPathComponent::as_str)
+  }
+
+  /// Join two lexical related paths.
+  pub fn join(&self, other: &Self) -> Self {
+    let mut joined = self.clone();
+    joined.components.extend(other.components.iter().cloned());
+    joined
+  }
+}
+
+impl fmt::Display for RelatedPathBuf {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if self.components.is_empty() {
+      return write!(f, ".");
+    }
+
+    let mut first = true;
+    for component in &self.components {
+      if !first {
+        write!(f, "/")?;
+      }
+      first = false;
+      write!(f, "{}", component.as_str())?;
+    }
+    Ok(())
+  }
+}
+
+impl RelatedPathComponent {
+  fn as_str(&self) -> &str {
+    match self {
+      Self::Current => ".",
+      Self::Parent => "..",
+      Self::Normal(component) => component.as_str(),
+    }
+  }
+}
+
+fn validate_normal_component(component: &str) -> Result<()> {
+  if component.is_empty() {
+    return Err(Error::InvalidSourceReference(
+      "related path component must not be empty".to_string(),
+    ));
+  }
+
+  if component == "." || component == ".." {
+    return Err(Error::InvalidSourceReference(format!(
+      "special path component must use explicit helpers: {component}"
+    )));
+  }
+
+  if component.contains(['/', '\\', '\0']) {
+    return Err(Error::InvalidSourceReference(format!(
+      "invalid related path component: {component}"
+    )));
+  }
+
+  Ok(())
+}
+
+/// Why a parser is asking for another source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RelatedSourcePurpose {
+  /// A backing image referenced by another image layer.
+  BackingFile,
+  /// A numbered or named segment in a multipart image set.
+  Segment,
+  /// A sidecar descriptor or metadata file.
+  Descriptor,
+  /// A sparse bundle band.
+  Band,
+  /// A file extent or extent-like child object.
+  Extent,
+  /// A generic metadata resource.
+  Metadata,
+  /// Any parser-specific auxiliary source.
+  Auxiliary,
+}
+
+/// A parser request for a related source.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RelatedSourceRequest {
+  /// Why the parser is requesting the source.
+  pub purpose: RelatedSourcePurpose,
+  /// Lexical path inside the resolver's own scope.
+  pub path: RelatedPathBuf,
+}
+
+impl RelatedSourceRequest {
+  /// Create a new related-source request.
+  ///
+  /// # Example
+  ///
+  /// ```rust
+  /// use wxtla::{RelatedPathBuf, RelatedSourcePurpose, RelatedSourceRequest};
+  ///
+  /// let request = RelatedSourceRequest::new(
+  ///   RelatedSourcePurpose::Band,
+  ///   RelatedPathBuf::from_relative_path("bands/0").unwrap(),
+  /// );
+  /// assert_eq!(request.path.to_string(), "bands/0");
+  /// ```
+  pub fn new(purpose: RelatedSourcePurpose, path: RelatedPathBuf) -> Self {
+    Self { purpose, path }
+  }
+}
+
+/// Adapter interface for resolving parser-related sources.
+pub trait RelatedSourceResolver: Send + Sync {
+  /// Resolve a parser-related source within the resolver's own scope.
+  fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>>;
+
+  /// Return a stable label for tracing and diagnostics.
+  fn telemetry_name(&self) -> &'static str {
+    std::any::type_name::<Self>()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn related_path_parses_relative_components() {
+    let path = RelatedPathBuf::from_relative_path("bands/../bands/0").unwrap();
+
+    assert_eq!(
+      path.components().collect::<Vec<_>>(),
+      vec!["bands", "..", "bands", "0"]
+    );
+    assert_eq!(path.to_string(), "bands/../bands/0");
+  }
+
+  #[test]
+  fn related_path_rejects_absolute_paths() {
+    let error = RelatedPathBuf::from_relative_path("/bands/0").unwrap_err();
+
+    assert!(matches!(error, Error::InvalidSourceReference(_)));
+  }
+
+  #[test]
+  fn related_path_join_preserves_lexical_components() {
+    let left = RelatedPathBuf::from_relative_path("images").unwrap();
+    let right = RelatedPathBuf::from_relative_path("disk/segments").unwrap();
+
+    assert_eq!(left.join(&right).to_string(), "images/disk/segments");
+  }
+}

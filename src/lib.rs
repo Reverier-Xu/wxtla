@@ -2,9 +2,13 @@
 //! and image drivers.
 
 pub mod core;
+pub mod formats;
 
 pub use core::{
-  DataSource, DataSourceCapabilities, DataSourceReadConcurrency, DataSourceReadStats,
-  DataSourceReadStatsSnapshot, DataSourceSeekCost, Error, ObservedDataSource,
-  ProbeCachedDataSource, Result, SharedDataSource, SliceDataSource,
+  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceReadConcurrency,
+  DataSourceReadStats, DataSourceReadStatsSnapshot, DataSourceSeekCost, Error, FormatDescriptor,
+  FormatKind, FormatProbe, ObservedDataSource, ProbeCachedDataSource, ProbeConfidence,
+  ProbeContext, ProbeMatch, ProbeRegistry, ProbeReport, ProbeResult, RelatedPathBuf,
+  RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SharedDataSource,
+  SliceDataSource,
 };

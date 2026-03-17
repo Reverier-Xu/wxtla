@@ -9,9 +9,24 @@ pub enum Error {
   #[error("I/O error: {0}")]
   Io(#[from] std::io::Error),
 
+  /// A read operation reached the end of a source before enough bytes were available.
+  #[error("unexpected end of data at offset {offset}: expected {expected} bytes, got {actual}")]
+  UnexpectedEof {
+    /// Byte offset where the short read began.
+    offset: u64,
+    /// Number of bytes that were requested.
+    expected: usize,
+    /// Number of bytes that were actually read.
+    actual: usize,
+  },
+
   /// A requested byte range could not be represented or satisfied.
   #[error("invalid data source range: {0}")]
   InvalidRange(String),
+
+  /// A parser requested an invalid related-source reference.
+  #[error("invalid source reference: {0}")]
+  InvalidSourceReference(String),
 }
 
 /// Result alias used by the crate's core infrastructure.

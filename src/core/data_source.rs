@@ -29,6 +29,33 @@ pub trait DataSource: Send + Sync {
     std::any::type_name::<Self>()
   }
 
+  /// Read exactly `buf.len()` bytes from `offset`.
+  fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+    let mut total_read = 0usize;
+    while total_read < buf.len() {
+      let chunk_offset = offset
+        .checked_add(total_read as u64)
+        .ok_or_else(|| Error::InvalidRange("data source offset overflow".to_string()))?;
+      let read = self.read_at(chunk_offset, &mut buf[total_read..])?;
+      if read == 0 {
+        return Err(Error::UnexpectedEof {
+          offset,
+          expected: buf.len(),
+          actual: total_read,
+        });
+      }
+      total_read += read;
+    }
+    Ok(())
+  }
+
+  /// Read `len` bytes from `offset` into a new buffer.
+  fn read_bytes_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    self.read_exact_at(offset, &mut buf)?;
+    Ok(buf)
+  }
+
   /// Materialize the full source into memory.
   fn read_all(&self) -> Result<Vec<u8>> {
     let size = usize::try_from(self.size()?).map_err(|_| {

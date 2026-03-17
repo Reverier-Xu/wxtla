@@ -2,6 +2,8 @@
 
 mod data_source;
 mod error;
+mod probe;
+mod resolver;
 
 pub use data_source::{
   DataSource, DataSourceCapabilities, DataSourceReadConcurrency, DataSourceReadStats,
@@ -9,3 +11,11 @@ pub use data_source::{
   SharedDataSource, SliceDataSource,
 };
 pub use error::{Error, Result};
+pub use probe::{
+  FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
+  ProbeRegistry, ProbeReport, ProbeResult,
+};
+pub use resolver::{
+  DataSourceHandle, RelatedPathBuf, RelatedSourcePurpose, RelatedSourceRequest,
+  RelatedSourceResolver,
+};

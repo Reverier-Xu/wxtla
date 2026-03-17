@@ -1,0 +1,9 @@
+//! Built-in format descriptors and early detection helpers.
+
+mod builtins;
+
+pub use builtins::{
+  APM_VOLUME_SYSTEM, EWF_IMAGE, EXT_FILESYSTEM, FAT_FILESYSTEM, GPT_VOLUME_SYSTEM, HFS_FILESYSTEM,
+  HFS_PLUS_FILESYSTEM, MBR_VOLUME_SYSTEM, NTFS_FILESYSTEM, QCOW_IMAGE, SPARSE_IMAGE, UDIF_IMAGE,
+  VHD_IMAGE, VHDX_IMAGE, VMDK_IMAGE, builtin_probe_registry,
+};
