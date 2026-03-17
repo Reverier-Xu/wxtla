@@ -5,6 +5,6 @@ pub mod core;
 
 pub use core::{
   DataSource, DataSourceCapabilities, DataSourceReadConcurrency, DataSourceReadStats,
-  DataSourceReadStatsSnapshot, DataSourceSeekCost, Error, LocalDataSource, ObservedDataSource,
-  ProbeCachedDataSource, Result, SharedDataSource, SliceDataSource, open_local_file,
+  DataSourceReadStatsSnapshot, DataSourceSeekCost, Error, ObservedDataSource,
+  ProbeCachedDataSource, Result, SharedDataSource, SliceDataSource,
 };

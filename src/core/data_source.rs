@@ -1,8 +1,7 @@
-//! Concurrent read abstractions and helpers for parser backends.
+//! Concurrent, host-agnostic read abstractions and helpers for parser backends.
 
 use std::{
   collections::HashMap,
-  path::Path,
   sync::{Arc, Mutex, RwLock},
   time::Instant,
 };
@@ -10,6 +9,9 @@ use std::{
 use super::{Error, Result};
 
 /// Raw byte-level access to a file, block device, or virtual blob.
+///
+/// This trait is intentionally path-agnostic. Host path discovery and related
+/// resource resolution belong in adapter layers above the parser core.
 pub trait DataSource: Send + Sync {
   /// Read bytes starting at `offset` into `buf`.
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize>;
@@ -25,11 +27,6 @@ pub trait DataSource: Send + Sync {
   /// Return a stable label for tracing and diagnostics.
   fn telemetry_name(&self) -> &'static str {
     std::any::type_name::<Self>()
-  }
-
-  /// Return the backing host path when one exists.
-  fn origin_path(&self) -> Option<&Path> {
-    None
   }
 
   /// Materialize the full source into memory.
@@ -165,7 +162,10 @@ struct DataSourceReadStatsState {
 
 impl DataSourceReadStats {
   fn record_read(&self, offset: u64, len: usize, started_at: Instant) {
-    let mut state = self.inner.lock().unwrap();
+    let mut state = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     state.read_count = state.read_count.saturating_add(1);
     state.read_bytes = state.read_bytes.saturating_add(len as u64);
     state.max_read_size = state.max_read_size.max(len);
@@ -187,7 +187,10 @@ impl DataSourceReadStats {
 
   /// Capture the current statistics snapshot.
   pub fn snapshot(&self) -> DataSourceReadStatsSnapshot {
-    let state = self.inner.lock().unwrap();
+    let state = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     let average_read_size = if state.read_count == 0 {
       0
     } else {
@@ -258,10 +261,6 @@ impl DataSource for ObservedDataSource {
   fn telemetry_name(&self) -> &'static str {
     self.inner.telemetry_name()
   }
-
-  fn origin_path(&self) -> Option<&Path> {
-    self.inner.origin_path()
-  }
 }
 
 /// Thin wrapper that turns an `Arc<dyn DataSource>` back into a `DataSource`.
@@ -291,10 +290,6 @@ impl DataSource for SharedDataSource {
 
   fn telemetry_name(&self) -> &'static str {
     self.inner.telemetry_name()
-  }
-
-  fn origin_path(&self) -> Option<&Path> {
-    self.inner.origin_path()
   }
 }
 
@@ -343,10 +338,6 @@ impl DataSource for SliceDataSource {
   fn telemetry_name(&self) -> &'static str {
     self.inner.telemetry_name()
   }
-
-  fn origin_path(&self) -> Option<&Path> {
-    self.inner.origin_path()
-  }
 }
 
 const PROBE_CACHE_WINDOW_SIZE: usize = 4096;
@@ -378,7 +369,13 @@ impl<'a> ProbeCachedDataSource<'a> {
   }
 
   fn read_window(&self, window_offset: u64) -> Result<Arc<[u8]>> {
-    if let Some(window) = self.windows.read().unwrap().get(&window_offset).cloned() {
+    if let Some(window) = self
+      .windows
+      .read()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(&window_offset)
+      .cloned()
+    {
       return Ok(window);
     }
 
@@ -387,7 +384,10 @@ impl<'a> ProbeCachedDataSource<'a> {
     data.truncate(read);
     let window: Arc<[u8]> = data.into();
 
-    let mut cache = self.windows.write().unwrap();
+    let mut cache = self
+      .windows
+      .write()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     let entry = cache.entry(window_offset).or_insert_with(|| window.clone());
     Ok(entry.clone())
   }
@@ -433,10 +433,6 @@ impl DataSource for ProbeCachedDataSource<'_> {
 
   fn telemetry_name(&self) -> &'static str {
     self.inner.telemetry_name()
-  }
-
-  fn origin_path(&self) -> Option<&Path> {
-    self.inner.origin_path()
   }
 }
 

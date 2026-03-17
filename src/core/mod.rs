@@ -2,7 +2,6 @@
 
 mod data_source;
 mod error;
-mod local;
 
 pub use data_source::{
   DataSource, DataSourceCapabilities, DataSourceReadConcurrency, DataSourceReadStats,
@@ -10,4 +9,3 @@ pub use data_source::{
   SharedDataSource, SliceDataSource,
 };
 pub use error::{Error, Result};
-pub use local::{LocalDataSource, open_local_file};
