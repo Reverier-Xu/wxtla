@@ -6,11 +6,14 @@ mod driver;
 mod entry;
 mod parser;
 mod system;
+mod type_identifiers;
+mod validation;
 
 pub use descriptor::{ApmDriverDescriptor, ApmDriverDescriptorEntry};
 pub use driver::ApmDriver;
 pub use entry::{ApmPartitionInfo, ApmPartitionMapEntry};
 pub use system::ApmVolumeSystem;
+pub use type_identifiers::{FREE, HFS, PARTITION_MAP};
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,

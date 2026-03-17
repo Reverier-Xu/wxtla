@@ -5,12 +5,15 @@ use super::{
   descriptor::ApmDriverDescriptor,
   entry::{ApmPartitionInfo, ApmPartitionMapEntry},
   system::ApmVolumeSystem,
+  validation::validate_layout,
 };
 use crate::{DataSource, DataSourceHandle, Result};
 
 pub(super) fn open(source: DataSourceHandle) -> Result<ApmVolumeSystem> {
   let descriptor = ApmDriverDescriptor::read(source.as_ref())?;
   let partitions = read_partition_map(source.as_ref(), descriptor.block_size)?;
+
+  validate_layout(source.size()?, &descriptor, &partitions)?;
 
   Ok(ApmVolumeSystem::new(source, descriptor, partitions))
 }

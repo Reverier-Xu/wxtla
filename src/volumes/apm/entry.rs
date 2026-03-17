@@ -1,9 +1,12 @@
 //! Apple Partition Map partition entry parsing.
 
-use super::constants::{PARTITION_ENTRY_SIZE, PARTITION_MAP_SIGNATURE};
+use super::{
+  constants::{PARTITION_ENTRY_SIZE, PARTITION_MAP_SIGNATURE},
+  type_identifiers,
+};
 use crate::{
   Error, Result,
-  volumes::{VolumeRecord, VolumeRole, VolumeSpan},
+  volumes::{VolumeRecord, VolumeSpan},
 };
 
 /// Parsed APM partition map entry.
@@ -84,7 +87,7 @@ impl ApmPartitionMapEntry {
     let mut record = VolumeRecord::new(
       index,
       VolumeSpan::new(byte_offset, byte_size),
-      VolumeRole::Primary,
+      type_identifiers::volume_role_for_type_identifier(&self.type_identifier),
     );
     if !self.name.is_empty() {
       record = record.with_name(self.name.clone());
