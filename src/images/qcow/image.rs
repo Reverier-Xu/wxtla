@@ -22,6 +22,7 @@ pub struct QcowImage {
   source: DataSourceHandle,
   header: QcowHeader,
   backing_file_name: Option<String>,
+  backing_image: Option<DataSourceHandle>,
   l1_table: Arc<[u64]>,
   l2_cache: QcowCache<Vec<u64>>,
   cluster_cache: QcowCache<Vec<u8>>,
@@ -31,19 +32,54 @@ impl QcowImage {
   /// Open a QCOW image from a single-file source.
   pub fn open(source: DataSourceHandle) -> Result<Self> {
     let parsed = parse(source.clone())?;
-    Self::from_parsed(source, parsed)
+    Self::from_parsed(source, parsed, None)
   }
 
   /// Open a QCOW image using source hints.
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
-    Self::open(source)
+  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+    let parsed = parse(source.clone())?;
+    let backing_image = if let Some(backing_file_name) = parsed.backing_file_name.as_deref() {
+      let resolver = hints.resolver().ok_or_else(|| {
+        Error::InvalidSourceReference(
+          "qcow backing files require a related-source resolver".to_string(),
+        )
+      })?;
+      let identity = hints.source_identity().ok_or_else(|| {
+        Error::InvalidSourceReference(
+          "qcow backing files require a source identity hint".to_string(),
+        )
+      })?;
+      let backing_path = identity.sibling_path(backing_file_name)?;
+      let backing_identity = crate::SourceIdentity::new(backing_path.clone());
+      let backing_source = resolver
+        .resolve(&crate::RelatedSourceRequest::new(
+          crate::RelatedSourcePurpose::BackingFile,
+          backing_path,
+        ))?
+        .ok_or_else(|| {
+          Error::NotFound(format!("missing qcow backing file: {backing_file_name}"))
+        })?;
+      Some(Arc::new(Self::open_with_hints(
+        backing_source,
+        SourceHints::new()
+          .with_resolver(resolver)
+          .with_source_identity(&backing_identity),
+      )?) as DataSourceHandle)
+    } else {
+      None
+    };
+
+    Self::from_parsed(source, parsed, backing_image)
   }
 
-  fn from_parsed(source: DataSourceHandle, parsed: ParsedQcow) -> Result<Self> {
+  fn from_parsed(
+    source: DataSourceHandle, parsed: ParsedQcow, backing_image: Option<DataSourceHandle>,
+  ) -> Result<Self> {
     Ok(Self {
       source,
       header: parsed.header,
       backing_file_name: parsed.backing_file_name,
+      backing_image,
       l1_table: parsed.l1_table,
       l2_cache: QcowCache::new(DEFAULT_L2_CACHE_CAPACITY),
       cluster_cache: QcowCache::new(DEFAULT_CLUSTER_CACHE_CAPACITY),
@@ -168,11 +204,19 @@ impl DataSource for QcowImage {
 
       match self.read_l2_entry(cluster_index)? {
         None => {
-          buf[copied..copied + available].fill(0);
+          if let Some(backing_image) = &self.backing_image {
+            backing_image.read_exact_at(absolute_offset, &mut buf[copied..copied + available])?;
+          } else {
+            buf[copied..copied + available].fill(0);
+          }
         }
         Some(raw_l2_entry) => {
           if raw_l2_entry == 0 {
-            buf[copied..copied + available].fill(0);
+            if let Some(backing_image) = &self.backing_image {
+              backing_image.read_exact_at(absolute_offset, &mut buf[copied..copied + available])?;
+            } else {
+              buf[copied..copied + available].fill(0);
+            }
           } else if (raw_l2_entry & QCOW_OFLAG_COMPRESSED) != 0 {
             return Err(Error::InvalidFormat(
               "compressed qcow clusters are not supported in this stage".to_string(),
@@ -228,9 +272,10 @@ impl Image for QcowImage {
 
 #[cfg(test)]
 mod tests {
-  use std::{path::Path, sync::Arc};
+  use std::{collections::HashMap, path::Path, sync::Arc};
 
   use super::*;
+  use crate::{RelatedSourceRequest, RelatedSourceResolver, SourceIdentity};
 
   struct MemDataSource {
     data: Vec<u8>,
@@ -249,6 +294,16 @@ mod tests {
 
     fn size(&self) -> Result<u64> {
       Ok(self.data.len() as u64)
+    }
+  }
+
+  struct Resolver {
+    files: HashMap<String, DataSourceHandle>,
+  }
+
+  impl RelatedSourceResolver for Resolver {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+      Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
@@ -295,5 +350,115 @@ mod tests {
 
     assert_eq!(&fat16_marker, b"FAT16   ");
     assert_eq!(&fat32_marker, b"FAT32   ");
+  }
+
+  #[test]
+  fn reads_from_a_backing_file_when_overlay_clusters_are_unallocated() {
+    let base_data = repeat_byte(0xAB, 65_536);
+    let base_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_synthetic_qcow(Some(&base_data), None),
+    });
+    let overlay_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_synthetic_qcow(None, Some("base.qcow2")),
+    });
+    let resolver = Resolver {
+      files: HashMap::from([("images/base.qcow2".to_string(), base_source)]),
+    };
+    let identity = SourceIdentity::from_relative_path("images/overlay.qcow2").unwrap();
+
+    let image = QcowImage::open_with_hints(
+      overlay_source,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert_eq!(image.backing_file_name(), Some("base.qcow2"));
+    assert_eq!(image.read_all().unwrap(), base_data);
+  }
+
+  #[test]
+  fn overlay_clusters_override_backing_file_data() {
+    let base_data = repeat_byte(0x10, 65_536);
+    let overlay_data = repeat_byte(0xEF, 65_536);
+    let base_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_synthetic_qcow(Some(&base_data), None),
+    });
+    let overlay_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_synthetic_qcow(Some(&overlay_data), Some("base.qcow2")),
+    });
+    let resolver = Resolver {
+      files: HashMap::from([("images/base.qcow2".to_string(), base_source)]),
+    };
+    let identity = SourceIdentity::from_relative_path("images/overlay.qcow2").unwrap();
+
+    let image = QcowImage::open_with_hints(
+      overlay_source,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert_eq!(image.read_all().unwrap(), overlay_data);
+  }
+
+  fn repeat_byte(byte: u8, size: usize) -> Vec<u8> {
+    vec![byte; size]
+  }
+
+  fn build_synthetic_qcow(cluster_data: Option<&[u8]>, backing_name: Option<&str>) -> Vec<u8> {
+    const CLUSTER_BITS: u32 = 16;
+    const CLUSTER_SIZE: usize = 1 << CLUSTER_BITS;
+    const VIRTUAL_SIZE: u64 = CLUSTER_SIZE as u64;
+    const L1_OFFSET: u64 = 0x0003_0000;
+    const L2_OFFSET: u64 = 0x0004_0000;
+    const DATA_OFFSET: u64 = 0x0005_0000;
+    const REFCOUNT_TABLE_OFFSET: u64 = 0x0001_0000;
+    let mut data = vec![0u8; 0x0006_0000];
+
+    let backing_name_bytes = backing_name.unwrap_or("").as_bytes();
+    data[0..4].copy_from_slice(b"QFI\xfb");
+    data[4..8].copy_from_slice(&3u32.to_be_bytes());
+    if backing_name.is_some() {
+      data[8..16].copy_from_slice(&112u64.to_be_bytes());
+      data[16..20].copy_from_slice(&(backing_name_bytes.len() as u32).to_be_bytes());
+    }
+    data[20..24].copy_from_slice(&CLUSTER_BITS.to_be_bytes());
+    data[24..32].copy_from_slice(&VIRTUAL_SIZE.to_be_bytes());
+    data[32..36].copy_from_slice(&0u32.to_be_bytes());
+    data[36..40].copy_from_slice(&1u32.to_be_bytes());
+    data[40..48].copy_from_slice(&L1_OFFSET.to_be_bytes());
+    data[48..56].copy_from_slice(&REFCOUNT_TABLE_OFFSET.to_be_bytes());
+    data[56..60].copy_from_slice(&1u32.to_be_bytes());
+    data[60..64].copy_from_slice(&0u32.to_be_bytes());
+    data[64..72].copy_from_slice(&0u64.to_be_bytes());
+    data[72..80].copy_from_slice(&0u64.to_be_bytes());
+    data[80..88].copy_from_slice(&0u64.to_be_bytes());
+    data[88..96].copy_from_slice(&0u64.to_be_bytes());
+    data[96..100].copy_from_slice(&4u32.to_be_bytes());
+    data[100..104].copy_from_slice(&112u32.to_be_bytes());
+    data[104] = 0;
+    if backing_name.is_some() {
+      let name_start = 112usize;
+      let name_end = name_start + backing_name_bytes.len();
+      data[name_start..name_end].copy_from_slice(backing_name_bytes);
+    }
+
+    data[L1_OFFSET as usize..L1_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0004_0000u64).to_be_bytes());
+    let l2_entry = if cluster_data.is_some() {
+      0x8000_0000_0005_0000u64
+    } else {
+      0
+    };
+    data[L2_OFFSET as usize..L2_OFFSET as usize + 8].copy_from_slice(&l2_entry.to_be_bytes());
+    if let Some(cluster_data) = cluster_data {
+      data[DATA_OFFSET as usize..DATA_OFFSET as usize + cluster_data.len()]
+        .copy_from_slice(cluster_data);
+    }
+
+    data
   }
 }
