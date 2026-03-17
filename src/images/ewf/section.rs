@@ -4,9 +4,9 @@ use adler2::adler32_slice;
 
 use super::constants::{
   SECTION_DESCRIPTOR_SIZE, SECTION_TYPE_DATA, SECTION_TYPE_DIGEST, SECTION_TYPE_DISK,
-  SECTION_TYPE_DONE, SECTION_TYPE_HASH, SECTION_TYPE_HEADER, SECTION_TYPE_HEADER2,
-  SECTION_TYPE_NEXT, SECTION_TYPE_SECTORS, SECTION_TYPE_TABLE, SECTION_TYPE_TABLE2,
-  SECTION_TYPE_VOLUME,
+  SECTION_TYPE_DONE, SECTION_TYPE_ERROR2, SECTION_TYPE_HASH, SECTION_TYPE_HEADER,
+  SECTION_TYPE_HEADER2, SECTION_TYPE_NEXT, SECTION_TYPE_SECTORS, SECTION_TYPE_TABLE,
+  SECTION_TYPE_TABLE2, SECTION_TYPE_VOLUME,
 };
 use crate::{DataSource, Error, Result};
 
@@ -17,6 +17,7 @@ pub enum EwfSectionKind {
   Digest,
   Disk,
   Done,
+  Error2,
   Hash,
   Header,
   Header2,
@@ -120,6 +121,7 @@ fn section_kind(raw_type: &[u8]) -> EwfSectionKind {
     SECTION_TYPE_DIGEST => EwfSectionKind::Digest,
     SECTION_TYPE_DISK => EwfSectionKind::Disk,
     SECTION_TYPE_DONE => EwfSectionKind::Done,
+    SECTION_TYPE_ERROR2 => EwfSectionKind::Error2,
     SECTION_TYPE_HASH => EwfSectionKind::Hash,
     SECTION_TYPE_HEADER => EwfSectionKind::Header,
     SECTION_TYPE_HEADER2 => EwfSectionKind::Header2,

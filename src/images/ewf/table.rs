@@ -51,9 +51,9 @@ impl EwfTable {
       )
       .and_then(|size| size.checked_add(TABLE_FOOTER_SIZE))
       .ok_or_else(|| Error::InvalidRange("ewf table size overflow".to_string()))?;
-    if data.len() != table_size {
+    if data.len() < table_size {
       return Err(Error::InvalidFormat(format!(
-        "ewf table payload size does not match entry count: expected {table_size}, got {}",
+        "ewf table payload size is smaller than the entry count requires: expected at least {table_size}, got {}",
         data.len()
       )));
     }
@@ -137,5 +137,21 @@ mod tests {
     assert_eq!(table.entries.len(), 2);
     assert!(table.entries[0].is_compressed());
     assert_eq!(table.entries[0].offset(), 0x4C);
+  }
+
+  #[test]
+  fn accepts_inline_chunk_data_after_the_footer() {
+    let mut data = vec![0u8; TABLE_HEADER_SIZE + 8 + TABLE_FOOTER_SIZE + 16];
+    data[0..4].copy_from_slice(&2u32.to_le_bytes());
+    let header_checksum = adler32_slice(&data[..20]);
+    data[20..24].copy_from_slice(&header_checksum.to_le_bytes());
+    data[24..28].copy_from_slice(&0x8000_004C_u32.to_le_bytes());
+    data[28..32].copy_from_slice(&0x8000_0058_u32.to_le_bytes());
+    let entry_checksum = adler32_slice(&data[24..32]);
+    data[32..36].copy_from_slice(&entry_checksum.to_le_bytes());
+
+    let table = EwfTable::parse(&data).unwrap();
+
+    assert_eq!(table.entries.len(), 2);
   }
 }

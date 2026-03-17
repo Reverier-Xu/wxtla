@@ -5,10 +5,12 @@ use std::collections::HashMap;
 use super::{
   constants::{
     DIGEST_DATA_SIZE, E01_VOLUME_DATA_SIZE, HASH_DATA_SIZE, MAX_SECTION_DATA_SIZE,
-    SECTION_DESCRIPTOR_SIZE,
+    S01_VOLUME_DATA_SIZE, SECTION_DESCRIPTOR_SIZE,
   },
+  error2::{EwfErrorRange, EwfErrorSection},
   file_header::EwfFileHeader,
   hash::{EwfDigestSection, EwfHashSection},
+  metadata::EwfMetadataSection,
   naming::EwfSegmentPathInfo,
   section::{EwfSectionDescriptor, EwfSectionKind},
   table::EwfTable,
@@ -29,6 +31,12 @@ pub struct ParsedEwf {
   pub volume: EwfVolumeInfo,
   /// Chunk mapping for logical media reads.
   pub chunks: Vec<EwfChunkDescriptor>,
+  /// Parsed ASCII `header` sections from the image set.
+  pub header_sections: Vec<EwfMetadataSection>,
+  /// Parsed UTF-16 `header2` sections from the image set.
+  pub header2_sections: Vec<EwfMetadataSection>,
+  /// Error ranges reported by the image set.
+  pub error_ranges: Vec<EwfErrorRange>,
   /// Optional MD5 hash stored in the image metadata.
   pub md5_hash: Option<[u8; 16]>,
   /// Optional SHA1 hash stored in the image metadata.
@@ -46,6 +54,9 @@ pub struct ParsedEwfSources {
 #[derive(Debug, Default)]
 struct ParseState {
   volume: Option<EwfVolumeInfo>,
+  header_sections: Vec<EwfMetadataSection>,
+  header2_sections: Vec<EwfMetadataSection>,
+  error_ranges: Vec<EwfErrorRange>,
   md5_hash: Option<[u8; 16]>,
   sha1_hash: Option<[u8; 20]>,
   chunks: Vec<EwfChunkDescriptor>,
@@ -55,6 +66,11 @@ struct ParseState {
 enum SegmentTermination {
   Done,
   Next,
+}
+
+struct ParsedSegment {
+  file_header: EwfFileHeader,
+  termination: SegmentTermination,
 }
 
 /// Parse a single-segment EWF image source.
@@ -126,6 +142,9 @@ pub fn parse_with_hints(
       segment_number: 1,
       volume,
       chunks: state.chunks,
+      header_sections: state.header_sections,
+      header2_sections: state.header2_sections,
+      error_ranges: state.error_ranges,
       md5_hash: state.md5_hash,
       sha1_hash: state.sha1_hash,
     },
@@ -224,6 +243,24 @@ fn parse_segment(source: &dyn DataSource, state: &mut ParseState) -> Result<Pars
           state.volume = Some(parsed_volume);
         }
       }
+      EwfSectionKind::Header => {
+        let section =
+          EwfMetadataSection::parse_header(&source.read_bytes_at(payload_offset, payload_size)?)?;
+        if !state.header_sections.contains(&section) {
+          state.header_sections.push(section);
+        }
+      }
+      EwfSectionKind::Header2 => {
+        let section =
+          EwfMetadataSection::parse_header2(&source.read_bytes_at(payload_offset, payload_size)?)?;
+        if !state.header2_sections.contains(&section) {
+          state.header2_sections.push(section);
+        }
+      }
+      EwfSectionKind::Error2 => {
+        let section = EwfErrorSection::parse(&source.read_bytes_at(payload_offset, payload_size)?)?;
+        state.error_ranges.extend(section.ranges);
+      }
       EwfSectionKind::Sectors => {
         last_sectors_section = Some(section.clone());
       }
@@ -277,7 +314,7 @@ fn parse_segment(source: &dyn DataSource, state: &mut ParseState) -> Result<Pars
       EwfSectionKind::Done => {
         termination = SegmentTermination::Done;
       }
-      EwfSectionKind::Header | EwfSectionKind::Header2 | EwfSectionKind::Unknown => {}
+      EwfSectionKind::Unknown => {}
     }
 
     section_offset = section_end;
@@ -299,6 +336,7 @@ fn parse_volume_payload(
 
   match payload_size {
     E01_VOLUME_DATA_SIZE => EwfVolumeInfo::parse_e01(&payload),
+    S01_VOLUME_DATA_SIZE => EwfVolumeInfo::parse_s01(&payload),
     _ => Err(Error::InvalidFormat(format!(
       "unsupported ewf volume/data payload size: {payload_size}"
     ))),
@@ -318,6 +356,7 @@ fn append_table_chunks(
 
   let chunk_size = volume.chunk_size()?;
   let media_size = volume.media_size()?;
+  let mut chunk_offset_overflow = false;
   for (entry_index, entry) in table.entries.iter().enumerate() {
     let chunk_index = u32::try_from(chunks.len())
       .map_err(|_| Error::InvalidRange("ewf chunk index overflow".to_string()))?;
@@ -328,19 +367,38 @@ fn append_table_chunks(
       .checked_sub(media_offset)
       .ok_or_else(|| Error::InvalidRange("ewf chunk media range underflow".to_string()))?;
     let logical_size = remaining_media_size.min(u64::from(chunk_size)) as u32;
-    let current_offset = entry.offset();
+    let encoding = if chunk_offset_overflow {
+      EwfChunkEncoding::Stored
+    } else if entry.is_compressed() {
+      EwfChunkEncoding::Compressed
+    } else {
+      EwfChunkEncoding::Stored
+    };
+    let current_offset = if chunk_offset_overflow {
+      entry.raw_offset
+    } else {
+      entry.offset()
+    };
     let stored_offset = table
       .base_offset
       .checked_add(u64::from(current_offset))
       .ok_or_else(|| Error::InvalidRange("ewf chunk file offset overflow".to_string()))?;
     let next_offset = if let Some(next_entry) = table.entries.get(entry_index + 1) {
-      let next_offset = next_entry.offset();
+      let next_offset = if chunk_offset_overflow {
+        next_entry.raw_offset
+      } else {
+        next_entry.offset()
+      };
       if next_offset < current_offset {
-        return Err(Error::InvalidFormat(
-          "ewf chunk offsets must be monotonically increasing within a table".to_string(),
-        ));
+        if chunk_offset_overflow || next_entry.raw_offset < current_offset {
+          return Err(Error::InvalidFormat(
+            "ewf chunk offsets must be monotonically increasing within a table".to_string(),
+          ));
+        }
+        u64::from(next_entry.raw_offset)
+      } else {
+        u64::from(next_offset)
       }
-      u64::from(next_offset)
     } else {
       let data_end_offset = match sectors_section {
         Some(section) => section.next_offset,
@@ -369,20 +427,15 @@ fn append_table_chunks(
       logical_size,
       stored_offset,
       stored_size,
-      encoding: if entry.is_compressed() {
-        EwfChunkEncoding::Compressed
-      } else {
-        EwfChunkEncoding::Stored
-      },
+      encoding,
     });
+
+    if !chunk_offset_overflow && current_offset.saturating_add(stored_size) > i32::MAX as u32 {
+      chunk_offset_overflow = true;
+    }
   }
 
   Ok(())
-}
-
-struct ParsedSegment {
-  file_header: EwfFileHeader,
-  termination: SegmentTermination,
 }
 
 #[cfg(test)]
@@ -453,5 +506,59 @@ mod tests {
     .unwrap();
 
     assert!(Arc::ptr_eq(&resolved, &first));
+  }
+
+  #[test]
+  fn handles_chunk_offset_overflow_compatibility() {
+    let volume = EwfVolumeInfo {
+      media_type: super::super::types::EwfMediaType::Fixed,
+      chunk_count: 2,
+      sectors_per_chunk: 1,
+      bytes_per_sector: 512,
+      sector_count: 2,
+      media_flags: 0,
+      compression_level: 0,
+      error_granularity: 0,
+      set_identifier: [0; 16],
+    };
+    let table = EwfTable {
+      base_offset: 0,
+      entries: vec![
+        super::super::table::EwfTableEntry {
+          raw_offset: 0xFFFF_FFF0,
+        },
+        super::super::table::EwfTableEntry {
+          raw_offset: 0x8000_0020,
+        },
+      ],
+    };
+    let sectors_section = Some(EwfSectionDescriptor {
+      kind: EwfSectionKind::Sectors,
+      file_offset: 0,
+      next_offset: 0x8000_0040,
+      size: 0x8000_0040,
+    });
+    let table_section = EwfSectionDescriptor {
+      kind: EwfSectionKind::Table,
+      file_offset: 0,
+      next_offset: 0x8000_0060,
+      size: 0x8000_0060,
+    };
+    let mut chunks = Vec::new();
+
+    append_table_chunks(
+      &mut chunks,
+      &volume,
+      1,
+      &table,
+      &sectors_section,
+      &table_section,
+    )
+    .unwrap();
+
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].encoding, EwfChunkEncoding::Compressed);
+    assert_eq!(chunks[1].encoding, EwfChunkEncoding::Stored);
+    assert_eq!(chunks[1].stored_offset, 0x8000_0020);
   }
 }

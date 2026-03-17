@@ -47,7 +47,10 @@ mod tests {
   use super::*;
   use crate::{
     DataSource, RelatedSourceRequest, RelatedSourceResolver, SourceIdentity,
-    images::ewf::constants::{E01_VOLUME_DATA_SIZE, FILE_HEADER_MAGIC, SECTION_DESCRIPTOR_SIZE},
+    images::ewf::constants::{
+      E01_VOLUME_DATA_SIZE, FILE_HEADER_MAGIC, FILE_HEADER_MAGIC_LVF, S01_VOLUME_DATA_SIZE,
+      SECTION_DESCRIPTOR_SIZE,
+    },
   };
 
   struct MemDataSource {
@@ -215,6 +218,68 @@ mod tests {
     assert_eq!(image.read_all().unwrap(), [chunk0, chunk1].concat());
   }
 
+  #[test]
+  fn opens_single_segment_lvf_images() {
+    let chunk = repeat_byte(0x44, 512);
+    let volume_payload = make_logical_evidence_volume_payload(1, 1, 512);
+    let mut sections = vec![TestSection {
+      kind: "volume",
+      payload: volume_payload,
+      zero_sized: false,
+    }];
+    sections.extend(chunk_sections(vec![(compress_chunk(&chunk), true)]));
+    sections.push(TestSection {
+      kind: "done",
+      payload: vec![],
+      zero_sized: true,
+    });
+    let source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_segment(1, FILE_HEADER_MAGIC_LVF, sections),
+    });
+
+    let image = EwfDriver::open(source).unwrap();
+
+    assert_eq!(
+      image.media_type(),
+      super::super::types::EwfMediaType::LogicalEvidence
+    );
+    assert_eq!(image.read_all().unwrap(), chunk);
+  }
+
+  #[test]
+  fn opens_s01_style_inline_table_chunks() {
+    let chunk0 = repeat_byte(0x55, 512);
+    let chunk1 = repeat_byte(0x66, 512);
+    let volume_payload = make_s01_volume_payload(2, 1, 512);
+    let table_section = inline_table_section(vec![
+      (compress_chunk(&chunk0), true),
+      (compress_chunk(&chunk1), true),
+    ]);
+    let source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_segment(
+        1,
+        FILE_HEADER_MAGIC,
+        vec![
+          TestSection {
+            kind: "volume",
+            payload: volume_payload,
+            zero_sized: false,
+          },
+          table_section,
+          TestSection {
+            kind: "done",
+            payload: vec![],
+            zero_sized: true,
+          },
+        ],
+      ),
+    });
+
+    let image = EwfDriver::open(source).unwrap();
+
+    assert_eq!(image.read_all().unwrap(), [chunk0, chunk1].concat());
+  }
+
   fn repeat_byte(byte: u8, size: usize) -> Vec<u8> {
     vec![byte; size]
   }
@@ -247,6 +312,31 @@ mod tests {
     payload[64..80].copy_from_slice(&[0x11; 16]);
     let checksum = adler32_slice(&payload[..1048]);
     payload[1048..1052].copy_from_slice(&checksum.to_le_bytes());
+    payload
+  }
+
+  fn make_logical_evidence_volume_payload(
+    chunk_count: u32, sectors_per_chunk: u32, bytes_per_sector: u32,
+  ) -> Vec<u8> {
+    let mut payload = make_e01_volume_payload(chunk_count, sectors_per_chunk, bytes_per_sector);
+    payload[0] = 0x0E;
+    let checksum = adler32_slice(&payload[..1048]);
+    payload[1048..1052].copy_from_slice(&checksum.to_le_bytes());
+    payload
+  }
+
+  fn make_s01_volume_payload(
+    chunk_count: u32, sectors_per_chunk: u32, bytes_per_sector: u32,
+  ) -> Vec<u8> {
+    let mut payload = vec![0u8; S01_VOLUME_DATA_SIZE];
+    payload[0..4].copy_from_slice(&1u32.to_le_bytes());
+    payload[4..8].copy_from_slice(&chunk_count.to_le_bytes());
+    payload[8..12].copy_from_slice(&sectors_per_chunk.to_le_bytes());
+    payload[12..16].copy_from_slice(&bytes_per_sector.to_le_bytes());
+    payload[16..20].copy_from_slice(&(chunk_count * sectors_per_chunk).to_le_bytes());
+    payload[85..90].copy_from_slice(b"SMART");
+    let checksum = adler32_slice(&payload[..90]);
+    payload[90..94].copy_from_slice(&checksum.to_le_bytes());
     payload
   }
 
@@ -288,6 +378,42 @@ mod tests {
     };
 
     vec![sectors_section, table_section, table2_section]
+  }
+
+  fn inline_table_section(chunks: Vec<(Vec<u8>, bool)>) -> TestSection<'static> {
+    let mut table_payload = vec![0u8; 24 + chunks.len() * 4 + 4];
+    table_payload[0..4].copy_from_slice(&(chunks.len() as u32).to_le_bytes());
+    let header_checksum = adler32_slice(&table_payload[..20]);
+    table_payload[20..24].copy_from_slice(&header_checksum.to_le_bytes());
+
+    let section_base = 13u32 + SECTION_DESCRIPTOR_SIZE as u32 + S01_VOLUME_DATA_SIZE as u32;
+    let table_start = section_base + SECTION_DESCRIPTOR_SIZE as u32;
+    let mut chunk_offset = table_start + u32::try_from(table_payload.len()).unwrap();
+    for (index, (chunk, compressed)) in chunks.iter().enumerate() {
+      let raw_offset = if *compressed {
+        0x8000_0000 | chunk_offset
+      } else {
+        chunk_offset
+      };
+      let start = 24 + index * 4;
+      table_payload[start..start + 4].copy_from_slice(&raw_offset.to_le_bytes());
+      chunk_offset = chunk_offset
+        .checked_add(u32::try_from(chunk.len()).unwrap())
+        .unwrap();
+    }
+    let footer_offset = 24 + chunks.len() * 4;
+    let footer_checksum = adler32_slice(&table_payload[24..footer_offset]);
+    table_payload[footer_offset..footer_offset + 4].copy_from_slice(&footer_checksum.to_le_bytes());
+
+    for (chunk, _) in chunks {
+      table_payload.extend_from_slice(&chunk);
+    }
+
+    TestSection {
+      kind: "table",
+      payload: table_payload,
+      zero_sized: false,
+    }
   }
 
   fn make_table_payload(raw_offsets: &[u32]) -> Vec<u8> {

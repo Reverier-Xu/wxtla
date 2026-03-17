@@ -9,6 +9,8 @@ use super::{
   DESCRIPTOR,
   cache::EwfChunkCache,
   constants::DEFAULT_CHUNK_CACHE_CAPACITY,
+  error2::EwfErrorRange,
+  metadata::EwfMetadataSection,
   parser::{ParsedEwfSources, parse, parse_with_hints},
   types::{EwfChunkDescriptor, EwfChunkEncoding, EwfMediaType},
 };
@@ -26,6 +28,9 @@ pub struct EwfImage {
   sectors_per_chunk: u32,
   bytes_per_sector: u32,
   media_size: u64,
+  header_sections: Vec<EwfMetadataSection>,
+  header2_sections: Vec<EwfMetadataSection>,
+  error_ranges: Vec<EwfErrorRange>,
   md5_hash: Option<[u8; 16]>,
   sha1_hash: Option<[u8; 20]>,
   chunks: Arc<[EwfChunkDescriptor]>,
@@ -58,6 +63,9 @@ impl EwfImage {
       sectors_per_chunk: parsed.volume.sectors_per_chunk,
       bytes_per_sector: parsed.volume.bytes_per_sector,
       media_size,
+      header_sections: parsed.header_sections,
+      header2_sections: parsed.header2_sections,
+      error_ranges: parsed.error_ranges,
       md5_hash: parsed.md5_hash,
       sha1_hash: parsed.sha1_hash,
       chunks: Arc::from(parsed.chunks),
@@ -93,6 +101,21 @@ impl EwfImage {
   /// Return the number of bytes per sector.
   pub fn bytes_per_sector(&self) -> u32 {
     self.bytes_per_sector
+  }
+
+  /// Return parsed ASCII `header` sections.
+  pub fn header_sections(&self) -> &[EwfMetadataSection] {
+    &self.header_sections
+  }
+
+  /// Return parsed UTF-16 `header2` sections.
+  pub fn header2_sections(&self) -> &[EwfMetadataSection] {
+    &self.header2_sections
+  }
+
+  /// Return the media error ranges reported by `error2` sections.
+  pub fn error_ranges(&self) -> &[EwfErrorRange] {
+    &self.error_ranges
   }
 
   /// Return the optional MD5 hash from the metadata.
@@ -278,6 +301,19 @@ mod tests {
     assert_eq!(image.sectors_per_chunk(), 64);
     assert_eq!(image.bytes_per_sector(), 512);
     assert_eq!(image.size().unwrap(), 4_194_304);
+    assert_eq!(image.header_sections().len(), 1);
+    assert_eq!(image.header_sections()[0].main_field("c"), Some("case"));
+    assert_eq!(image.header_sections()[0].main_field("n"), Some("evidence"));
+    assert_eq!(
+      image.header_sections()[0].main_field("a"),
+      Some("description")
+    );
+    assert_eq!(image.header2_sections().len(), 1);
+    assert_eq!(
+      image.header2_sections()[0].main_field("a"),
+      Some("description")
+    );
+    assert!(image.error_ranges().is_empty());
     assert_eq!(
       image.md5_hash().unwrap(),
       [

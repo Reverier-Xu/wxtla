@@ -3,9 +3,11 @@
 mod cache;
 mod constants;
 mod driver;
+mod error2;
 mod file_header;
 mod hash;
 mod image;
+mod metadata;
 mod naming;
 mod parser;
 mod section;
@@ -15,6 +17,7 @@ mod volume;
 
 pub use driver::EwfDriver;
 pub use image::EwfImage;
+pub use metadata::{EwfMetadataCategory, EwfMetadataSection};
 pub use types::{EwfChunkDescriptor, EwfChunkEncoding, EwfMediaType};
 
 use crate::{
