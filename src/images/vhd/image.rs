@@ -20,6 +20,8 @@ pub struct VhdImage {
   footer: VhdFooter,
   dynamic_header: Option<VhdDynamicHeader>,
   bat: Arc<[u32]>,
+  parent_locator_paths: Arc<[String]>,
+  parent_image: Option<DataSourceHandle>,
   bitmap_cache: VhdCache<Vec<u8>>,
   block_cache: VhdCache<Vec<u8>>,
 }
@@ -27,19 +29,65 @@ pub struct VhdImage {
 impl VhdImage {
   pub fn open(source: DataSourceHandle) -> Result<Self> {
     let parsed = parse(source.clone())?;
-    Self::from_parsed(source, parsed)
+    if parsed.footer.disk_type == VhdDiskType::Differential {
+      return Err(Error::InvalidSourceReference(
+        "differential vhd images require source hints and a related-source resolver".to_string(),
+      ));
+    }
+    Self::from_parsed(source, parsed, None)
   }
 
   pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
-    Self::open(source)
+    let parsed = parse(source.clone())?;
+    let parent_image = if parsed.footer.disk_type == VhdDiskType::Differential {
+      let resolver = _hints.resolver().ok_or_else(|| {
+        Error::InvalidSourceReference(
+          "differential vhd images require a related-source resolver".to_string(),
+        )
+      })?;
+      let identity = _hints.source_identity().ok_or_else(|| {
+        Error::InvalidSourceReference(
+          "differential vhd images require a source identity hint".to_string(),
+        )
+      })?;
+      let mut candidates = parsed.parent_locator_paths.clone();
+      if let Some(header) = &parsed.dynamic_header
+        && !header.parent_name.is_empty()
+      {
+        candidates.push(header.parent_name.clone());
+      }
+      let mut parent_resolution = None;
+      for candidate in candidates {
+        if let Some(resolution) = resolve_parent_candidate(resolver, identity, &candidate)? {
+          parent_resolution = Some(resolution);
+          break;
+        }
+      }
+      let (parent_source, parent_path) = parent_resolution
+        .ok_or_else(|| Error::NotFound("unable to resolve the parent vhd image".to_string()))?;
+      Some(Arc::new(Self::open_with_hints(
+        parent_source,
+        SourceHints::new()
+          .with_resolver(resolver)
+          .with_source_identity(&crate::SourceIdentity::new(parent_path)),
+      )?) as DataSourceHandle)
+    } else {
+      None
+    };
+
+    Self::from_parsed(source, parsed, parent_image)
   }
 
-  fn from_parsed(source: DataSourceHandle, parsed: ParsedVhd) -> Result<Self> {
+  fn from_parsed(
+    source: DataSourceHandle, parsed: ParsedVhd, parent_image: Option<DataSourceHandle>,
+  ) -> Result<Self> {
     Ok(Self {
       source,
       footer: parsed.footer,
       dynamic_header: parsed.dynamic_header,
       bat: parsed.block_allocation_table,
+      parent_locator_paths: Arc::from(parsed.parent_locator_paths),
+      parent_image,
       bitmap_cache: VhdCache::new(64),
       block_cache: VhdCache::new(64),
     })
@@ -51,6 +99,10 @@ impl VhdImage {
 
   pub fn dynamic_header(&self) -> Option<&VhdDynamicHeader> {
     self.dynamic_header.as_ref()
+  }
+
+  pub fn parent_locator_paths(&self) -> &[String] {
+    &self.parent_locator_paths
   }
 
   fn read_bitmap(&self, block_index: u64) -> Result<Arc<Vec<u8>>> {
@@ -171,7 +223,11 @@ impl DataSource for VhdImage {
       let block = match self.read_block(block_index)? {
         Some(block) => block,
         None => {
-          buf[copied..copied + available].fill(0);
+          if let Some(parent_image) = &self.parent_image {
+            parent_image.read_exact_at(absolute_offset, &mut buf[copied..copied + available])?;
+          } else {
+            buf[copied..copied + available].fill(0);
+          }
           copied += available;
           continue;
         }
@@ -188,7 +244,11 @@ impl DataSource for VhdImage {
       };
 
       if !sector_present {
-        buf[copied..copied + available].fill(0);
+        if let Some(parent_image) = &self.parent_image {
+          parent_image.read_exact_at(absolute_offset, &mut buf[copied..copied + available])?;
+        } else {
+          buf[copied..copied + available].fill(0);
+        }
         copied += available;
         continue;
       }
@@ -240,15 +300,43 @@ impl Image for VhdImage {
   }
 
   fn has_backing_chain(&self) -> bool {
-    self.footer.disk_type == VhdDiskType::Differential
+    self.parent_image.is_some()
   }
+}
+
+fn resolve_parent_candidate(
+  resolver: &dyn crate::RelatedSourceResolver, identity: &crate::SourceIdentity, candidate: &str,
+) -> Result<Option<(DataSourceHandle, crate::RelatedPathBuf)>> {
+  if let Ok(relative) = crate::RelatedPathBuf::from_relative_path(candidate) {
+    if let Some(parent) = identity.logical_path().parent() {
+      let joined = parent.join(&relative);
+      if let Some(source) = resolver.resolve(&crate::RelatedSourceRequest::new(
+        crate::RelatedSourcePurpose::BackingFile,
+        joined,
+      ))? {
+        return Ok(Some((source, parent.join(&relative))));
+      }
+    }
+  }
+
+  let file_name = candidate.rsplit(['\\', '/']).next().unwrap_or(candidate);
+  let sibling = identity.sibling_path(file_name)?;
+  Ok(
+    resolver
+      .resolve(&crate::RelatedSourceRequest::new(
+        crate::RelatedSourcePurpose::BackingFile,
+        sibling.clone(),
+      ))?
+      .map(|source| (source, sibling)),
+  )
 }
 
 #[cfg(test)]
 mod tests {
-  use std::{path::Path, sync::Arc};
+  use std::{collections::HashMap, path::Path, sync::Arc};
 
   use super::*;
+  use crate::{RelatedSourceRequest, RelatedSourceResolver, SourceIdentity};
 
   struct MemDataSource {
     data: Vec<u8>,
@@ -267,6 +355,16 @@ mod tests {
 
     fn size(&self) -> Result<u64> {
       Ok(self.data.len() as u64)
+    }
+  }
+
+  struct Resolver {
+    files: HashMap<String, DataSourceHandle>,
+  }
+
+  impl RelatedSourceResolver for Resolver {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+      Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
@@ -311,6 +409,33 @@ mod tests {
     image.read_exact_at(510, &mut mbr_signature).unwrap();
     image.read_exact_at(128 * 512 + 3, &mut ntfs_oem).unwrap();
 
+    assert_eq!(&mbr_signature, &[0x55, 0xAA]);
+    assert_eq!(&ntfs_oem, b"NTFS    ");
+  }
+
+  #[test]
+  fn reads_differential_vhd_via_parent_resolution() {
+    let child = sample_source("vhd/ntfs-differential.vhd");
+    let parent = sample_source("vhd/ntfs-parent.vhd");
+    let resolver = Resolver {
+      files: HashMap::from([("vhd/ntfs-parent.vhd".to_string(), parent)]),
+    };
+    let identity = SourceIdentity::from_relative_path("vhd/ntfs-differential.vhd").unwrap();
+
+    let image = VhdImage::open_with_hints(
+      child,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+    let mut mbr_signature = [0u8; 2];
+    let mut ntfs_oem = [0u8; 8];
+
+    image.read_exact_at(510, &mut mbr_signature).unwrap();
+    image.read_exact_at(128 * 512 + 3, &mut ntfs_oem).unwrap();
+
+    assert!(image.has_backing_chain());
     assert_eq!(&mbr_signature, &[0x55, 0xAA]);
     assert_eq!(&ntfs_oem, b"NTFS    ");
   }
