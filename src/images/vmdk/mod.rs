@@ -1,4 +1,19 @@
-//! VMDK image descriptor and probe registration.
+//! VMDK image driver and probe registration.
+
+mod cache;
+mod constants;
+mod descriptor;
+mod driver;
+mod header;
+mod image;
+mod parser;
+
+pub use descriptor::{
+  VmdkDescriptor, VmdkDescriptorExtent, VmdkExtentAccessMode, VmdkExtentType, VmdkFileType,
+};
+pub use driver::VmdkDriver;
+pub use header::VmdkSparseHeader;
+pub use image::VmdkImage;
 
 use crate::{
   FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
