@@ -1,0 +1,47 @@
+﻿Created By Exterro® FTK® Imager 8.2.0.26 
+
+Case Information: 
+Acquired using: ADI8.2.0.26
+Case Number:  
+Evidence Number:  
+Unique Description: 
+Examiner:  
+Notes:  
+
+--------------------------------------------------------------
+
+Information for C:\Users\NoahTie\Desktop\bitlocker2G:
+
+Physical Evidentiary Item (Source) Information:
+[Device Info]
+ Source Type: Physical
+[Drive Geometry]
+ Cylinders: 239
+ Tracks per Cylinder: 255
+ Sectors per Track: 63
+ Bytes per Sector: 512
+ Sector Count: 3,842,048
+[Physical Drive Information]
+ Drive Model: Generic MassStorageClass USB Device
+ Drive Serial Number: 000000002958
+ Drive Interface Type: USB
+ Removable drive: True
+ Source data size: 1876 MB
+ Sector count:    3842048
+[Computed Hashes]
+ MD5 checksum:    65a6c37c8878f6c3e144e6199fad465c
+ SHA1 checksum:   179a6aae5eba132eb7c34f7c94f83bc732f138d9
+
+Image Information:
+ Acquisition started:   Wed Mar 18 23:46:32 2026
+ Acquisition finished:  Wed Mar 18 23:47:54 2026
+ Segment list:
+  C:\Users\NoahTie\Desktop\bitlocker2G.E01
+ COMPUTED HASH :  65a6c37c8878f6c3e144e6199fad465c
+ COMPUTED HASH :  179a6aae5eba132eb7c34f7c94f83bc732f138d9
+
+Image Verification Results:
+ Verification started:  Wed Mar 18 23:47:54 2026
+ Verification finished: Wed Mar 18 23:47:58 2026
+ MD5 checksum:    65a6c37c8878f6c3e144e6199fad465c : verified
+ SHA1 checksum:   179a6aae5eba132eb7c34f7c94f83bc732f138d9 : verified
