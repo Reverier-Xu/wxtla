@@ -109,7 +109,9 @@ Already landed in `wxtla`:
 - `ewf`
 - `qcow`
 - `vhd`
+- `vhdx`
+- `vmdk`
 
 Current next image target:
 
-- `vhdx`
+- `udif`

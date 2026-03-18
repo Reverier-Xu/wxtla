@@ -61,15 +61,15 @@ The active migration order is now image-first after the already-landed volume la
 - `ewf`
 - `qcow`
 - `vhd`
+- `vhdx`
+- `vmdk`
 
 ### Current next target
 
-- `vhdx`
+- `udif`
 
 ### Remaining image targets after that
 
-- `vmdk`
-- `udif`
 - `sparseimage`
 - `sparsebundle`
 - `pdi`
@@ -78,7 +78,12 @@ The active migration order is now image-first after the already-landed volume la
 ### After images
 
 - `tar` / `zip`
-- filesystem formats (`fat`, `ntfs`, `ext`, `hfs`, `xfs`)
+- filesystem formats in this order:
+  - `fat`
+  - `ext`
+  - `ntfs`
+  - `hfs`
+  - `xfs`
 - `lvm2`
 
 ## 3. Quality policy for parser code

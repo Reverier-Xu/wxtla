@@ -286,8 +286,8 @@ The migration is successful when:
 The current landed state is:
 
 - volume layer completed for `mbr`, `gpt`, and `apm`
-- image layer completed for `ewf`, `qcow`, and `vhd`
-- current next format target is `vhdx`
+- image layer completed for `ewf`, `qcow`, `vhd`, `vhdx`, and `vmdk`
+- current next format target is `udif`
 
 The active migration strategy is therefore:
 
@@ -295,3 +295,19 @@ The active migration strategy is therefore:
 2. add archive drivers
 3. move on to full filesystem drivers
 4. finish stacked volume-manager support
+
+The concrete next-stage order is:
+
+1. `udif`
+2. `sparseimage`
+3. `sparsebundle`
+4. `pdi`
+5. `splitraw` runtime image surface
+6. archive formats (`tar`, `zip`)
+7. filesystem formats in this order:
+   - `fat12` / `fat16` / `fat32`
+   - `ext2` / `ext3` / `ext4`
+   - `ntfs`
+   - `hfs` / `hfs+` / `hfsx`
+   - `xfs`
+8. `lvm2` and deeper stacking/performance work
