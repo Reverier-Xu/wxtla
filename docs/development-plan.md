@@ -168,10 +168,10 @@ Important properties:
    - runlist/extent cache
    - decompressed block cache where needed
 6. Typed parser APIs
-    - image/container readers
-    - partition/volume readers
-    - single-filesystem read-only readers
-    - future `TableSource`-backed database readers
+   - image/container readers
+   - partition/volume readers
+   - single-filesystem read-only readers
+   - future `TableSource`-backed database readers
 
 ### 3.3 Concurrency rules
 
@@ -287,9 +287,17 @@ The filesystem wave should now follow common forensic prevalence instead of hist
 
 The following newer copy-on-write or snapshot-heavy filesystems should be treated as a later long-term wave after the mainstream forensic set is stable:
 
-1. APFS (`libfsapfs`)
-2. Btrfs (no dedicated `libyal` filesystem parser currently identified; keep in research/backlog)
+1. APFS (`libfsapfs`, https://github.com/fox-it/dissect.apfs)
+2. Btrfs (https://github.com/fox-it/dissect.btrfs)
 3. ZFS (no dedicated `libyal` filesystem parser currently identified; keep in research/backlog)
+4. VMFS (VMWare VMFS, https://github.com/fox-it/dissect.vmfs)
+5. squashfs (https://github.com/fox-it/dissect.squashfs)
+6. FFS (https://github.com/fox-it/dissect.ffs)
+7. LUKS (https://github.com/fox-it/dissect.fve)
+8. JFFS2 (https://github.com/fox-it/dissect.jffs)
+9. QNXFS (https://github.com/fox-it/dissect.qnxfs)
+10. CRAMFS (https://github.com/fox-it/dissect.cramfs)
+11. CLFS (https://github.com/fox-it/dissect.clfs)
 
 Reasons to defer them:
 
