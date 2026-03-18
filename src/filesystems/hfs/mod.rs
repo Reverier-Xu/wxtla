@@ -5,7 +5,7 @@ mod driver;
 mod filesystem;
 
 pub use driver::HfsDriver;
-pub use filesystem::HfsFileSystem;
+pub use filesystem::{HfsExtendedAttribute, HfsFileSystem};
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,

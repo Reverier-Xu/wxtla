@@ -125,3 +125,81 @@ fn hfsplus_fixture_reads_regular_files_and_resolves_hardlinks() {
   );
   assert!(file_system.open_file(&file_symlink.node_id).is_err());
 }
+
+#[test]
+fn hfsplus_fixture_exposes_unicode_names_symlink_targets_and_forks() {
+  let file_system = open_fixture_file_system("hfs/hfsplus.raw").unwrap();
+  let root_id = file_system.root_node_id();
+  let root_entries = file_system.read_dir(&root_id).unwrap();
+
+  for expected in [
+    "forward:slash",
+    "case_folding_µ",
+    "nfc_téstfilè",
+    "nfd_téstfilè",
+    "nfd_¾",
+    "nfkd_3⁄4",
+    "file_symboliclink2",
+  ] {
+    assert!(
+      root_entries.iter().any(|entry| entry.name == expected),
+      "missing root entry: {expected}"
+    );
+  }
+  assert!(
+    !root_entries
+      .iter()
+      .any(|entry| entry.name.contains("Private Data"))
+  );
+
+  let file_symlink = child_named(&file_system, &root_id, "file_symboliclink1").unwrap();
+  let file_symlink2 = child_named(&file_system, &root_id, "file_symboliclink2").unwrap();
+  let directory_symlink = child_named(&file_system, &root_id, "directory_symboliclink1").unwrap();
+  assert_eq!(
+    file_system
+      .symlink_target(&file_symlink.node_id)
+      .unwrap()
+      .as_deref(),
+    Some("/Volumes/hfsplus_test/testdir1/testfile1")
+  );
+  assert_eq!(
+    file_system
+      .symlink_target(&file_symlink2.node_id)
+      .unwrap()
+      .as_deref(),
+    Some("/Volumes/hfsplus_test/forward:slash")
+  );
+  assert_eq!(
+    file_system
+      .symlink_target(&directory_symlink.node_id)
+      .unwrap()
+      .as_deref(),
+    Some("/Volumes/hfsplus_test/testdir1")
+  );
+
+  let testdir_entry = child_named(&file_system, &root_id, "testdir1").unwrap();
+  let resource_entry = child_named(&file_system, &testdir_entry.node_id, "resourcefork1").unwrap();
+  let xattr1_entry = child_named(&file_system, &testdir_entry.node_id, "xattr1").unwrap();
+  let xattr2_entry = child_named(&file_system, &testdir_entry.node_id, "xattr2").unwrap();
+
+  let resource_data = file_system
+    .open_resource_fork(&resource_entry.node_id)
+    .unwrap()
+    .read_all()
+    .unwrap();
+  assert_eq!(resource_data, b"My resource fork\n");
+
+  let xattr1 = file_system
+    .extended_attributes(&xattr1_entry.node_id)
+    .unwrap();
+  assert!(xattr1.iter().any(|attribute| {
+    attribute.name == "myxattr1" && attribute.value.as_ref() == b"My 1st extended attribute"
+  }));
+
+  let xattr2 = file_system
+    .extended_attributes(&xattr2_entry.node_id)
+    .unwrap();
+  assert!(xattr2.iter().any(|attribute| {
+    attribute.name == "myxattr2" && attribute.value.as_ref() == b"My 2nd extended attribute"
+  }));
+}
