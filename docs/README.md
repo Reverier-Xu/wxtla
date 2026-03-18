@@ -3,7 +3,9 @@
 These documents lock the current direction for `wxtla`.
 
 - `development-plan.md`: scope, boundaries, approved dependency set, concurrent read architecture, and migration phases.
+- `architecture.md`: current crate architecture, module layering, and parser implementation patterns.
 - `format-inventory.md`: complete format inventory gathered from `keramics` and `regressor`, with proposed WXTLA ownership.
+- `implementation-workflow.md`: non-negotiable migration workflow and quality rules for the next agent.
 
 Current design decisions:
 
@@ -12,3 +14,9 @@ Current design decisions:
 3. Only `tar` and `zip` may use mature parser libraries directly.
 4. Other third-party crates are limited to mature infrastructure building blocks.
 5. Dependency count stays intentionally small, with version requirements pinned at the minor level.
+6. Every format is migrated to completion before the next format starts; no demo-grade partial drivers.
+7. Library code must return structured errors instead of panicking.
+8. `formats/` fixtures are mandatory for regression coverage whenever a format is implemented or extended.
+9. Format research starts with `keramics` and `regressor`, then checks other mature implementations for missing cases.
+10. `keramics` parser semantics are useful references, but its architecture and crates are not reusable in `wxtla`.
+11. New work should prefer extending existing `wxtla` infrastructure instead of copying helpers from external projects.

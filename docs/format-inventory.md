@@ -79,11 +79,11 @@ Supporting data formats used by the image/container family:
 
 Recommended implementation order:
 
-1. TAR / ZIP
-2. MBR / GPT / APM / split raw
-3. EWF / QCOW / VHD / VHDX / VMDK
-4. FAT / NTFS / ext / XFS
-5. UDIF / sparseimage / sparsebundle / HFS family / PDI
+1. MBR / GPT / APM
+2. EWF / QCOW / VHD / VHDX / VMDK
+3. UDIF / sparseimage / sparsebundle / PDI / split raw runtime image handling
+4. TAR / ZIP
+5. FAT / NTFS / ext / XFS / HFS family
 6. LVM2 and deeper stacking/performance work
 
 This order prioritizes:
@@ -92,3 +92,24 @@ This order prioritizes:
 - reuse of the offset-mapping core
 - early availability of common forensic/storage workflows
 - staged performance work on increasingly complex layering cases
+
+Implementation note:
+
+- each listed format should be completed end-to-end before the next format starts
+- research should begin with `keramics` and `regressor`, then be checked against mature external implementations for missing cases
+- parser logic should reuse `wxtla` core infrastructure where possible, but must not reuse `keramics` crates
+
+## 7. Current status snapshot
+
+Already landed in `wxtla`:
+
+- `mbr`
+- `gpt`
+- `apm`
+- `ewf`
+- `qcow`
+- `vhd`
+
+Current next image target:
+
+- `vhdx`

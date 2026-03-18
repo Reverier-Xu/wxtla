@@ -12,6 +12,20 @@ Non-goals for `wxtla`:
 - no dependency on `keramics` or `regressor`
 - no compatibility constraints with current `keramics` or `regressor` APIs
 
+## 0.1 Implementation discipline
+
+The migration process itself is part of the design.
+
+- one format must be brought to a complete read-only implementation before the next format starts
+- partial demo implementations are not acceptable, even if they satisfy a small fixture set
+- every completed implementation step must be committed before the next step begins
+- `formats/` fixtures are mandatory regression inputs for any implemented format
+- library code must not panic on malformed input; errors must be reported through structured results
+- `keramics` and `regressor` are the first references for parser semantics, fixture expectations, and current feature coverage
+- mature external implementations should then be consulted to find missing edge cases and version-specific behavior
+- `keramics` runtime architecture and crates must not be copied or reused
+- `wxtla` should reuse its own internal source, cache, resolver, and typed-surface infrastructure wherever possible
+
 ## 1. Base capability set
 
 The list below is an approved toolbox, not a mandatory baseline. `wxtla` should pull these crates only when a concrete parser or infrastructure module needs them.
@@ -215,10 +229,11 @@ These are relatively contained and establish the offset-mapping model that later
 
 - EWF
 - QCOW
-- VHD / VHDX
+- VHD
+- VHDX
 - VMDK
 - UDIF / sparseimage / sparsebundle
-- PDI
+- PDI / split raw runtime image handling
 
 Common concerns for this phase:
 
@@ -265,3 +280,18 @@ The migration is successful when:
 - complex parser crates are not used as runtime dependencies
 - `wxtla` remains free of VFS/session/runtime concerns
 - performance-sensitive paths are driven by `read_at` concurrency, cache locality, and layout-aware mapping rather than by shared cursors
+
+## 7. Current migration state
+
+The current landed state is:
+
+- volume layer completed for `mbr`, `gpt`, and `apm`
+- image layer completed for `ewf`, `qcow`, and `vhd`
+- current next format target is `vhdx`
+
+The active migration strategy is therefore:
+
+1. finish the remaining image formats in sequence
+2. add archive drivers
+3. move on to full filesystem drivers
+4. finish stacked volume-manager support
