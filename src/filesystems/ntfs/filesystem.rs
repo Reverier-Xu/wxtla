@@ -1,6 +1,9 @@
 //! Read-only NTFS filesystem surface.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+  collections::{BTreeMap, HashMap},
+  sync::Arc,
+};
 
 use super::{
   DESCRIPTOR,
@@ -21,6 +24,8 @@ use crate::{
 const ROOT_FILE_RECORD_NUMBER: u64 = 5;
 
 pub struct NtfsFileSystem {
+  source: DataSourceHandle,
+  boot_sector: NtfsBootSector,
   nodes: HashMap<u64, NtfsNode>,
   children: HashMap<u64, Vec<DirectoryEntry>>,
 }
@@ -30,6 +35,13 @@ struct NtfsNode {
   parent_id: Option<u64>,
   record: FileSystemNodeRecord,
   data_source: Option<DataSourceHandle>,
+  data_attributes: Arc<[NtfsDataAttribute]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtfsDataStreamInfo {
+  pub name: Option<String>,
+  pub size: u64,
 }
 
 impl NtfsFileSystem {
@@ -103,6 +115,7 @@ impl NtfsFileSystem {
           parent_id,
           record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(record_number), kind, size),
           data_source,
+          data_attributes: Arc::from(record.data_attributes),
         },
       );
     }
@@ -134,7 +147,54 @@ impl NtfsFileSystem {
       entries.sort_by(|left, right| left.name.cmp(&right.name));
     }
 
-    Ok(Self { nodes, children })
+    Ok(Self {
+      source,
+      boot_sector,
+      nodes,
+      children,
+    })
+  }
+
+  pub fn data_streams(&self, node_id: &FileSystemNodeId) -> Result<Vec<NtfsDataStreamInfo>> {
+    let node = self.lookup_node(node_id)?;
+    let mut streams = Vec::new();
+    for (name, attributes) in grouped_stream_attributes(&node.data_attributes) {
+      streams.push(NtfsDataStreamInfo {
+        size: build_stream_data_source(self.source.clone(), &self.boot_sector, &attributes)?
+          .size()?,
+        name,
+      });
+    }
+    Ok(streams)
+  }
+
+  pub fn open_data_stream(
+    &self, node_id: &FileSystemNodeId, name: Option<&str>,
+  ) -> Result<DataSourceHandle> {
+    let node = self.lookup_node(node_id)?;
+    let attributes = node
+      .data_attributes
+      .iter()
+      .filter(|attribute| attribute.name.as_deref() == name)
+      .cloned()
+      .collect::<Vec<_>>();
+    if attributes.is_empty() {
+      let stream_name = name.unwrap_or("$DATA");
+      return Err(Error::NotFound(format!(
+        "ntfs data stream {stream_name} was not found on node {}",
+        decode_node_id(node_id)?
+      )));
+    }
+
+    build_stream_data_source(self.source.clone(), &self.boot_sector, &attributes)
+  }
+
+  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<&NtfsNode> {
+    let record_number = decode_node_id(node_id)?;
+    self
+      .nodes
+      .get(&record_number)
+      .ok_or_else(|| Error::NotFound(format!("ntfs node {record_number} was not found")))
   }
 }
 
@@ -148,20 +208,12 @@ impl FileSystem for NtfsFileSystem {
   }
 
   fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
-    let record_number = decode_node_id(node_id)?;
-    self
-      .nodes
-      .get(&record_number)
-      .map(|node| node.record.clone())
-      .ok_or_else(|| Error::NotFound(format!("ntfs node {record_number} was not found")))
+    self.lookup_node(node_id).map(|node| node.record.clone())
   }
 
   fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
     let record_number = decode_node_id(directory_id)?;
-    let node = self
-      .nodes
-      .get(&record_number)
-      .ok_or_else(|| Error::NotFound(format!("ntfs node {record_number} was not found")))?;
+    let node = self.lookup_node(directory_id)?;
     if node.record.kind != FileSystemNodeKind::Directory {
       return Err(Error::NotFound(format!(
         "ntfs node {record_number} is not a directory"
@@ -179,15 +231,25 @@ impl FileSystem for NtfsFileSystem {
 
   fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
     let record_number = decode_node_id(file_id)?;
-    let node = self
-      .nodes
-      .get(&record_number)
-      .ok_or_else(|| Error::NotFound(format!("ntfs node {record_number} was not found")))?;
+    let node = self.lookup_node(file_id)?;
     node
       .data_source
       .clone()
       .ok_or_else(|| Error::NotFound(format!("ntfs node {record_number} is not a readable file")))
   }
+}
+
+fn grouped_stream_attributes(
+  data_attributes: &[NtfsDataAttribute],
+) -> BTreeMap<Option<String>, Vec<NtfsDataAttribute>> {
+  let mut streams = BTreeMap::<Option<String>, Vec<NtfsDataAttribute>>::new();
+  for attribute in data_attributes {
+    streams
+      .entry(attribute.name.clone())
+      .or_default()
+      .push(attribute.clone());
+  }
+  streams
 }
 
 fn classify_node(

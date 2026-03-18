@@ -1,14 +1,16 @@
 //! NTFS filesystem driver and probe registration.
 
+mod attribute_list;
 mod boot_sector;
 mod driver;
 mod filesystem;
 mod record;
 mod runlist;
 
+pub use attribute_list::{NtfsAttributeListEntry, parse_attribute_list};
 pub use boot_sector::NtfsBootSector;
 pub use driver::NtfsDriver;
-pub use filesystem::NtfsFileSystem;
+pub use filesystem::{NtfsDataStreamInfo, NtfsFileSystem};
 
 use self::boot_sector::BOOT_SECTOR_SIZE;
 use crate::{

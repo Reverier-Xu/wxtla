@@ -116,3 +116,31 @@ fn ntfs_fixture_reads_large_nonresident_and_metadata_files() {
   assert_eq!(upcase_data.read_at(0, &mut prefix).unwrap(), prefix.len());
   assert!(prefix.iter().any(|byte| *byte != 0));
 }
+
+#[test]
+fn ntfs_fixture_exposes_named_data_streams() {
+  let file_system = open_fixture_file_system().unwrap();
+  let root_id = file_system.root_node_id();
+  let upcase_entry = child_named(&file_system, &root_id, "$UpCase").unwrap();
+
+  let streams = file_system.data_streams(&upcase_entry.node_id).unwrap();
+  assert_eq!(streams.len(), 2);
+  assert!(
+    streams
+      .iter()
+      .any(|stream| stream.name.is_none() && stream.size == 131072)
+  );
+  assert!(
+    streams
+      .iter()
+      .any(|stream| stream.name.as_deref() == Some("$Info") && stream.size == 32)
+  );
+
+  let info_stream = file_system
+    .open_data_stream(&upcase_entry.node_id, Some("$Info"))
+    .unwrap();
+  let info_data = info_stream.read_all().unwrap();
+
+  assert_eq!(info_data.len(), 32);
+  assert!(info_data.iter().any(|byte| *byte != 0));
+}
