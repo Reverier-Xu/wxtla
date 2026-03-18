@@ -4,7 +4,7 @@ edition      = "2024"
 name         = "wxtla"
 readme       = "README.md"
 rust-version = "1.93.1"
-version      = "0.0.1"
+version      = "0.0.2"
 
 description = "Wired eXploring Target Layer Accessor"
 license     = "AGPL-3.0-only"
