@@ -71,10 +71,11 @@ The active migration order is now image-first after the already-landed volume la
 - `pdi`
 - `splitraw`
 - `ad1`
+- `tar`
 
 ### Current next target
 
-- `tar`
+- `zip`
 
 ### Remaining image targets after that
 
@@ -82,7 +83,7 @@ The active migration order is now image-first after the already-landed volume la
 
 ### After images
 
-- `tar` / `zip`
+- `zip` / `7z` / `rar`
 - filesystem formats in this order:
   - `fat`
   - `ext`

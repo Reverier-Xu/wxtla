@@ -52,8 +52,10 @@ Current image phase status:
 | Format | Current source | Planned owner | Notes |
 | --- | --- | --- | --- |
 | AD1 / ADF | AccessData + `pyad1` spec | wxtla | Logical evidence container; archive semantics |
-| TAR | native implementation target | wxtla | Next archive target |
-| ZIP | native implementation target | wxtla | Follow tar |
+| TAR | native implementation target | wxtla | Landed |
+| ZIP | native implementation target | wxtla | Next archive target |
+| 7z | native implementation target + cache fallback | wxtla | After zip |
+| RAR | native implementation target + cache fallback | wxtla | After 7z |
 
 Supporting data formats used by the image/container family:
 
@@ -95,7 +97,7 @@ Recommended implementation order:
 1. MBR / GPT / APM
 2. EWF / QCOW / VHD / VHDX / VMDK
 3. UDIF / sparseimage / sparsebundle / PDI / split raw runtime image handling
-4. TAR / ZIP
+4. TAR / ZIP / 7Z / RAR
 5. FAT / NTFS / ext / XFS / HFS family
 6. LVM2 and deeper stacking/performance work
 

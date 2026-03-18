@@ -288,8 +288,8 @@ The current landed state is:
 - volume layer completed for `mbr`, `gpt`, and `apm`
 - stacked volume-manager support completed for `bitlocker` and `lvm2`
 - image layer completed for `ewf`, `qcow`, `vhd`, `vhdx`, `vmdk`, `udif`, `sparseimage`, `sparsebundle`, `pdi`, and `splitraw`
-- archive layer started with `ad1`
-- current next format target is `tar`
+- archive layer started with `ad1` and `tar`
+- current next format target is `zip`
 
 The active migration strategy is therefore:
 
@@ -299,7 +299,7 @@ The active migration strategy is therefore:
 
 The concrete next-stage order is:
 
-1. archive formats (`tar`, `zip`)
+1. archive formats (`zip`, `7z`, `rar`)
 2. filesystem formats in this order:
    - `fat12` / `fat16` / `fat32`
    - `ext2` / `ext3` / `ext4`
