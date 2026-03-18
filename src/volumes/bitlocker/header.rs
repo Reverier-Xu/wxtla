@@ -17,6 +17,9 @@ pub struct BitlockerVolumeHeader {
   pub bytes_per_sector: u16,
   pub sectors_per_cluster: u8,
   pub hidden_sector_count: u32,
+  pub metadata_size: u64,
+  pub volume_size: u64,
+  pub version: u32,
   pub identifier: [u8; 16],
   pub metadata_offsets: [u64; 3],
 }
@@ -57,6 +60,17 @@ impl BitlockerVolumeHeader {
       ));
     }
 
+    let total_number_of_sectors = {
+      let total16 = u64::from(u16::from_le_bytes([data[19], data[20]]));
+      if total16 != 0 {
+        total16
+      } else {
+        u64::from(u32::from_le_bytes([data[32], data[33], data[34], data[35]]))
+      }
+    };
+    let volume_size = total_number_of_sectors
+      .checked_mul(u64::from(bytes_per_sector))
+      .ok_or_else(|| Error::InvalidRange("bitlocker volume size overflow".to_string()))?;
     let mut metadata_offsets = [0u64; 3];
     for (index, slot) in metadata_offsets.iter_mut().enumerate() {
       let start = metadata_offset_base + index * 8;
@@ -75,6 +89,12 @@ impl BitlockerVolumeHeader {
       bytes_per_sector,
       sectors_per_cluster,
       hidden_sector_count: u32::from_le_bytes([data[28], data[29], data[30], data[31]]),
+      metadata_size: 65_536,
+      volume_size,
+      version: match flavor {
+        BitlockerHeaderFlavor::Fixed => 7,
+        BitlockerHeaderFlavor::ToGo => u32::from(b'T'),
+      },
       identifier: data[identifier_offset..identifier_offset + 16]
         .try_into()
         .map_err(|_| Error::InvalidFormat("bitlocker identifier length mismatch".to_string()))?,
@@ -99,6 +119,9 @@ mod tests {
     assert_eq!(header.flavor, BitlockerHeaderFlavor::Fixed);
     assert_eq!(header.bytes_per_sector, 512);
     assert_eq!(header.sectors_per_cluster, 8);
+    assert_eq!(header.metadata_size, 65_536);
+    assert_eq!(header.volume_size, 0);
+    assert_eq!(header.version, 7);
     assert_eq!(header.metadata_offsets[0], 34_603_008);
   }
 }

@@ -1,5 +1,6 @@
 //! BitLocker volume driver and probe registration.
 
+mod crypto;
 mod driver;
 mod header;
 mod metadata;
@@ -7,7 +8,10 @@ mod system;
 
 pub use driver::BitlockerDriver;
 pub use header::{BitlockerHeaderFlavor, BitlockerVolumeHeader};
-pub use metadata::{BitlockerMetadataBlockHeader, BitlockerMetadataHeader};
+pub use metadata::{
+  BitlockerEncryptionMethod, BitlockerKeyProtectorKind, BitlockerMetadata,
+  BitlockerMetadataBlockHeader, BitlockerMetadataHeader, BitlockerVolumeMasterKey,
+};
 pub use system::BitlockerVolumeSystem;
 
 use crate::{
