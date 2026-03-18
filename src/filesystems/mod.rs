@@ -10,3 +10,4 @@ pub mod ntfs;
 
 pub use driver::{FileSystem, FileSystemDriver};
 pub use node::{DirectoryEntry, FileSystemNodeId, FileSystemNodeKind, FileSystemNodeRecord};
+pub use ntfs::{NtfsDriver, NtfsFileSystem};

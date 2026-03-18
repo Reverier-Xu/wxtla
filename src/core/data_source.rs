@@ -76,6 +76,47 @@ pub trait DataSource: Send + Sync {
   }
 }
 
+/// In-memory data source backed by immutable bytes.
+pub struct BytesDataSource {
+  bytes: Arc<[u8]>,
+}
+
+impl BytesDataSource {
+  /// Create an in-memory data source from owned or shared bytes.
+  pub fn new(bytes: impl Into<Arc<[u8]>>) -> Self {
+    Self {
+      bytes: bytes.into(),
+    }
+  }
+}
+
+impl DataSource for BytesDataSource {
+  fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+    let Ok(offset) = usize::try_from(offset) else {
+      return Ok(0);
+    };
+    if offset >= self.bytes.len() || buf.is_empty() {
+      return Ok(0);
+    }
+
+    let available = (self.bytes.len() - offset).min(buf.len());
+    buf[..available].copy_from_slice(&self.bytes[offset..offset + available]);
+    Ok(available)
+  }
+
+  fn size(&self) -> Result<u64> {
+    Ok(self.bytes.len() as u64)
+  }
+
+  fn capabilities(&self) -> DataSourceCapabilities {
+    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+  }
+
+  fn telemetry_name(&self) -> &'static str {
+    "core.bytes_data_source"
+  }
+}
+
 /// OS file-backed data source with random-access reads.
 pub struct FileDataSource {
   file: File,
@@ -554,6 +595,16 @@ mod tests {
     };
 
     assert_eq!(source.read_all().unwrap(), b"read-all");
+  }
+
+  #[test]
+  fn bytes_data_source_reads_shared_memory() {
+    let source = BytesDataSource::new(Arc::<[u8]>::from(&b"shared-bytes"[..]));
+    let mut buf = [0u8; 6];
+
+    let read = source.read_at(7, &mut buf).unwrap();
+    assert_eq!(read, 5);
+    assert_eq!(&buf[..read], b"bytes");
   }
 
   #[test]

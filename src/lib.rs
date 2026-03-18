@@ -9,7 +9,7 @@ pub mod images;
 pub mod volumes;
 
 pub use core::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceReadConcurrency,
+  BytesDataSource, DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceReadConcurrency,
   DataSourceReadStats, DataSourceReadStatsSnapshot, DataSourceSeekCost, Error, FileDataSource,
   FormatDescriptor, FormatKind, FormatProbe, ObservedDataSource, ProbeCachedDataSource,
   ProbeConfidence, ProbeContext, ProbeMatch, ProbeOptions, ProbeRegistry, ProbeReport, ProbeResult,

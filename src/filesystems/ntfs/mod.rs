@@ -1,5 +1,16 @@
-//! NTFS filesystem descriptor and probe registration.
+//! NTFS filesystem driver and probe registration.
 
+mod boot_sector;
+mod driver;
+mod filesystem;
+mod record;
+mod runlist;
+
+pub use boot_sector::NtfsBootSector;
+pub use driver::NtfsDriver;
+pub use filesystem::NtfsFileSystem;
+
+use self::boot_sector::BOOT_SECTOR_SIZE;
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
   ProbeRegistry, ProbeResult, Result,
@@ -13,8 +24,6 @@ inventory::submit! {
   crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
 }
 
-const OEM_ID: &[u8] = b"NTFS    ";
-
 fn register_probes(registry: &mut ProbeRegistry) {
   registry.register(NtfsProbe);
 }
@@ -27,22 +36,14 @@ impl FormatProbe for NtfsProbe {
   }
 
   fn probe(&self, context: &ProbeContext<'_>) -> Result<ProbeResult> {
-    let Ok(signature) = context.read_bytes_at(510, 2) else {
+    let Ok(header) = context.header(BOOT_SECTOR_SIZE) else {
       return Ok(ProbeResult::rejected());
     };
-    if signature != [0x55, 0xAA] {
-      return Ok(ProbeResult::rejected());
-    }
-
-    let Ok(oem_id) = context.read_bytes_at(3, OEM_ID.len()) else {
-      return Ok(ProbeResult::rejected());
-    };
-
-    if oem_id == OEM_ID {
+    if boot_sector::NtfsBootSector::from_bytes(&header).is_ok() {
       Ok(ProbeResult::matched(ProbeMatch::new(
         DESCRIPTOR,
         ProbeConfidence::Exact,
-        "ntfs oem id found in boot sector",
+        "ntfs boot sector geometry is valid",
       )))
     } else {
       Ok(ProbeResult::rejected())

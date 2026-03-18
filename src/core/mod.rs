@@ -6,9 +6,9 @@ mod probe;
 mod resolver;
 
 pub use data_source::{
-  DataSource, DataSourceCapabilities, DataSourceReadConcurrency, DataSourceReadStats,
-  DataSourceReadStatsSnapshot, DataSourceSeekCost, FileDataSource, ObservedDataSource,
-  ProbeCachedDataSource, SharedDataSource, SliceDataSource,
+  BytesDataSource, DataSource, DataSourceCapabilities, DataSourceReadConcurrency,
+  DataSourceReadStats, DataSourceReadStatsSnapshot, DataSourceSeekCost, FileDataSource,
+  ObservedDataSource, ProbeCachedDataSource, SharedDataSource, SliceDataSource,
 };
 pub use error::{Error, Result};
 pub use probe::{
