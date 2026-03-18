@@ -334,32 +334,28 @@ impl BitlockerMetadata {
         ENTRY_TYPE_VOLUME_MASTER_KEY => {
           volume_master_keys.push(parse_volume_master_key(entry)?);
         }
-        ENTRY_TYPE_FULL_VOLUME_ENCRYPTION_KEY | 0x000B => {
-          if full_volume_encryption_key.is_none() {
-            full_volume_encryption_key = Some(parse_aes_ccm_encrypted_key(entry)?);
-          }
+        ENTRY_TYPE_FULL_VOLUME_ENCRYPTION_KEY | 0x000B if full_volume_encryption_key.is_none() => {
+          full_volume_encryption_key = Some(parse_aes_ccm_encrypted_key(entry)?);
         }
-        ENTRY_TYPE_STARTUP_KEY => {
-          if startup_key_external_key.is_none() {
-            startup_key_external_key = Some(parse_external_key(entry)?);
-          }
+        ENTRY_TYPE_STARTUP_KEY if startup_key_external_key.is_none() => {
+          startup_key_external_key = Some(parse_external_key(entry)?);
         }
-        ENTRY_TYPE_DESCRIPTION => {
-          if description.is_none() && entry.value_type == VALUE_TYPE_UNICODE_STRING {
-            description = Some(parse_utf16le_string(&entry.value_data)?);
-          }
+        ENTRY_TYPE_DESCRIPTION
+          if description.is_none() && entry.value_type == VALUE_TYPE_UNICODE_STRING =>
+        {
+          description = Some(parse_utf16le_string(&entry.value_data)?);
         }
-        ENTRY_TYPE_VOLUME_HEADER_BLOCK => {
-          if entry.value_type == VALUE_TYPE_OFFSET_AND_SIZE && entry.value_data.len() >= 16 {
-            let offset = le_u64(&entry.value_data[0..8])?;
-            if offset != block_header.volume_header_offset {
-              return Err(Error::InvalidFormat(
-                "bitlocker metadata volume header offset does not match the metadata block header"
-                  .to_string(),
-              ));
-            }
-            volume_header_size = le_u64(&entry.value_data[8..16])?;
+        ENTRY_TYPE_VOLUME_HEADER_BLOCK
+          if entry.value_type == VALUE_TYPE_OFFSET_AND_SIZE && entry.value_data.len() >= 16 =>
+        {
+          let offset = le_u64(&entry.value_data[0..8])?;
+          if offset != block_header.volume_header_offset {
+            return Err(Error::InvalidFormat(
+              "bitlocker metadata volume header offset does not match the metadata block header"
+                .to_string(),
+            ));
           }
+          volume_header_size = le_u64(&entry.value_data[8..16])?;
         }
         _ => {}
       }

@@ -477,7 +477,7 @@ fn normalize_path(path: &str, is_dir: bool) -> Result<String> {
     .split('/')
     .filter(|component| !component.is_empty() && *component != ".")
     .collect::<Vec<_>>();
-  if components.iter().any(|component| *component == "..") {
+  if components.contains(&"..") {
     return Err(Error::InvalidFormat(
       "tar paths must not contain parent directory traversals".to_string(),
     ));
