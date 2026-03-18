@@ -18,8 +18,9 @@ use super::{
   snapshot::QcowSnapshot,
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
-  SourceHints, images::Image,
+  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, RelatedPathBuf,
+  RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SourceHints,
+  SourceIdentity, images::Image,
 };
 
 /// Read-only QCOW image surface.
@@ -78,16 +79,19 @@ impl QcowImage {
           "qcow backing files require a source identity hint".to_string(),
         )
       })?;
-      let backing_path = identity.sibling_path(backing_file_name)?;
+      let (backing_source, backing_path) = resolve_named_source(
+        resolver,
+        identity,
+        backing_file_name,
+        RelatedSourcePurpose::BackingFile,
+      )?
+      .ok_or_else(|| Error::NotFound(format!("missing qcow backing file: {backing_file_name}")))?;
+      if &backing_path == identity.logical_path() {
+        return Err(Error::InvalidFormat(
+          "qcow backing file hint resolves to the same image".to_string(),
+        ));
+      }
       let backing_identity = crate::SourceIdentity::new(backing_path.clone());
-      let backing_source = resolver
-        .resolve(&crate::RelatedSourceRequest::new(
-          crate::RelatedSourcePurpose::BackingFile,
-          backing_path,
-        ))?
-        .ok_or_else(|| {
-          Error::NotFound(format!("missing qcow backing file: {backing_file_name}"))
-        })?;
       Some(Arc::new(Self::open_with_hints(
         backing_source,
         SourceHints::new()
@@ -110,19 +114,23 @@ impl QcowImage {
             "qcow external data files require a source identity hint".to_string(),
           )
         })?;
-        let external_path = identity.sibling_path(external_data_path)?;
-        Some(
-          resolver
-            .resolve(&crate::RelatedSourceRequest::new(
-              crate::RelatedSourcePurpose::Extent,
-              external_path,
-            ))?
-            .ok_or_else(|| {
-              Error::NotFound(format!(
-                "missing qcow external data file: {external_data_path}"
-              ))
-            })?,
-        )
+        let (external_source, external_path) = resolve_named_source(
+          resolver,
+          identity,
+          external_data_path,
+          RelatedSourcePurpose::Extent,
+        )?
+        .ok_or_else(|| {
+          Error::NotFound(format!(
+            "missing qcow external data file: {external_data_path}"
+          ))
+        })?;
+        if &external_path == identity.logical_path() {
+          return Err(Error::InvalidFormat(
+            "qcow external data path resolves to the same image".to_string(),
+          ));
+        }
+        Some(external_source)
       } else {
         None
       };
@@ -521,6 +529,28 @@ impl Image for QcowImage {
   }
 }
 
+fn resolve_named_source(
+  resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity, name: &str,
+  purpose: RelatedSourcePurpose,
+) -> Result<Option<(DataSourceHandle, RelatedPathBuf)>> {
+  if let Ok(relative) = RelatedPathBuf::from_relative_path(name)
+    && let Some(parent) = identity.logical_path().parent()
+  {
+    let joined = parent.join(&relative);
+    if let Some(source) = resolver.resolve(&RelatedSourceRequest::new(purpose, joined.clone()))? {
+      return Ok(Some((source, joined)));
+    }
+  }
+
+  let file_name = name.rsplit(['\\', '/']).next().unwrap_or(name);
+  let sibling = identity.sibling_path(file_name)?;
+  Ok(
+    resolver
+      .resolve(&RelatedSourceRequest::new(purpose, sibling.clone()))?
+      .map(|source| (source, sibling)),
+  )
+}
+
 #[cfg(test)]
 mod tests {
   use std::{collections::HashMap, io::Write, path::Path, sync::Arc};
@@ -658,6 +688,32 @@ mod tests {
   }
 
   #[test]
+  fn resolves_relative_backing_file_paths() {
+    let base_data = repeat_byte(0x3C, 65_536);
+    let base_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_synthetic_qcow(Some(&base_data), None),
+    });
+    let overlay_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_synthetic_qcow(None, Some("../base/base.qcow2")),
+    });
+    let resolver = Resolver {
+      files: HashMap::from([("images/overlay/../base/base.qcow2".to_string(), base_source)]),
+    };
+    let identity = SourceIdentity::from_relative_path("images/overlay/child.qcow2").unwrap();
+
+    let image = QcowImage::open_with_hints(
+      overlay_source,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert_eq!(image.backing_file_name(), Some("../base/base.qcow2"));
+    assert_eq!(image.read_all().unwrap(), base_data);
+  }
+
+  #[test]
   fn reads_compressed_clusters_from_synthetic_qcow() {
     let cluster = repeat_byte(0x7E, 65_536);
     let image = QcowImage::open(Arc::new(MemDataSource {
@@ -725,6 +781,32 @@ mod tests {
     .unwrap();
 
     assert!(image.uses_external_data_file());
+    assert_eq!(image.read_all().unwrap(), external_cluster);
+  }
+
+  #[test]
+  fn resolves_relative_external_data_paths() {
+    let external_cluster = repeat_byte(0x5A, 65_536);
+    let metadata_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_synthetic_qcow_external_data("../data/disk.raw"),
+    });
+    let external_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: external_cluster.clone(),
+    });
+    let resolver = Resolver {
+      files: HashMap::from([("images/meta/../data/disk.raw".to_string(), external_source)]),
+    };
+    let identity = SourceIdentity::from_relative_path("images/meta/disk.qcow2").unwrap();
+
+    let image = QcowImage::open_with_hints(
+      metadata_source,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert_eq!(image.external_data_path(), Some("../data/disk.raw"));
     assert_eq!(image.read_all().unwrap(), external_cluster);
   }
 
