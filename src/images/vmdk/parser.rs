@@ -3,16 +3,13 @@
 use std::sync::Arc;
 
 use super::{
-  constants,
-  cowd_header::VmdkCowdHeader,
-  descriptor::{VmdkDescriptor, VmdkExtentAccessMode, VmdkExtentType, VmdkFileType},
-  header::VmdkSparseHeader,
+  constants, cowd_header::VmdkCowdHeader, descriptor::VmdkDescriptor, header::VmdkSparseHeader,
 };
 use crate::{DataSource, DataSourceHandle, Error, Result};
 
-pub(super) struct ParsedVmdk {
+pub(super) struct ParsedSparseExtent {
   pub header: VmdkSparseHeader,
-  pub descriptor: VmdkDescriptor,
+  pub embedded_descriptor: Option<VmdkDescriptor>,
   pub grain_directory: Arc<[u32]>,
 }
 
@@ -21,22 +18,31 @@ pub(super) struct ParsedCowdVmdk {
   pub grain_directory: Arc<[u32]>,
 }
 
-pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedVmdk> {
+pub(super) fn parse_sparse_extent(source: DataSourceHandle) -> Result<ParsedSparseExtent> {
   let source_size = source.size()?;
   let header = VmdkSparseHeader::read(source.as_ref())?;
-  if header.has_compressed_grains() || header.has_markers() {
+  if header.has_compressed_grains() && header.compression_method == 0 {
     return Err(Error::InvalidFormat(
-      "compressed or marker-based vmdk sparse extents are not supported yet".to_string(),
+      "vmdk compressed grains require a compression method".to_string(),
     ));
   }
+  if header.compression_method != 0 && !header.has_compressed_grains() {
+    return Err(Error::InvalidFormat(
+      "vmdk compression method requires the compressed-grains flag".to_string(),
+    ));
+  }
+  let directory_header = resolve_directory_header(source.as_ref(), source_size, header)?;
 
-  let descriptor = read_descriptor(source.as_ref(), header, source_size)?;
-  validate_descriptor_against_header(&header, &descriptor)?;
-  let grain_directory = read_grain_directory(source.as_ref(), header, source_size)?;
+  let embedded_descriptor = if header.has_embedded_descriptor() {
+    Some(read_descriptor(source.as_ref(), header, source_size)?)
+  } else {
+    None
+  };
+  let grain_directory = read_grain_directory(source.as_ref(), directory_header, source_size)?;
 
-  Ok(ParsedVmdk {
+  Ok(ParsedSparseExtent {
     header,
-    descriptor,
+    embedded_descriptor,
     grain_directory,
   })
 }
@@ -44,12 +50,6 @@ pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedVmdk> {
 pub(super) fn parse_cowd(source: DataSourceHandle) -> Result<ParsedCowdVmdk> {
   let source_size = source.size()?;
   let header = VmdkCowdHeader::read(source.as_ref())?;
-  if !header.parent_path.is_empty() || header.parent_generation != 0 {
-    return Err(Error::InvalidSourceReference(
-      "parent-backed vmdk cowd extents are not supported yet".to_string(),
-    ));
-  }
-
   let grain_directory = read_cowd_grain_directory(source.as_ref(), &header, source_size)?;
 
   Ok(ParsedCowdVmdk {
@@ -100,61 +100,13 @@ fn read_descriptor(
   )?;
   VmdkDescriptor::from_bytes(&descriptor_bytes)
 }
-
-fn validate_descriptor_against_header(
-  header: &VmdkSparseHeader, descriptor: &VmdkDescriptor,
-) -> Result<()> {
-  if descriptor.file_type != VmdkFileType::MonolithicSparse {
-    return Err(Error::InvalidFormat(format!(
-      "unsupported vmdk create type in the current step: {:?}",
-      descriptor.file_type
-    )));
-  }
-  if descriptor.parent_content_id.is_some() || descriptor.parent_file_name_hint.is_some() {
-    return Err(Error::InvalidSourceReference(
-      "parent-backed vmdk layers are not supported yet".to_string(),
-    ));
-  }
-  if descriptor.extents.len() != 1 {
-    return Err(Error::InvalidFormat(
-      "monolithic sparse vmdk images must declare exactly one extent".to_string(),
-    ));
-  }
-
-  let extent = &descriptor.extents[0];
-  if extent.access_mode == VmdkExtentAccessMode::Unknown
-    || extent.access_mode == VmdkExtentAccessMode::NoAccess
-  {
-    return Err(Error::InvalidFormat(
-      "unsupported vmdk extent access mode".to_string(),
-    ));
-  }
-  if extent.extent_type != VmdkExtentType::Sparse {
-    return Err(Error::InvalidFormat(
-      "monolithic sparse vmdk images must use a SPARSE extent".to_string(),
-    ));
-  }
-  if extent.start_sector != 0 {
-    return Err(Error::InvalidFormat(
-      "monolithic sparse vmdk extents must start at sector 0".to_string(),
-    ));
-  }
-  if extent.sector_count != header.capacity_sectors {
-    return Err(Error::InvalidFormat(
-      "vmdk descriptor extent length does not match the sparse header capacity".to_string(),
-    ));
-  }
-
-  Ok(())
-}
-
 fn read_grain_directory(
   source: &dyn DataSource, header: VmdkSparseHeader, source_size: u64,
 ) -> Result<Arc<[u32]>> {
   let directory_start_sector = header.active_grain_directory_start_sector();
   if directory_start_sector == constants::GD_AT_END {
     return Err(Error::InvalidFormat(
-      "gd-at-end sparse vmdk layouts are not supported yet".to_string(),
+      "vmdk grain directory start sector is unresolved".to_string(),
     ));
   }
   let entry_count = grain_directory_entry_count(header)?;
@@ -216,6 +168,41 @@ fn read_grain_directory(
   }
 
   Ok(Arc::from(entries))
+}
+
+fn resolve_directory_header(
+  source: &dyn DataSource, source_size: u64, header: VmdkSparseHeader,
+) -> Result<VmdkSparseHeader> {
+  if !header.uses_gd_at_end() {
+    return Ok(header);
+  }
+  if source_size < 1024 {
+    return Err(Error::InvalidFormat(
+      "vmdk gd-at-end layouts require a footer header near end-of-file".to_string(),
+    ));
+  }
+
+  let footer_offset = source_size - 1024;
+  let footer = VmdkSparseHeader::read_at(source, footer_offset)?;
+  if footer.uses_gd_at_end() {
+    return Err(Error::InvalidFormat(
+      "vmdk footer header must expose the final grain-directory offset".to_string(),
+    ));
+  }
+  if header.capacity_sectors != footer.capacity_sectors
+    || header.sectors_per_grain != footer.sectors_per_grain
+    || header.grain_table_entries != footer.grain_table_entries
+    || header.descriptor_start_sector != footer.descriptor_start_sector
+    || header.descriptor_size_sectors != footer.descriptor_size_sectors
+    || header.flags != footer.flags
+    || header.compression_method != footer.compression_method
+  {
+    return Err(Error::InvalidFormat(
+      "vmdk footer header does not match the primary sparse header".to_string(),
+    ));
+  }
+
+  Ok(footer)
 }
 
 fn read_cowd_grain_directory(

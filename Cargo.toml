@@ -20,6 +20,7 @@ strip         = true
 adler2    = "2.0"
 crc32fast = "1.5"
 crc32c    = "0.6"
+encoding_rs = "0.8"
 flate2    = "1.1"
 inventory = "0.3"
 thiserror = "2.0"

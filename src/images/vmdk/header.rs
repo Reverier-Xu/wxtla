@@ -28,11 +28,17 @@ pub struct VmdkSparseHeader {
   pub metadata_size_sectors: u64,
   /// Dirty flag.
   pub is_dirty: bool,
+  /// Compression method identifier.
+  pub compression_method: u16,
 }
 
 impl VmdkSparseHeader {
   pub fn read(source: &dyn DataSource) -> Result<Self> {
-    let data = source.read_bytes_at(0, constants::SPARSE_HEADER_SIZE)?;
+    Self::read_at(source, 0)
+  }
+
+  pub fn read_at(source: &dyn DataSource, offset: u64) -> Result<Self> {
+    let data = source.read_bytes_at(offset, constants::SPARSE_HEADER_SIZE)?;
     Self::from_bytes(&data)
   }
 
@@ -107,9 +113,10 @@ impl VmdkSparseHeader {
         "invalid vmdk sectors-per-grain value: {sectors_per_grain}"
       )));
     }
-    if descriptor_start_sector == 0 || descriptor_size_sectors == 0 {
+    if (descriptor_start_sector == 0) != (descriptor_size_sectors == 0) {
       return Err(Error::InvalidFormat(
-        "vmdk sparse extents must carry a non-empty embedded descriptor".to_string(),
+        "vmdk sparse header descriptor location must be fully specified or fully absent"
+          .to_string(),
       ));
     }
     if grain_table_entries == 0 {
@@ -136,9 +143,15 @@ impl VmdkSparseHeader {
         "vmdk sparse header requires a non-zero secondary grain directory".to_string(),
       ));
     }
-    if u16::from_le_bytes([data[77], data[78]]) != 0 {
+    let compression_method = u16::from_le_bytes([data[77], data[78]]);
+    if compression_method > 1 {
+      return Err(Error::InvalidFormat(format!(
+        "unsupported vmdk compression method: {compression_method}"
+      )));
+    }
+    if compression_method != 0 && flags & constants::FLAG_HAS_COMPRESSED_GRAINS == 0 {
       return Err(Error::InvalidFormat(
-        "compressed vmdk grains are not supported yet".to_string(),
+        "vmdk compression method requires the compressed-grains flag".to_string(),
       ));
     }
 
@@ -154,6 +167,7 @@ impl VmdkSparseHeader {
       primary_grain_directory_start_sector,
       metadata_size_sectors,
       is_dirty: data[72] != 0,
+      compression_method,
     })
   }
 
@@ -187,12 +201,20 @@ impl VmdkSparseHeader {
     self.flags & constants::FLAG_HAS_MARKERS != 0
   }
 
+  pub fn uses_gd_at_end(self) -> bool {
+    self.primary_grain_directory_start_sector == constants::GD_AT_END
+  }
+
   pub fn active_grain_directory_start_sector(self) -> u64 {
     if self.uses_secondary_grain_directory() {
       self.secondary_grain_directory_start_sector
     } else {
       self.primary_grain_directory_start_sector
     }
+  }
+
+  pub fn has_embedded_descriptor(self) -> bool {
+    self.descriptor_start_sector != 0 && self.descriptor_size_sectors != 0
   }
 }
 
