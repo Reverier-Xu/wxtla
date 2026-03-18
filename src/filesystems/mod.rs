@@ -9,6 +9,7 @@ pub mod hfs;
 pub mod ntfs;
 
 pub use driver::{FileSystem, FileSystemDriver};
+pub use ext::{ExtDriver, ExtFileSystem};
 pub use fat::{FatDriver, FatFileSystem};
 pub use node::{DirectoryEntry, FileSystemNodeId, FileSystemNodeKind, FileSystemNodeRecord};
 pub use ntfs::{NtfsDriver, NtfsFileSystem};
