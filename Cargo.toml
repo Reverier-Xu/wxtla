@@ -19,7 +19,11 @@ strip         = true
 [dependencies]
 adler2    = "2.0"
 crc32fast = "1.5"
+crc32c    = "0.6"
 flate2    = "1.1"
 inventory = "0.3"
 thiserror = "2.0"
 zstd      = "0.13"
+
+[dev-dependencies]
+md5 = "0.8"

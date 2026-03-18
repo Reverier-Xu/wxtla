@@ -1,4 +1,21 @@
-//! VHDX image descriptor and probe registration.
+//! VHDX image driver and probe registration.
+
+mod cache;
+mod constants;
+mod driver;
+mod guid;
+mod header;
+mod image;
+mod metadata;
+mod parent_locator;
+mod parser;
+
+pub use driver::VhdxDriver;
+pub use guid::VhdxGuid;
+pub use header::VhdxImageHeader;
+pub use image::VhdxImage;
+pub use metadata::{VhdxDiskType, VhdxMetadata};
+pub use parent_locator::{VhdxParentLocator, VhdxParentLocatorEntry};
 
 use crate::{
   FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,

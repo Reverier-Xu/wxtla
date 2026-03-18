@@ -307,15 +307,15 @@ impl Image for VhdImage {
 fn resolve_parent_candidate(
   resolver: &dyn crate::RelatedSourceResolver, identity: &crate::SourceIdentity, candidate: &str,
 ) -> Result<Option<(DataSourceHandle, crate::RelatedPathBuf)>> {
-  if let Ok(relative) = crate::RelatedPathBuf::from_relative_path(candidate) {
-    if let Some(parent) = identity.logical_path().parent() {
-      let joined = parent.join(&relative);
-      if let Some(source) = resolver.resolve(&crate::RelatedSourceRequest::new(
-        crate::RelatedSourcePurpose::BackingFile,
-        joined,
-      ))? {
-        return Ok(Some((source, parent.join(&relative))));
-      }
+  if let Ok(relative) = crate::RelatedPathBuf::from_relative_path(candidate)
+    && let Some(parent) = identity.logical_path().parent()
+  {
+    let joined = parent.join(&relative);
+    if let Some(source) = resolver.resolve(&crate::RelatedSourceRequest::new(
+      crate::RelatedSourcePurpose::BackingFile,
+      joined.clone(),
+    ))? {
+      return Ok(Some((source, joined)));
     }
   }
 
