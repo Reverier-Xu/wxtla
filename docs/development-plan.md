@@ -121,7 +121,7 @@ These crates may be useful as references during implementation or for test cross
 
 That means the correct long-term split is:
 
-- `wxtla`: `DataSource` + future `RelatedSourceResolver`
+- `wxtla`: `DataSource` + future `TableSource` + `RelatedSourceResolver`
 - `regressor`: local file opening, mount/session routing, and VFS behavior
 
 ## 3. Concurrent read architecture
@@ -168,9 +168,10 @@ Important properties:
    - runlist/extent cache
    - decompressed block cache where needed
 6. Typed parser APIs
-   - image/container readers
-   - partition/volume readers
-   - single-filesystem read-only readers
+    - image/container readers
+    - partition/volume readers
+    - single-filesystem read-only readers
+    - future `TableSource`-backed database readers
 
 ### 3.3 Concurrency rules
 
@@ -192,8 +193,36 @@ The intended WXTLA stack is:
 - image/container parser -> yields logical readable address space and child descriptors
 - partition/volume parser -> yields partition slices / logical volumes
 - filesystem parser -> yields directory/file metadata and file content readers
+- table/database parser -> yields schemas, tables, rows, and typed cell/blob access through a future `TableSource`
 
 Each layer stays individually reusable. `regressor` can compose them into a VFS, but `wxtla` itself should stop at typed read-only parser outputs.
+
+### 4.1 Planned second core read interface: `TableSource`
+
+`DataSource` remains the correct primitive for byte-addressable media, files, archive members, image payloads, and filesystem file contents. It is not sufficient for structured forensic databases where the natural consumer model is tables, columns, rows, and large cell/blob payloads.
+
+The planned second core interface is therefore `TableSource`, which should model read-only structured stores such as ESE databases, thumbnail caches, browser cache databases, mail stores that can be projected into tables, and similar record-heavy formats.
+
+The interface should stay intentionally small and parser-facing:
+
+```rust
+trait TableSource: Send + Sync {
+    fn tables(&self) -> Result<Vec<TableInfo>>;
+    fn schema(&self, table_id: TableId) -> Result<TableSchema>;
+    fn scan_rows(&self, table_id: TableId) -> Result<Box<dyn RowCursor>>;
+    fn open_blob(&self, table_id: TableId, row_id: RowId, column_id: ColumnId) -> Result<Option<DataSourceHandle>>;
+    fn telemetry_name(&self) -> &'static str;
+}
+```
+
+Design constraints for `TableSource`:
+
+- read-only only
+- schema-first, not SQL-first
+- no query planner inside `wxtla`
+- row iteration may be sequential even when `DataSource` stays concurrent underneath
+- large binary/text cells should be exposed as `DataSourceHandle` when streaming is more appropriate than materialization
+- the abstraction must work for true relational stores and for table-shaped forensic stores that are not fully relational
 
 ## 5. Migration plan
 
@@ -245,11 +274,15 @@ Common concerns for this phase:
 
 ### Phase 5: filesystem parsers
 
-- FAT12 / FAT16 / FAT32
-- NTFS
-- ext2 / ext3 / ext4
-- XFS
-- HFS / HFS+ / HFSX
+The filesystem wave should now follow common forensic prevalence instead of historical implementation convenience:
+
+1. NTFS (`libfsntfs`)
+2. FAT12 / FAT16 / FAT32 (`libfsfat`)
+3. ext2 / ext3 / ext4 (`libfsext`)
+4. APFS (`libfsapfs`)
+5. HFS / HFS+ / HFSX (`libfshfs`)
+6. XFS (`libfsxfs`)
+7. ReFS (`libfsrefs`)
 
 Common concerns for this phase:
 
@@ -259,13 +292,33 @@ Common concerns for this phase:
 - timestamp conversion
 - encoding/normalization edge cases
 
-### Phase 6: volume manager and stacking
+### Phase 6: table/database parsers
+
+After the filesystem wave lands, add a `TableSource` domain for the highest-value structured forensic stores that already have mature `libyal` references:
+
+1. ESE / EDB (`libesedb`)
+2. Windows thumbnail cache databases (`libwtcdb`)
+3. Windows SuperFetch / application database (`libagdb`)
+4. MSIE cache / `index.dat` (`libmsiecf`)
+5. Exchange MAPI database (`libmapidb`)
+6. Notes NSF database (`libnsfdb`)
+7. PST / OFF projections (`libpff`) for message/folder/attachment table views
+
+These formats are not identical in structure, but they can share a read-only table-centric surface as long as `wxtla` keeps the abstraction schema-first and avoids pretending that every store is a general-purpose SQL engine.
+
+Structured stores that are important but should not be forced into the first `TableSource` wave include:
+
+- registry hives (`libregf`) - better modeled as hierarchical key/value stores
+- event logs (`libevt`, `libevtx`) - better modeled as append-only record streams
+- compound document containers (`libolecf`) - better modeled as nested storage/file graphs
+
+### Phase 7: volume manager and stacking
 
 - LVM2
 - stacked flows such as image -> partition map -> filesystem
 - performance tuning across layered sources
 
-### Phase 7: regressor adoption and keramics retirement
+### Phase 8: regressor adoption and keramics retirement
 
 - add a thin `regressor` adapter layer over WXTLA typed parsers
 - replace the current keramics bridge incrementally
@@ -289,19 +342,30 @@ The current landed state is:
 - stacked volume-manager support completed for `bitlocker` and `lvm2`
 - image layer completed for `ewf`, `qcow`, `vhd`, `vhdx`, `vmdk`, `udif`, `sparseimage`, `sparsebundle`, `pdi`, and `splitraw`
 - archive layer completed for `ad1`, `tar`, `zip`, `7z`, and `rar`
-- current next format target is `fat12`
+- current next format target is `ntfs`
 
 The active migration strategy is therefore:
 
 1. move on to full filesystem drivers
-2. revisit stacked-volume polish only after the filesystem layer lands
+2. add the `TableSource` database wave after the filesystem layer has initial coverage
+3. revisit stacked-volume polish only after filesystems and table stores are stable
 
 The concrete next-stage order is:
 
 1. filesystem formats in this order:
+   - `ntfs`
    - `fat12` / `fat16` / `fat32`
    - `ext2` / `ext3` / `ext4`
-   - `ntfs`
+   - `apfs`
    - `hfs` / `hfs+` / `hfsx`
    - `xfs`
-2. deeper stacking/performance work
+   - `refs`
+2. `TableSource` database formats in this order:
+   - `esedb`
+   - `wtcdb`
+   - `agdb`
+   - `msiecf`
+   - `mapidb`
+   - `nsfdb`
+   - `pff` table projections
+3. deeper stacking/performance work

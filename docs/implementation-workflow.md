@@ -78,7 +78,7 @@ The active migration order is now image-first after the already-landed volume la
 
 ### Current next target
 
-- `fat`
+- `ntfs`
 
 ### Remaining image targets after that
 
@@ -87,12 +87,26 @@ The active migration order is now image-first after the already-landed volume la
 ### After images
 
 - filesystem formats in this order:
+  - `ntfs`
   - `fat`
   - `ext`
-  - `ntfs`
+  - `apfs`
   - `hfs`
   - `xfs`
-- stacked-volume polish only after the filesystem layer is stable
+  - `refs`
+- then table/database formats through the planned `TableSource` layer:
+  - `esedb`
+  - `wtcdb`
+  - `agdb`
+  - `msiecf`
+  - `mapidb`
+  - `nsfdb`
+  - `pff` table projections
+- stacked-volume polish only after the filesystem and table layers are stable
+
+### Planned core addition before or during the database wave
+
+- add `TableSource` as the second parser-facing read surface next to `DataSource`
 
 ## 3. Quality policy for parser code
 

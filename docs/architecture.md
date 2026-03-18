@@ -24,6 +24,7 @@ The crate is organized by parser domain:
 - `src/volumes/`: partition and volume-system formats such as `mbr`, `gpt`, and `apm`
 - `src/filesystems/`: read-only filesystem drivers
 - `src/archives/`: read-only archive drivers
+- future `src/tables/` or `src/databases/`: read-only structured table/database drivers
 
 Each concrete format sits in its own module subtree, for example `src/images/ewf/` or `src/volumes/gpt/`. Once a format becomes non-trivial, its logic is split across multiple files by responsibility instead of accumulating in a single large module.
 
@@ -39,6 +40,19 @@ All parsers consume `DataSource`, which provides positional reads with no shared
 - capability-aware (`concurrent` vs `serialized`, `cheap` vs `expensive` seek)
 
 Wrappers such as `SliceDataSource` and `ProbeCachedDataSource` stay in `src/core/` because they are backend primitives rather than format-specific logic.
+
+### 2.1b Planned `TableSource`
+
+`DataSource` remains the correct abstraction for byte-addressable media and stream-like payloads. A second parser-facing abstraction is needed for database and table-oriented forensic formats where callers need schemas, rows, typed cells, and optional blob streaming rather than raw byte offsets.
+
+The planned `TableSource` role is:
+
+- enumerate logical tables/collections
+- expose schema metadata and typed columns
+- scan rows without embedding a SQL engine in `wxtla`
+- return `DataSourceHandle` for large cell/blob payloads when streaming is preferable
+
+This should remain a read-only parser abstraction, not a query planner or an ORM surface.
 
 ### 2.2 Source hints and resolver
 
@@ -72,6 +86,10 @@ Volume-system drivers expose discovered partitions or logical volumes as `Volume
 ### 3.3 Filesystems and archives
 
 Filesystem and archive drivers expose typed directory/file metadata and can open file contents as `DataSource`s. These higher layers should remain path-model agnostic and must not absorb VFS semantics from the application layer.
+
+### 3.4 Tables and structured stores
+
+Database and table drivers should eventually expose `TableSource` instead of forcing all structured formats into filesystem or archive semantics. The first wave should focus on truly table-like forensic stores such as ESE, thumbnail caches, and other row/column oriented databases that already have mature `libyal` references.
 
 ## 4. Format implementation pattern
 
@@ -135,15 +153,13 @@ Allowed `unwrap`/`expect` usage is limited to tests, synthetic test builders, or
 
 As of the current handoff point:
 
-- completed volume drivers: `mbr`, `gpt`, `apm`
-- completed image drivers: `ewf`, `qcow`, `vhd`
-- next active image target: `vhdx`
+- completed volume drivers: `mbr`, `gpt`, `apm`, `bitlocker`, `lvm2`
+- completed image drivers: `ewf`, `qcow`, `vhd`, `vhdx`, `vmdk`, `udif`, `sparseimage`, `sparsebundle`, `pdi`, `splitraw`
+- completed archive drivers: `ad1`, `tar`, `zip`, `7z`, `rar`
+- next active parser target: `ntfs`
 
-The current active architecture for image work is:
+The next architecture expansion after the filesystem wave begins should be:
 
-- parse immutable metadata tables first
-- validate layout and integrity before exposing a read surface
-- represent logical guest bytes as translations over cached allocation units
-- support parent/sibling resolution only through `SourceHints`
-
-That pattern should remain stable for the remaining image formats.
+- keep `DataSource` as the base byte model for media, files, and large cell/blob payloads
+- introduce `TableSource` for row/column oriented forensic databases
+- keep registry/event-log/compound-storage formats out of `TableSource` until a separate structured-store abstraction is justified

@@ -78,17 +78,41 @@ Supporting data formats used by the image/container family:
 
 | Format | Current source | Planned owner | Notes |
 | --- | --- | --- | --- |
-| FAT12 | regressor via keramics | wxtla | In-house parser required |
-| FAT16 | regressor via keramics | wxtla | In-house parser required |
-| FAT32 | regressor via keramics | wxtla | In-house parser required |
-| NTFS | regressor via keramics | wxtla | In-house parser required |
-| HFS | regressor via keramics | wxtla | In-house parser required |
-| HFS+ | regressor via keramics | wxtla | In-house parser required |
-| HFSX | regressor via keramics | wxtla | In-house parser required |
-| ext2 | regressor via keramics | wxtla | In-house parser required |
-| ext3 | regressor via keramics | wxtla | In-house parser required |
-| ext4 | regressor via keramics | wxtla | In-house parser required |
-| XFS | native regressor | wxtla | Native code exists already, but WXTLA should own it eventually |
+| NTFS | regressor via keramics + `libfsntfs` | wxtla | Highest forensic priority on Windows systems |
+| FAT12 | regressor via keramics + `libfsfat` | wxtla | Common removable / legacy media |
+| FAT16 | regressor via keramics + `libfsfat` | wxtla | Common removable / legacy media |
+| FAT32 | regressor via keramics + `libfsfat` | wxtla | Common removable / legacy media |
+| ext2 | regressor via keramics + `libfsext` | wxtla | Linux family reference implementation |
+| ext3 | regressor via keramics + `libfsext` | wxtla | Linux family reference implementation |
+| ext4 | regressor via keramics + `libfsext` | wxtla | Linux family reference implementation |
+| APFS | libyal `libfsapfs` | wxtla | Modern macOS default filesystem |
+| HFS | regressor via keramics + `libfshfs` | wxtla | Legacy Apple filesystem family |
+| HFS+ | regressor via keramics + `libfshfs` | wxtla | Legacy Apple filesystem family |
+| HFSX | regressor via keramics + `libfshfs` | wxtla | Legacy Apple filesystem family |
+| XFS | native regressor + `libfsxfs` | wxtla | Common on Linux/server deployments |
+| ReFS | libyal `libfsrefs` | wxtla | Lower-frequency but high-forensic-value Windows server filesystem |
+
+## 5a. Table and database formats
+
+Planned `TableSource` wave after initial filesystem coverage:
+
+| Format | Current source | Planned owner | Notes |
+| --- | --- | --- | --- |
+| ESE / EDB | libyal `libesedb` | wxtla | First `TableSource` target; high forensic value and common in Windows artifacts |
+| Thumbcache DB | libyal `libwtcdb` | wxtla | Small, table-like Windows cache database |
+| SuperFetch DB | libyal `libagdb` | wxtla | Windows application database / structured records |
+| IE cache / index.dat | libyal `libmsiecf` | wxtla | Legacy but still useful browser cache database |
+| Exchange MAPI DB | libyal `libmapidb` | wxtla | Complex but still table-shaped enough for later `TableSource` work |
+| Notes NSF DB | libyal `libnsfdb` | wxtla | Enterprise mail/database format |
+| PST / OFF projections | libyal `libpff` | wxtla | Expose mailbox/folder/message/attachment views through table projections |
+
+Adjacent structured stores that should be planned separately from the first `TableSource` wave:
+
+| Format | Current source | Planned owner | Notes |
+| --- | --- | --- | --- |
+| Windows Registry (REGF) | libyal `libregf` | wxtla | Better modeled as hierarchical key/value than as tables |
+| EVT / EVTX | libyal `libevt`, `libevtx` | wxtla | Better modeled as append-only record streams |
+| OLECF | libyal `libolecf` | wxtla | Compound storage graph, not table-first |
 
 ## 6. Priority view
 
@@ -98,8 +122,9 @@ Recommended implementation order:
 2. EWF / QCOW / VHD / VHDX / VMDK
 3. UDIF / sparseimage / sparsebundle / PDI / split raw runtime image handling
 4. TAR / ZIP / 7Z / RAR
-5. FAT / NTFS / ext / XFS / HFS family
-6. LVM2 and deeper stacking/performance work
+5. NTFS / FAT / ext / APFS / HFS family / XFS / ReFS
+6. `TableSource` database wave (`esedb`, `wtcdb`, `agdb`, `msiecf`, `mapidb`, `nsfdb`, `pff` projections)
+7. LVM2 and deeper stacking/performance work
 
 This order prioritizes:
 
@@ -134,4 +159,8 @@ Already landed in `wxtla`:
 
 Current next filesystem target:
 
-- `fat12`
+- `ntfs`
+
+Planned first `TableSource` target after initial filesystem coverage:
+
+- `esedb`
