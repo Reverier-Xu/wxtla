@@ -85,12 +85,19 @@ Supporting data formats used by the image/container family:
 | ext2 | regressor via keramics + `libfsext` | wxtla | Linux family reference implementation |
 | ext3 | regressor via keramics + `libfsext` | wxtla | Linux family reference implementation |
 | ext4 | regressor via keramics + `libfsext` | wxtla | Linux family reference implementation |
-| APFS | libyal `libfsapfs` | wxtla | Modern macOS default filesystem |
 | HFS | regressor via keramics + `libfshfs` | wxtla | Legacy Apple filesystem family |
 | HFS+ | regressor via keramics + `libfshfs` | wxtla | Legacy Apple filesystem family |
 | HFSX | regressor via keramics + `libfshfs` | wxtla | Legacy Apple filesystem family |
 | XFS | native regressor + `libfsxfs` | wxtla | Common on Linux/server deployments |
 | ReFS | libyal `libfsrefs` | wxtla | Lower-frequency but high-forensic-value Windows server filesystem |
+
+Long-term modern filesystem backlog:
+
+| Format | Current source | Planned owner | Notes |
+| --- | --- | --- | --- |
+| APFS | libyal `libfsapfs` | wxtla | Strong reference exists, but defer until the mainstream filesystem wave is stable |
+| Btrfs | no dedicated `libyal` filesystem parser currently identified | wxtla | Long-term research target after mainstream coverage |
+| ZFS | no dedicated `libyal` filesystem parser currently identified | wxtla | Long-term research target after mainstream coverage |
 
 ## 5a. Table and database formats
 
@@ -122,9 +129,10 @@ Recommended implementation order:
 2. EWF / QCOW / VHD / VHDX / VMDK
 3. UDIF / sparseimage / sparsebundle / PDI / split raw runtime image handling
 4. TAR / ZIP / 7Z / RAR
-5. NTFS / FAT / ext / APFS / HFS family / XFS / ReFS
-6. `TableSource` database wave (`esedb`, `wtcdb`, `agdb`, `msiecf`, `mapidb`, `nsfdb`, `pff` projections)
-7. LVM2 and deeper stacking/performance work
+5. NTFS / FAT / ext / HFS family / XFS / ReFS
+6. Long-term modern filesystems (`APFS`, `Btrfs`, `ZFS`)
+7. `TableSource` database wave (`esedb`, `wtcdb`, `agdb`, `msiecf`, `mapidb`, `nsfdb`, `pff` projections)
+8. LVM2 and deeper stacking/performance work
 
 This order prioritizes:
 

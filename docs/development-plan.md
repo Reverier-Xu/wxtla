@@ -279,10 +279,23 @@ The filesystem wave should now follow common forensic prevalence instead of hist
 1. NTFS (`libfsntfs`)
 2. FAT12 / FAT16 / FAT32 (`libfsfat`)
 3. ext2 / ext3 / ext4 (`libfsext`)
-4. APFS (`libfsapfs`)
-5. HFS / HFS+ / HFSX (`libfshfs`)
-6. XFS (`libfsxfs`)
-7. ReFS (`libfsrefs`)
+4. HFS / HFS+ / HFSX (`libfshfs`)
+5. XFS (`libfsxfs`)
+6. ReFS (`libfsrefs`)
+
+### Phase 5a: long-term modern filesystem wave
+
+The following newer copy-on-write or snapshot-heavy filesystems should be treated as a later long-term wave after the mainstream forensic set is stable:
+
+1. APFS (`libfsapfs`)
+2. Btrfs (no dedicated `libyal` filesystem parser currently identified; keep in research/backlog)
+3. ZFS (no dedicated `libyal` filesystem parser currently identified; keep in research/backlog)
+
+Reasons to defer them:
+
+- significantly more complex copy-on-write and snapshot semantics
+- lower immediate value than NTFS / FAT / ext / HFS / XFS / ReFS for the first broad coverage milestone
+- higher likelihood of needing new shared abstractions for subvolumes, snapshots, checksums, and object trees
 
 Common concerns for this phase:
 
@@ -356,11 +369,14 @@ The concrete next-stage order is:
    - `ntfs`
    - `fat12` / `fat16` / `fat32`
    - `ext2` / `ext3` / `ext4`
-   - `apfs`
    - `hfs` / `hfs+` / `hfsx`
    - `xfs`
    - `refs`
-2. `TableSource` database formats in this order:
+2. long-term filesystem targets:
+   - `apfs`
+   - `btrfs`
+   - `zfs`
+3. `TableSource` database formats in this order:
    - `esedb`
    - `wtcdb`
    - `agdb`
@@ -368,4 +384,4 @@ The concrete next-stage order is:
    - `mapidb`
    - `nsfdb`
    - `pff` table projections
-3. deeper stacking/performance work
+4. deeper stacking/performance work

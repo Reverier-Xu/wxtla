@@ -90,10 +90,13 @@ The active migration order is now image-first after the already-landed volume la
   - `ntfs`
   - `fat`
   - `ext`
-  - `apfs`
   - `hfs`
   - `xfs`
   - `refs`
+- then long-term modern filesystems:
+  - `apfs`
+  - `btrfs`
+  - `zfs`
 - then table/database formats through the planned `TableSource` layer:
   - `esedb`
   - `wtcdb`
