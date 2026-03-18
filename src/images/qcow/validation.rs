@@ -71,10 +71,13 @@ pub(super) fn validate_header_layout(source: &dyn DataSource, header: &QcowHeade
       "qcow snapshot table offset is missing".to_string(),
     ));
   }
-  if header.snapshot_count == 0 && header.snapshot_table_offset != 0 {
-    return Err(Error::InvalidFormat(
-      "qcow snapshot table offset is set while no snapshots are present".to_string(),
-    ));
+  if header.snapshot_count != 0 {
+    validate_range(
+      file_size,
+      header.snapshot_table_offset,
+      40,
+      "qcow snapshot table",
+    )?;
   }
 
   if l2_entry_count == 0 {

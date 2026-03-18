@@ -11,8 +11,10 @@ use super::{
     DEFAULT_CLUSTER_CACHE_CAPACITY, DEFAULT_L2_CACHE_CAPACITY, QCOW_OFLAG_COMPRESSED,
     QCOW_OFLAG_COPIED,
   },
+  extension::QcowHeaderExtension,
   header::QcowHeader,
   parser::{ParsedQcow, parse},
+  snapshot::QcowSnapshot,
 };
 use crate::{
   DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
@@ -23,8 +25,13 @@ use crate::{
 pub struct QcowImage {
   source: DataSourceHandle,
   header: QcowHeader,
+  virtual_size: u64,
   backing_file_name: Option<String>,
+  backing_file_format: Option<String>,
+  external_data_path: Option<String>,
   backing_image: Option<DataSourceHandle>,
+  header_extensions: Arc<[QcowHeaderExtension]>,
+  snapshots: Arc<[QcowSnapshot]>,
   l1_table: Arc<[u64]>,
   l2_cache: QcowCache<Vec<u64>>,
   cluster_cache: QcowCache<Vec<u8>>,
@@ -47,7 +54,7 @@ impl QcowImage {
   /// Open a QCOW image from a single-file source.
   pub fn open(source: DataSourceHandle) -> Result<Self> {
     let parsed = parse(source.clone())?;
-    Self::from_parsed(source, parsed, None)
+    Self::from_parsed(source, parsed, None, None, None)
   }
 
   /// Open a QCOW image using source hints.
@@ -84,18 +91,24 @@ impl QcowImage {
       None
     };
 
-    Self::from_parsed(source, parsed, backing_image)
+    Self::from_parsed(source, parsed, backing_image, None, None)
   }
 
   fn from_parsed(
     source: DataSourceHandle, parsed: ParsedQcow, backing_image: Option<DataSourceHandle>,
+    l1_table_override: Option<Arc<[u64]>>, virtual_size_override: Option<u64>,
   ) -> Result<Self> {
     Ok(Self {
       source,
+      virtual_size: virtual_size_override.unwrap_or(parsed.header.virtual_size),
       header: parsed.header,
       backing_file_name: parsed.backing_file_name,
+      backing_file_format: parsed.backing_file_format,
+      external_data_path: parsed.external_data_path,
       backing_image,
-      l1_table: parsed.l1_table,
+      header_extensions: Arc::from(parsed.header_extensions),
+      snapshots: Arc::from(parsed.snapshots),
+      l1_table: l1_table_override.unwrap_or(parsed.l1_table),
       l2_cache: QcowCache::new(DEFAULT_L2_CACHE_CAPACITY),
       cluster_cache: QcowCache::new(DEFAULT_CLUSTER_CACHE_CAPACITY),
     })
@@ -109,6 +122,55 @@ impl QcowImage {
   /// Return the optional backing file name.
   pub fn backing_file_name(&self) -> Option<&str> {
     self.backing_file_name.as_deref()
+  }
+
+  /// Return the optional backing file format extension string.
+  pub fn backing_file_format(&self) -> Option<&str> {
+    self.backing_file_format.as_deref()
+  }
+
+  /// Return the optional external data path extension string.
+  pub fn external_data_path(&self) -> Option<&str> {
+    self.external_data_path.as_deref()
+  }
+
+  /// Return parsed QCOW header extensions.
+  pub fn header_extensions(&self) -> &[QcowHeaderExtension] {
+    &self.header_extensions
+  }
+
+  /// Return parsed internal snapshots.
+  pub fn snapshots(&self) -> &[QcowSnapshot] {
+    &self.snapshots
+  }
+
+  /// Open a snapshot view as a read-only image surface.
+  pub fn open_snapshot(&self, index: usize) -> Result<Self> {
+    let snapshot = self
+      .snapshots
+      .get(index)
+      .ok_or_else(|| Error::NotFound(format!("qcow snapshot index {index} is out of bounds")))?;
+    let parsed = ParsedQcow {
+      header: self.header.clone(),
+      l1_table: self.l1_table.clone(),
+      backing_file_name: self.backing_file_name.clone(),
+      backing_file_format: self.backing_file_format.clone(),
+      external_data_path: self.external_data_path.clone(),
+      header_extensions: self.header_extensions.as_ref().to_vec(),
+      snapshots: self.snapshots.as_ref().to_vec(),
+    };
+
+    Self::from_parsed(
+      self.source.clone(),
+      parsed,
+      self.backing_image.clone(),
+      Some(snapshot.l1_table.clone()),
+      Some(if snapshot.virtual_disk_size != 0 {
+        snapshot.virtual_disk_size
+      } else {
+        self.virtual_size
+      }),
+    )
   }
 
   fn cluster_size(&self) -> Result<u64> {
@@ -281,7 +343,7 @@ impl QcowImage {
 
 impl DataSource for QcowImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-    if offset >= self.header.virtual_size || buf.is_empty() {
+    if offset >= self.virtual_size || buf.is_empty() {
       return Ok(0);
     }
 
@@ -291,7 +353,7 @@ impl DataSource for QcowImage {
       let absolute_offset = offset
         .checked_add(copied as u64)
         .ok_or_else(|| Error::InvalidRange("qcow read offset overflow".to_string()))?;
-      if absolute_offset >= self.header.virtual_size {
+      if absolute_offset >= self.virtual_size {
         break;
       }
 
@@ -309,7 +371,6 @@ impl DataSource for QcowImage {
       .min(
         usize::try_from(
           self
-            .header
             .virtual_size
             .checked_sub(absolute_offset)
             .ok_or_else(|| Error::InvalidRange("qcow image range underflow".to_string()))?,
@@ -352,7 +413,7 @@ impl DataSource for QcowImage {
   }
 
   fn size(&self) -> Result<u64> {
-    Ok(self.header.virtual_size)
+    Ok(self.virtual_size)
   }
 
   fn capabilities(&self) -> DataSourceCapabilities {
@@ -554,6 +615,26 @@ mod tests {
     assert_eq!(image.read_all().unwrap(), cluster);
   }
 
+  #[test]
+  fn opens_snapshot_views_and_header_extensions() {
+    let active_cluster = repeat_byte(0xAA, 65_536);
+    let snapshot_cluster = repeat_byte(0x55, 65_536);
+    let image = QcowImage::open(Arc::new(MemDataSource {
+      data: build_synthetic_qcow_with_snapshot_and_extension(&active_cluster, &snapshot_cluster),
+    }))
+    .unwrap();
+
+    assert_eq!(image.backing_file_format(), Some("raw"));
+    assert_eq!(image.header_extensions().len(), 2);
+    assert_eq!(image.snapshots().len(), 1);
+    assert_eq!(image.snapshots()[0].name, "snapshot");
+
+    let snapshot_view = image.open_snapshot(0).unwrap();
+
+    assert_eq!(snapshot_view.read_all().unwrap(), snapshot_cluster);
+    assert_eq!(image.read_all().unwrap(), active_cluster);
+  }
+
   fn repeat_byte(byte: u8, size: usize) -> Vec<u8> {
     vec![byte; size]
   }
@@ -693,6 +774,92 @@ mod tests {
           .copy_from_slice(&compressed);
       }
     }
+
+    data
+  }
+
+  fn build_synthetic_qcow_with_snapshot_and_extension(
+    active_cluster: &[u8], snapshot_cluster: &[u8],
+  ) -> Vec<u8> {
+    const CLUSTER_BITS: u32 = 16;
+    const CLUSTER_SIZE: usize = 1 << (CLUSTER_BITS as usize);
+    const VIRTUAL_SIZE: u64 = CLUSTER_SIZE as u64;
+    const L1_OFFSET: u64 = 0x0003_0000;
+    const SNAPSHOT_TABLE_OFFSET: u64 = 0x0002_0000;
+    const ACTIVE_L2_OFFSET: u64 = 0x0004_0000;
+    const SNAPSHOT_L1_OFFSET: u64 = 0x0003_8000;
+    const SNAPSHOT_L2_OFFSET: u64 = 0x0004_8000;
+    const ACTIVE_DATA_OFFSET: u64 = 0x0005_0000;
+    const SNAPSHOT_DATA_OFFSET: u64 = 0x0006_0000;
+    const REFCOUNT_TABLE_OFFSET: u64 = 0x0001_0000;
+    let mut data = vec![0u8; 0x0007_0000];
+
+    data[0..4].copy_from_slice(b"QFI\xfb");
+    data[4..8].copy_from_slice(&3u32.to_be_bytes());
+    data[20..24].copy_from_slice(&CLUSTER_BITS.to_be_bytes());
+    data[24..32].copy_from_slice(&VIRTUAL_SIZE.to_be_bytes());
+    data[32..36].copy_from_slice(&0u32.to_be_bytes());
+    data[36..40].copy_from_slice(&1u32.to_be_bytes());
+    data[40..48].copy_from_slice(&L1_OFFSET.to_be_bytes());
+    data[48..56].copy_from_slice(&REFCOUNT_TABLE_OFFSET.to_be_bytes());
+    data[56..60].copy_from_slice(&1u32.to_be_bytes());
+    data[60..64].copy_from_slice(&1u32.to_be_bytes());
+    data[64..72].copy_from_slice(&SNAPSHOT_TABLE_OFFSET.to_be_bytes());
+    data[72..80].copy_from_slice(&0u64.to_be_bytes());
+    data[80..88].copy_from_slice(&0u64.to_be_bytes());
+    data[88..96].copy_from_slice(&0u64.to_be_bytes());
+    data[96..100].copy_from_slice(&4u32.to_be_bytes());
+    data[100..104].copy_from_slice(&112u32.to_be_bytes());
+    data[104] = 0;
+
+    let ext_offset = 112usize;
+    data[ext_offset..ext_offset + 4].copy_from_slice(&0xE2792ACAu32.to_be_bytes());
+    data[ext_offset + 4..ext_offset + 8].copy_from_slice(&3u32.to_be_bytes());
+    data[ext_offset + 8..ext_offset + 11].copy_from_slice(b"raw");
+    let end_offset = ext_offset + 16;
+    data[end_offset..end_offset + 8].fill(0);
+
+    data[L1_OFFSET as usize..L1_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0004_0000u64).to_be_bytes());
+    data[ACTIVE_L2_OFFSET as usize..ACTIVE_L2_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0005_0000u64).to_be_bytes());
+    data[ACTIVE_DATA_OFFSET as usize..ACTIVE_DATA_OFFSET as usize + active_cluster.len()]
+      .copy_from_slice(active_cluster);
+
+    let snapshot_entry_offset = SNAPSHOT_TABLE_OFFSET as usize;
+    data[snapshot_entry_offset..snapshot_entry_offset + 8]
+      .copy_from_slice(&SNAPSHOT_L1_OFFSET.to_be_bytes());
+    data[snapshot_entry_offset + 8..snapshot_entry_offset + 12]
+      .copy_from_slice(&1u32.to_be_bytes());
+    data[snapshot_entry_offset + 12..snapshot_entry_offset + 14]
+      .copy_from_slice(&5u16.to_be_bytes());
+    data[snapshot_entry_offset + 14..snapshot_entry_offset + 16]
+      .copy_from_slice(&8u16.to_be_bytes());
+    data[snapshot_entry_offset + 16..snapshot_entry_offset + 20]
+      .copy_from_slice(&123u32.to_be_bytes());
+    data[snapshot_entry_offset + 20..snapshot_entry_offset + 24]
+      .copy_from_slice(&456u32.to_be_bytes());
+    data[snapshot_entry_offset + 24..snapshot_entry_offset + 32]
+      .copy_from_slice(&789u64.to_be_bytes());
+    data[snapshot_entry_offset + 32..snapshot_entry_offset + 36]
+      .copy_from_slice(&0u32.to_be_bytes());
+    data[snapshot_entry_offset + 36..snapshot_entry_offset + 40]
+      .copy_from_slice(&24u32.to_be_bytes());
+    data[snapshot_entry_offset + 40..snapshot_entry_offset + 48]
+      .copy_from_slice(&0u64.to_be_bytes());
+    data[snapshot_entry_offset + 48..snapshot_entry_offset + 56]
+      .copy_from_slice(&VIRTUAL_SIZE.to_be_bytes());
+    data[snapshot_entry_offset + 56..snapshot_entry_offset + 64]
+      .copy_from_slice(&12345i64.to_be_bytes());
+    data[snapshot_entry_offset + 64..snapshot_entry_offset + 69].copy_from_slice(b"snap1");
+    data[snapshot_entry_offset + 69..snapshot_entry_offset + 77].copy_from_slice(b"snapshot");
+
+    data[SNAPSHOT_L1_OFFSET as usize..SNAPSHOT_L1_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0004_8000u64).to_be_bytes());
+    data[SNAPSHOT_L2_OFFSET as usize..SNAPSHOT_L2_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0006_0000u64).to_be_bytes());
+    data[SNAPSHOT_DATA_OFFSET as usize..SNAPSHOT_DATA_OFFSET as usize + snapshot_cluster.len()]
+      .copy_from_slice(snapshot_cluster);
 
     data
   }

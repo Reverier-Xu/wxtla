@@ -3,14 +3,18 @@
 mod cache;
 mod constants;
 mod driver;
+mod extension;
 mod header;
 mod image;
 mod parser;
+mod snapshot;
 mod validation;
 
 pub use driver::QcowDriver;
+pub use extension::{QcowHeaderExtension, QcowHeaderExtensionKind};
 pub use header::QcowHeader;
 pub use image::QcowImage;
+pub use snapshot::QcowSnapshot;
 
 use crate::{
   FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,

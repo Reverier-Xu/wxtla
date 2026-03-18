@@ -7,7 +7,9 @@ use super::{
     QCOW_COMPRESSION_ZLIB, QCOW_CRYPT_NONE, QCOW_INCOMPAT_COMPRESSION, QCOW_INCOMPAT_CORRUPT,
     QCOW_INCOMPAT_DATA_FILE, QCOW_INCOMPAT_DIRTY, QCOW_INCOMPAT_EXTL2,
   },
+  extension::QcowHeaderExtension,
   header::QcowHeader,
+  snapshot::QcowSnapshot,
   validation::{validate_cluster_alignment, validate_header_layout, validate_range},
 };
 use crate::{DataSource, DataSourceHandle, Error, Result};
@@ -20,6 +22,14 @@ pub struct ParsedQcow {
   pub l1_table: Arc<[u64]>,
   /// Optional backing file name from the header.
   pub backing_file_name: Option<String>,
+  /// Optional backing file format from header extensions.
+  pub backing_file_format: Option<String>,
+  /// Optional external data path from header extensions.
+  pub external_data_path: Option<String>,
+  /// Parsed header extensions.
+  pub header_extensions: Vec<QcowHeaderExtension>,
+  /// Parsed internal snapshots.
+  pub snapshots: Vec<QcowSnapshot>,
 }
 
 /// Parse a QCOW image source.
@@ -28,12 +38,20 @@ pub fn parse(source: DataSourceHandle) -> Result<ParsedQcow> {
   validate_supported_features(&header)?;
   validate_header_layout(source.as_ref(), &header)?;
   let backing_file_name = read_backing_file_name(source.as_ref(), &header)?;
+  let header_extensions = read_header_extensions(source.as_ref(), &header)?;
+  let backing_file_format = find_extension_string(&header_extensions, true)?;
+  let external_data_path = find_extension_string(&header_extensions, false)?;
+  let snapshots = QcowSnapshot::parse_many(source.as_ref(), &header)?;
   let l1_table = read_l1_table(source.as_ref(), &header)?;
 
   Ok(ParsedQcow {
     header,
     l1_table,
     backing_file_name,
+    backing_file_format,
+    external_data_path,
+    header_extensions,
+    snapshots,
   })
 }
 
@@ -41,11 +59,6 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
   if header.encryption_method != QCOW_CRYPT_NONE {
     return Err(Error::InvalidFormat(
       "encrypted qcow images are not supported yet".to_string(),
-    ));
-  }
-  if header.snapshot_count != 0 {
-    return Err(Error::InvalidFormat(
-      "qcow snapshots are not supported yet".to_string(),
     ));
   }
   if (header.incompatible_features & QCOW_INCOMPAT_DATA_FILE) != 0 {
@@ -143,6 +156,54 @@ fn read_l1_table(source: &dyn DataSource, header: &QcowHeader) -> Result<Arc<[u6
     .collect::<Result<Vec<_>>>()?;
 
   Ok(Arc::from(entries))
+}
+
+fn read_header_extensions(
+  source: &dyn DataSource, header: &QcowHeader,
+) -> Result<Vec<QcowHeaderExtension>> {
+  let mut start = u64::from(header.header_size);
+  if header.backing_file_size != 0 {
+    let backing_file_end = header
+      .backing_file_offset
+      .checked_add(u64::from(header.backing_file_size))
+      .ok_or_else(|| Error::InvalidRange("qcow backing file name range overflow".to_string()))?;
+    let aligned_backing_file_end = backing_file_end
+      .checked_add((8 - (backing_file_end % 8)) % 8)
+      .ok_or_else(|| {
+        Error::InvalidRange("qcow backing file name alignment overflow".to_string())
+      })?;
+    start = start.max(aligned_backing_file_end);
+  }
+  if start == 0 {
+    return Ok(Vec::new());
+  }
+  let end = header.l1_table_offset.min(source.size()?);
+  if end <= start {
+    return Ok(Vec::new());
+  }
+  let size = usize::try_from(end - start)
+    .map_err(|_| Error::InvalidRange("qcow header extension region is too large".to_string()))?;
+  let data = source.read_bytes_at(start, size)?;
+
+  QcowHeaderExtension::parse_many(&data)
+}
+
+fn find_extension_string(
+  extensions: &[QcowHeaderExtension], backing_format: bool,
+) -> Result<Option<String>> {
+  let kind = if backing_format {
+    super::extension::QcowHeaderExtensionKind::BackingFileFormat
+  } else {
+    super::extension::QcowHeaderExtensionKind::ExternalDataPath
+  };
+
+  for extension in extensions {
+    if extension.kind == kind {
+      return extension.utf8_string();
+    }
+  }
+
+  Ok(None)
 }
 
 #[cfg(test)]
