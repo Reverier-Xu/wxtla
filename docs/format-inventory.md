@@ -55,7 +55,7 @@ Current image phase status:
 | TAR | native implementation target | wxtla | Landed |
 | ZIP | native implementation target + cache fallback for encrypted access | wxtla | Landed |
 | 7z | native implementation target + cache fallback | wxtla | Landed |
-| RAR | native implementation target + cache fallback | wxtla | Next archive target |
+| RAR | native implementation target + cache fallback | wxtla | Landed |
 
 Supporting data formats used by the image/container family:
 
@@ -132,6 +132,6 @@ Already landed in `wxtla`:
 - `pdi`
 - `splitraw`
 
-Current next archive target:
+Current next filesystem target:
 
-- `tar`
+- `fat12`

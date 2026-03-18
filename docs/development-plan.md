@@ -288,22 +288,20 @@ The current landed state is:
 - volume layer completed for `mbr`, `gpt`, and `apm`
 - stacked volume-manager support completed for `bitlocker` and `lvm2`
 - image layer completed for `ewf`, `qcow`, `vhd`, `vhdx`, `vmdk`, `udif`, `sparseimage`, `sparsebundle`, `pdi`, and `splitraw`
-- archive layer started with `ad1`, `tar`, `zip`, and `7z`
-- current next format target is `rar`
+- archive layer completed for `ad1`, `tar`, `zip`, `7z`, and `rar`
+- current next format target is `fat12`
 
 The active migration strategy is therefore:
 
-1. finish the remaining archive drivers
-2. move on to full filesystem drivers
-3. revisit stacked-volume polish only after the filesystem layer lands
+1. move on to full filesystem drivers
+2. revisit stacked-volume polish only after the filesystem layer lands
 
 The concrete next-stage order is:
 
-1. archive formats (`rar`)
-2. filesystem formats in this order:
+1. filesystem formats in this order:
    - `fat12` / `fat16` / `fat32`
    - `ext2` / `ext3` / `ext4`
    - `ntfs`
    - `hfs` / `hfs+` / `hfsx`
    - `xfs`
-3. deeper stacking/performance work
+2. deeper stacking/performance work

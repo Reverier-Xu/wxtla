@@ -9,9 +9,10 @@ use wxtla::{
 #[test]
 fn builtin_probes_match_sample_formats() {
   let registry = formats::probe_registry_from_inventory(formats::builtin_inventory());
-  let cases: [(&str, FormatDescriptor); 23] = [
+  let cases: [(&str, FormatDescriptor); 24] = [
     ("adf/text-and-pictures.ad1", archives::adf::DESCRIPTOR),
     ("7z/sample.7z", archives::sevenz::DESCRIPTOR),
+    ("rar/version.rar", archives::rar::DESCRIPTOR),
     ("tar/sample.tar", archives::tar::DESCRIPTOR),
     ("zip/sample.zip", archives::zip::DESCRIPTOR),
     ("ewf/ext2.E01", images::ewf::DESCRIPTOR),

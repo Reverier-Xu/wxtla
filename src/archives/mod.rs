@@ -5,6 +5,7 @@ mod driver;
 mod entry;
 
 pub mod adf;
+pub mod rar;
 pub mod sevenz;
 pub mod tar;
 pub mod zip;
