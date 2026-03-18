@@ -289,7 +289,7 @@ The following newer copy-on-write or snapshot-heavy filesystems should be treate
 
 1. APFS (`libfsapfs`, https://github.com/fox-it/dissect.apfs)
 2. Btrfs (https://github.com/fox-it/dissect.btrfs)
-3. ZFS (no dedicated `libyal` filesystem parser currently identified; keep in research/backlog)
+3. ZFS (https://github.com/openzfs/zfs/blob/master/include/libzfs.h)
 4. VMFS (VMWare VMFS, https://github.com/fox-it/dissect.vmfs)
 5. squashfs (https://github.com/fox-it/dissect.squashfs)
 6. FFS (https://github.com/fox-it/dissect.ffs)
