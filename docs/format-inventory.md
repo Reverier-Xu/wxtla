@@ -115,7 +115,8 @@ Already landed in `wxtla`:
 - `sparseimage`
 - `sparsebundle`
 - `pdi`
+- `splitraw`
 
 Current next image target:
 
-- `splitraw`
+- `ad1`

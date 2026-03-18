@@ -67,14 +67,15 @@ The active migration order is now image-first after the already-landed volume la
 - `sparseimage`
 - `sparsebundle`
 - `pdi`
+- `splitraw`
 
 ### Current next target
 
-- `splitraw`
+- `ad1`
 
 ### Remaining image targets after that
 
-- none - `splitraw` is the final remaining image target
+- none from the original migration list, but `ad1` has been added as an additional image target
 
 ### After images
 
