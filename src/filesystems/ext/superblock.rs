@@ -196,7 +196,17 @@ fn le_u32(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+  use std::path::Path;
+
   use super::*;
+
+  fn fixture_path(relative: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("formats")
+      .join("ext")
+      .join("libfsext")
+      .join(relative)
+  }
 
   #[test]
   fn classifies_ext4_when_extents_are_enabled() {
@@ -211,5 +221,20 @@ mod tests {
 
     let parsed = ExtSuperblock::from_superblock(&superblock).unwrap();
     assert_eq!(parsed.variant, ExtVariant::Ext4);
+  }
+
+  #[test]
+  fn parses_libfsext_superblock_fixture() {
+    let bytes = std::fs::read(fixture_path("superblock.1")).unwrap();
+    let superblock = ExtSuperblock::from_bytes(&bytes).unwrap();
+
+    assert_eq!(superblock.variant, ExtVariant::Ext3);
+    assert_eq!(superblock.blocks_count, 5120);
+    assert_eq!(superblock.block_size, 1024);
+    assert_eq!(superblock.blocks_per_group, 8192);
+    assert_eq!(superblock.inode_size, 128);
+    assert_eq!(superblock.compatible_features, 0x4);
+    assert_eq!(superblock.incompatible_features, 0x2);
+    assert_eq!(superblock.readonly_compatible_features, 0x1);
   }
 }

@@ -3,10 +3,12 @@
 mod driver;
 mod filesystem;
 mod superblock;
+mod xattr;
 
 pub use driver::ExtDriver;
-pub use filesystem::ExtFileSystem;
+pub use filesystem::{ExtFileSystem, ExtNodeDetails};
 pub use superblock::{ExtSuperblock, ExtVariant};
+pub use xattr::ExtExtendedAttribute;
 
 use self::superblock::SUPERBLOCK_SIZE;
 use crate::{

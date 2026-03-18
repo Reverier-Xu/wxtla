@@ -8,6 +8,7 @@ use std::{
 use super::{
   DESCRIPTOR,
   superblock::{ExtGroupDescriptor, ExtSuperblock, INODE_FLAG_EXTENTS, read_group_descriptors},
+  xattr::{ExtExtendedAttribute, parse_external_attribute_block, parse_inode_extended_attributes},
 };
 use crate::{
   BytesDataSource, DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result,
@@ -41,11 +42,35 @@ struct ExtNode {
   inode: ExtInode,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtNodeDetails {
+  pub mode: u16,
+  pub owner_id: u32,
+  pub group_id: u32,
+  pub link_count: u16,
+  pub flags: u32,
+  pub access_time: u32,
+  pub change_time: u32,
+  pub modification_time: u32,
+  pub creation_time: Option<u32>,
+  pub file_acl_block: u64,
+}
+
 #[derive(Clone)]
 struct ExtInode {
   mode: u16,
+  owner_id: u32,
+  access_time: u32,
+  change_time: u32,
+  modification_time: u32,
+  group_id: u32,
+  link_count: u16,
   size: u64,
   flags: u32,
+  file_acl_block: u64,
+  creation_time: Option<u32>,
+  extended_inode_size: u16,
+  raw_bytes: Arc<[u8]>,
   block_data: [u8; 60],
 }
 
@@ -104,6 +129,55 @@ impl ExtFileSystem {
       nodes: builder.nodes,
       children: builder.children,
     })
+  }
+
+  pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<ExtNodeDetails> {
+    let inode = &self.lookup_node(node_id)?.inode;
+
+    Ok(ExtNodeDetails {
+      mode: inode.mode,
+      owner_id: inode.owner_id,
+      group_id: inode.group_id,
+      link_count: inode.link_count,
+      flags: inode.flags,
+      access_time: inode.access_time,
+      change_time: inode.change_time,
+      modification_time: inode.modification_time,
+      creation_time: inode.creation_time,
+      file_acl_block: inode.file_acl_block,
+    })
+  }
+
+  pub fn symlink_target(&self, node_id: &FileSystemNodeId) -> Result<Option<String>> {
+    let node = self.lookup_node(node_id)?;
+    if node.record.kind != FileSystemNodeKind::Symlink {
+      return Ok(None);
+    }
+
+    let target = self.build_data_source(&node.inode)?.read_all()?;
+    Ok(Some(String::from_utf8_lossy(&target).to_string()))
+  }
+
+  pub fn extended_attributes(
+    &self, node_id: &FileSystemNodeId,
+  ) -> Result<Vec<ExtExtendedAttribute>> {
+    let inode = &self.lookup_node(node_id)?.inode;
+    let mut attributes =
+      parse_inode_extended_attributes(inode.raw_bytes.as_ref(), inode.extended_inode_size)?;
+    if inode.file_acl_block != 0 {
+      attributes.extend(parse_external_attribute_block(
+        &self.read_block(inode.file_acl_block)?,
+      )?);
+    }
+    Ok(attributes)
+  }
+
+  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<&ExtNode> {
+    let inode = decode_node_id(node_id)?;
+    self
+      .nodes
+      .get(&inode)
+      .ok_or_else(|| Error::NotFound(format!("ext inode {inode} was not found")))
   }
 
   fn build_data_source(&self, inode: &ExtInode) -> Result<DataSourceHandle> {
@@ -279,20 +353,12 @@ impl FileSystem for ExtFileSystem {
   }
 
   fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
-    let inode = decode_node_id(node_id)?;
-    self
-      .nodes
-      .get(&inode)
-      .map(|node| node.record.clone())
-      .ok_or_else(|| Error::NotFound(format!("ext inode {inode} was not found")))
+    self.lookup_node(node_id).map(|node| node.record.clone())
   }
 
   fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
     let inode = decode_node_id(directory_id)?;
-    let node = self
-      .nodes
-      .get(&inode)
-      .ok_or_else(|| Error::NotFound(format!("ext inode {inode} was not found")))?;
+    let node = self.lookup_node(directory_id)?;
     if node.record.kind != FileSystemNodeKind::Directory {
       return Err(Error::NotFound(format!(
         "ext inode {inode} is not a directory"
@@ -304,10 +370,7 @@ impl FileSystem for ExtFileSystem {
 
   fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
     let inode = decode_node_id(file_id)?;
-    let node = self
-      .nodes
-      .get(&inode)
-      .ok_or_else(|| Error::NotFound(format!("ext inode {inode} was not found")))?;
+    let node = self.lookup_node(file_id)?;
     if node.record.kind != FileSystemNodeKind::File {
       return Err(Error::NotFound(format!(
         "ext inode {inode} is not a readable file"
@@ -486,11 +549,34 @@ fn read_inode(
   let size_lo = u64::from(le_u32(&inode[4..8]));
   let size_high = u64::from(le_u32(&inode[108..112]));
   let size = size_lo | (size_high << 32);
+  let mut owner_id = u32::from(le_u16(&inode[2..4]));
+  let mut group_id = u32::from(le_u16(&inode[24..26]));
+  if inode.len() > 124 {
+    owner_id |= u32::from(le_u16_or_zero(&inode, 120)) << 16;
+    group_id |= u32::from(le_u16_or_zero(&inode, 122)) << 16;
+  }
+  let file_acl_block =
+    u64::from(le_u32(&inode[104..108])) | (u64::from(le_u16_or_zero(&inode, 118)) << 32);
+  let extended_inode_size = if inode.len() > 128 {
+    le_u16_or_zero(&inode, 128)
+  } else {
+    0
+  };
 
   Ok(ExtInode {
     mode: le_u16(&inode[0..2]),
+    owner_id,
+    access_time: le_u32(&inode[8..12]),
+    change_time: le_u32(&inode[12..16]),
+    modification_time: le_u32(&inode[16..20]),
+    group_id,
+    link_count: le_u16(&inode[26..28]),
     size,
     flags: le_u32(&inode[32..36]),
+    file_acl_block,
+    creation_time: inode.get(144..148).map(le_u32),
+    extended_inode_size,
+    raw_bytes: Arc::from(inode.clone().into_boxed_slice()),
     block_data,
   })
 }
@@ -635,6 +721,10 @@ fn le_u32(bytes: &[u8]) -> u32 {
   let mut raw = [0u8; 4];
   raw.copy_from_slice(bytes);
   u32::from_le_bytes(raw)
+}
+
+fn le_u16_or_zero(bytes: &[u8], offset: usize) -> u16 {
+  bytes.get(offset..offset + 2).map_or(0, le_u16)
 }
 
 #[cfg(test)]
