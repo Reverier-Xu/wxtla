@@ -113,7 +113,8 @@ Already landed in `wxtla`:
 - `vmdk`
 - `udif`
 - `sparseimage`
+- `sparsebundle`
 
 Current next image target:
 
-- `sparsebundle`
+- `pdi`

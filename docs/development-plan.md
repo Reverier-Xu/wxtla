@@ -286,8 +286,8 @@ The migration is successful when:
 The current landed state is:
 
 - volume layer completed for `mbr`, `gpt`, and `apm`
-- image layer completed for `ewf`, `qcow`, `vhd`, `vhdx`, `vmdk`, `udif`, and `sparseimage`
-- current next format target is `sparsebundle`
+- image layer completed for `ewf`, `qcow`, `vhd`, `vhdx`, `vmdk`, `udif`, `sparseimage`, and `sparsebundle`
+- current next format target is `pdi`
 
 The active migration strategy is therefore:
 
@@ -298,14 +298,13 @@ The active migration strategy is therefore:
 
 The concrete next-stage order is:
 
-1. `sparsebundle`
-2. `pdi`
-3. `splitraw` runtime image surface
-4. archive formats (`tar`, `zip`)
-5. filesystem formats in this order:
+1. `pdi`
+2. `splitraw` runtime image surface
+3. archive formats (`tar`, `zip`)
+4. filesystem formats in this order:
    - `fat12` / `fat16` / `fat32`
    - `ext2` / `ext3` / `ext4`
    - `ntfs`
    - `hfs` / `hfs+` / `hfsx`
    - `xfs`
-6. `lvm2` and deeper stacking/performance work
+5. `lvm2` and deeper stacking/performance work

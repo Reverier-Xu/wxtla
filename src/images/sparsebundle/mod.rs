@@ -1,4 +1,11 @@
-//! Sparsebundle descriptor and probe registration.
+//! Sparsebundle driver and probe registration.
+
+mod driver;
+mod image;
+mod parser;
+
+pub use driver::SparseBundleDriver;
+pub use image::SparseBundleImage;
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
