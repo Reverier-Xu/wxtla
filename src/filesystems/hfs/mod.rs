@@ -1,4 +1,11 @@
-//! HFS-family filesystem descriptors and probe registration.
+//! HFS-family filesystem driver and probe registration.
+
+mod btree;
+mod driver;
+mod filesystem;
+
+pub use driver::HfsDriver;
+pub use filesystem::HfsFileSystem;
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
