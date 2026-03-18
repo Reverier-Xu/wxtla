@@ -1,0 +1,17 @@
+# Disk DescriptorFile
+version=1
+CID=4c069322
+parentCID=ffffffff
+createType="monolithicSparse"
+
+# Extent description
+RW 8192 SPARSE "ext2.vmdk"
+
+# The Disk Data Base
+#DDB
+ddb.virtualHWVersion = "4"
+ddb.geometry.cylinders = "8"
+ddb.geometry.heads = "16"
+ddb.geometry.sectors = "63"
+ddb.adapterType = "ide"
+ddb.toolsVersion = "2147483647"

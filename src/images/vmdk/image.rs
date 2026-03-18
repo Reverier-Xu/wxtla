@@ -6,7 +6,7 @@ use super::{
   DESCRIPTOR,
   cache::VmdkCache,
   constants,
-  descriptor::{VmdkDescriptor, VmdkFileType},
+  descriptor::{VmdkDescriptor, VmdkExtentAccessMode, VmdkExtentType, VmdkFileType},
   header::VmdkSparseHeader,
   parser::{ParsedVmdk, grain_table_entry_count, parse},
 };
@@ -25,13 +25,80 @@ pub struct VmdkImage {
 
 impl VmdkImage {
   pub fn open(source: DataSourceHandle) -> Result<Self> {
-    let parsed = parse(source.clone())?;
-    Self::from_parsed(source, parsed)
+    Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
-    let parsed = parse(source.clone())?;
-    Self::from_parsed(source, parsed)
+  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+    if is_sparse_extent(source.as_ref())? {
+      let parsed = parse(source.clone())?;
+      return Self::from_parsed(source, parsed);
+    }
+
+    let descriptor = VmdkDescriptor::from_bytes(&source.read_all()?)?;
+    if descriptor.file_type != VmdkFileType::MonolithicSparse {
+      return Err(Error::InvalidFormat(format!(
+        "unsupported vmdk descriptor create type in the current step: {:?}",
+        descriptor.file_type
+      )));
+    }
+    if descriptor.parent_content_id.is_some() || descriptor.parent_file_name_hint.is_some() {
+      return Err(Error::InvalidSourceReference(
+        "parent-backed vmdk descriptor layers are not supported yet".to_string(),
+      ));
+    }
+    if descriptor.extents.len() != 1 {
+      return Err(Error::InvalidFormat(
+        "monolithic sparse vmdk descriptors must declare exactly one extent".to_string(),
+      ));
+    }
+
+    let extent = &descriptor.extents[0];
+    if extent.extent_type != VmdkExtentType::Sparse
+      || !matches!(
+        extent.access_mode,
+        VmdkExtentAccessMode::ReadOnly | VmdkExtentAccessMode::ReadWrite
+      )
+    {
+      return Err(Error::InvalidFormat(
+        "monolithic sparse vmdk descriptors must point to one sparse extent".to_string(),
+      ));
+    }
+
+    let resolver = hints.resolver().ok_or_else(|| {
+      Error::InvalidSourceReference(
+        "descriptor-backed vmdk images require a related-source resolver".to_string(),
+      )
+    })?;
+    let identity = hints.source_identity().ok_or_else(|| {
+      Error::InvalidSourceReference(
+        "descriptor-backed vmdk images require a source identity hint".to_string(),
+      )
+    })?;
+    let extent_name = extent.file_name.as_deref().ok_or_else(|| {
+      Error::InvalidFormat("vmdk sparse descriptor extent is missing a file name".to_string())
+    })?;
+    let (extent_source, extent_path) = resolve_extent_source(resolver, identity, extent_name)?
+      .ok_or_else(|| Error::NotFound("unable to resolve the vmdk sparse extent".to_string()))?;
+    if &extent_path == identity.logical_path() {
+      return Err(Error::InvalidFormat(
+        "vmdk descriptor extent resolves back to the descriptor file".to_string(),
+      ));
+    }
+
+    let extent_identity = crate::SourceIdentity::new(extent_path);
+    let image = Self::open_with_hints(
+      extent_source,
+      SourceHints::new()
+        .with_resolver(resolver)
+        .with_source_identity(&extent_identity),
+    )?;
+    if image.descriptor_data().content_id != descriptor.content_id {
+      return Err(Error::InvalidFormat(
+        "vmdk descriptor cid does not match the resolved sparse extent".to_string(),
+      ));
+    }
+
+    Ok(image)
   }
 
   fn from_parsed(source: DataSourceHandle, parsed: ParsedVmdk) -> Result<Self> {
@@ -189,12 +256,50 @@ impl Image for VmdkImage {
   }
 }
 
+fn is_sparse_extent(source: &dyn DataSource) -> Result<bool> {
+  let mut magic = [0u8; 4];
+  Ok(source.read_at(0, &mut magic)? == magic.len() && &magic == constants::SPARSE_HEADER_MAGIC)
+}
+
+fn resolve_extent_source(
+  resolver: &dyn crate::RelatedSourceResolver, identity: &crate::SourceIdentity, extent_name: &str,
+) -> Result<Option<(DataSourceHandle, crate::RelatedPathBuf)>> {
+  if let Ok(relative) = crate::RelatedPathBuf::from_relative_path(extent_name)
+    && let Some(parent) = identity.logical_path().parent()
+  {
+    let joined = parent.join(&relative);
+    if let Some(source) = resolver.resolve(&crate::RelatedSourceRequest::new(
+      crate::RelatedSourcePurpose::Extent,
+      joined.clone(),
+    ))? {
+      return Ok(Some((source, joined)));
+    }
+  }
+
+  let file_name = extent_name
+    .rsplit(['\\', '/'])
+    .next()
+    .unwrap_or(extent_name);
+  let sibling = identity.sibling_path(file_name)?;
+  Ok(
+    resolver
+      .resolve(&crate::RelatedSourceRequest::new(
+        crate::RelatedSourcePurpose::Extent,
+        sibling.clone(),
+      ))?
+      .map(|source| (source, sibling)),
+  )
+}
+
 #[cfg(test)]
 mod tests {
-  use std::path::Path;
+  use std::{collections::HashMap, path::Path};
 
   use super::*;
-  use crate::images::vmdk::parser::grain_directory_entry_count;
+  use crate::{
+    RelatedSourceRequest, RelatedSourceResolver, SourceIdentity,
+    images::vmdk::parser::grain_directory_entry_count,
+  };
 
   struct MemDataSource {
     data: Vec<u8>,
@@ -214,6 +319,16 @@ mod tests {
 
     fn size(&self) -> Result<u64> {
       Ok(self.data.len() as u64)
+    }
+  }
+
+  struct Resolver {
+    files: HashMap<String, DataSourceHandle>,
+  }
+
+  impl RelatedSourceResolver for Resolver {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+      Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
@@ -253,6 +368,41 @@ mod tests {
     .unwrap();
 
     assert_eq!(image.read_all().unwrap(), raw);
+  }
+
+  #[test]
+  fn opens_descriptor_backed_sparse_fixture_via_resolver() {
+    let descriptor = sample_source("vmdk/ext2-descriptor.vmdk");
+    let extent = sample_source("vmdk/ext2.vmdk");
+    let resolver = Resolver {
+      files: HashMap::from([("vmdk/ext2.vmdk".to_string(), extent)]),
+    };
+    let identity = SourceIdentity::from_relative_path("vmdk/ext2-descriptor.vmdk").unwrap();
+    let raw = std::fs::read(
+      Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formats")
+        .join("ext/ext2.raw"),
+    )
+    .unwrap();
+
+    let image = VmdkImage::open_with_hints(
+      descriptor,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert_eq!(image.read_all().unwrap(), raw);
+  }
+
+  #[test]
+  fn descriptor_backed_sparse_images_require_resolution_hints() {
+    let descriptor = sample_source("vmdk/ext2-descriptor.vmdk");
+
+    let result = VmdkImage::open(descriptor);
+
+    assert!(matches!(result, Err(Error::InvalidSourceReference(_))));
   }
 
   #[test]

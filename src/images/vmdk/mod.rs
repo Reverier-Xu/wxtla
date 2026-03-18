@@ -16,8 +16,8 @@ pub use header::VmdkSparseHeader;
 pub use image::VmdkImage;
 
 use crate::{
-  FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
-  formats::probe_support::OffsetMagicProbe,
+  FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
+  ProbeRegistry, ProbeResult, Result, formats::probe_support::OffsetMagicProbe,
 };
 
 /// VMDK image descriptor.
@@ -37,4 +37,48 @@ fn register_probes(registry: &mut ProbeRegistry) {
     ProbeConfidence::Exact,
     "vmdk sparse header found",
   ));
+  registry.register(VmdkDescriptorProbe);
+}
+
+struct VmdkDescriptorProbe;
+
+impl FormatProbe for VmdkDescriptorProbe {
+  fn descriptor(&self) -> FormatDescriptor {
+    DESCRIPTOR
+  }
+
+  fn probe(&self, context: &ProbeContext<'_>) -> Result<ProbeResult> {
+    let size = context.size()?;
+    if size == 0 || size > 128 * 1024 {
+      return Ok(ProbeResult::rejected());
+    }
+
+    let bytes = context.read_bytes_at(
+      0,
+      usize::try_from(size).map_err(|_| {
+        crate::Error::InvalidRange("vmdk descriptor probe size is too large".to_string())
+      })?,
+    )?;
+    let Ok(descriptor) = VmdkDescriptor::from_bytes(&bytes) else {
+      return Ok(ProbeResult::rejected());
+    };
+    if descriptor.file_type == VmdkFileType::Unknown {
+      return Ok(ProbeResult::rejected());
+    }
+
+    let confidence = if context
+      .source_identity()
+      .and_then(crate::SourceIdentity::extension)
+      .is_some_and(|extension| extension.eq_ignore_ascii_case("vmdk"))
+    {
+      ProbeConfidence::Exact
+    } else {
+      ProbeConfidence::Likely
+    };
+    Ok(ProbeResult::matched(ProbeMatch::new(
+      DESCRIPTOR,
+      confidence,
+      "vmdk descriptor file found",
+    )))
+  }
 }
