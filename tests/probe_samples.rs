@@ -9,7 +9,7 @@ use wxtla::{
 #[test]
 fn builtin_probes_match_sample_formats() {
   let registry = formats::probe_registry_from_inventory(formats::builtin_inventory());
-  let cases: [(&str, FormatDescriptor); 24] = [
+  let cases: [(&str, FormatDescriptor); 25] = [
     ("adf/text-and-pictures.ad1", archives::adf::DESCRIPTOR),
     ("7z/sample.7z", archives::sevenz::DESCRIPTOR),
     ("rar/version.rar", archives::rar::DESCRIPTOR),
@@ -37,6 +37,7 @@ fn builtin_probes_match_sample_formats() {
     ("ext/ext2.raw", filesystems::ext::DESCRIPTOR),
     ("hfs/hfs.raw", filesystems::hfs::DESCRIPTOR),
     ("hfs/hfsplus.raw", filesystems::hfs::PLUS_DESCRIPTOR),
+    ("xfs/xfs.raw", filesystems::xfs::DESCRIPTOR),
   ];
 
   for (relative_path, expected) in cases {
