@@ -9,13 +9,14 @@ use wxtla::{
 #[test]
 fn builtin_probes_match_sample_formats() {
   let registry = formats::probe_registry_from_inventory(formats::builtin_inventory());
-  let cases: [(&str, FormatDescriptor); 16] = [
+  let cases: [(&str, FormatDescriptor); 17] = [
     ("ewf/ext2.E01", images::ewf::DESCRIPTOR),
     ("qcow/ext2.qcow2", images::qcow::DESCRIPTOR),
     ("vhd/ext2.vhd", images::vhd::DESCRIPTOR),
     ("vhdx/ext2.vhdx", images::vhdx::DESCRIPTOR),
     ("vmdk/ext2.vmdk", images::vmdk::DESCRIPTOR),
     ("vmdk/ext2-descriptor.vmdk", images::vmdk::DESCRIPTOR),
+    ("vmdk/ext2-flat-descriptor.vmdk", images::vmdk::DESCRIPTOR),
     (
       "sparseimage/hfsplus.sparseimage",
       images::sparseimage::DESCRIPTOR,
