@@ -120,19 +120,20 @@ pub struct BitlockerMetadataHeader {
   pub metadata_size_copy: u32,
   pub volume_identifier: [u8; 16],
   pub next_nonce_counter: u32,
+  pub raw_encryption_method: u32,
   pub encryption_method: BitlockerEncryptionMethod,
   pub creation_time: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitlockerKeyBlob {
-  pub encryption_method: BitlockerEncryptionMethod,
+  pub encryption_method: u32,
   pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitlockerStretchKey {
-  pub encryption_method: BitlockerEncryptionMethod,
+  pub encryption_method: u32,
   pub salt: [u8; 16],
 }
 
@@ -239,6 +240,8 @@ impl BitlockerMetadataHeader {
       ));
     }
 
+    let raw_encryption_method = le_u32(&data[36..40])?;
+
     Ok(Self {
       metadata_size,
       version: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
@@ -248,9 +251,8 @@ impl BitlockerMetadataHeader {
         Error::InvalidFormat("bitlocker metadata identifier length mismatch".to_string())
       })?,
       next_nonce_counter: u32::from_le_bytes([data[32], data[33], data[34], data[35]]),
-      encryption_method: BitlockerEncryptionMethod::from_raw(u32::from(u16::from_le_bytes([
-        data[36], data[37],
-      ])))?,
+      raw_encryption_method,
+      encryption_method: parse_metadata_encryption_method(raw_encryption_method)?,
       creation_time: le_u64(&data[40..48])?,
     })
   }
@@ -469,7 +471,7 @@ fn parse_key_blob(entry: &MetadataEntry) -> Result<BitlockerKeyBlob> {
     ));
   }
   Ok(BitlockerKeyBlob {
-    encryption_method: BitlockerEncryptionMethod::from_raw(le_u32(&entry.value_data[0..4])?)?,
+    encryption_method: le_u32(&entry.value_data[0..4])?,
     data: entry.value_data[4..].to_vec(),
   })
 }
@@ -481,7 +483,7 @@ fn parse_stretch_key(entry: &MetadataEntry) -> Result<BitlockerStretchKey> {
     ));
   }
   Ok(BitlockerStretchKey {
-    encryption_method: BitlockerEncryptionMethod::from_raw(le_u32(&entry.value_data[0..4])?)?,
+    encryption_method: le_u32(&entry.value_data[0..4])?,
     salt: entry.value_data[4..20].try_into().map_err(|_| {
       Error::InvalidFormat("bitlocker stretch key salt length mismatch".to_string())
     })?,
@@ -517,6 +519,17 @@ fn parse_utf16le_string(data: &[u8]) -> Result<String> {
   }
   String::from_utf16(&units)
     .map_err(|_| Error::InvalidFormat("bitlocker UTF-16 string is invalid".to_string()))
+}
+
+fn parse_metadata_encryption_method(raw: u32) -> Result<BitlockerEncryptionMethod> {
+  let low = raw as u16;
+  let high = (raw >> 16) as u16;
+  if high != 0 && high != low {
+    return Err(Error::InvalidFormat(format!(
+      "unsupported bitlocker metadata encryption method layout: 0x{raw:08x}"
+    )));
+  }
+  BitlockerEncryptionMethod::from_raw(u32::from(low))
 }
 
 fn le_u32(data: &[u8]) -> Result<u32> {
@@ -560,9 +573,18 @@ mod tests {
 
     assert_eq!(header.version, 1);
     assert_eq!(header.header_size, 48);
+    assert_eq!(header.raw_encryption_method, 0x0000_8000);
     assert_eq!(
       header.encryption_method,
       BitlockerEncryptionMethod::Aes128CbcDiffuser
+    );
+  }
+
+  #[test]
+  fn accepts_metadata_encryption_method_with_duplicated_upper_word() {
+    assert_eq!(
+      parse_metadata_encryption_method(0x8002_8002).unwrap(),
+      BitlockerEncryptionMethod::Aes128Cbc
     );
   }
 

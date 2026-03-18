@@ -67,7 +67,7 @@ pub(super) fn recovery_password_hash(recovery_password: &str) -> Result<[u8; 32]
 
 pub(super) fn password_aes_ccm_key(password_hash: &[u8; 32], salt: &[u8; 16]) -> [u8; 32] {
   let mut last_hash = [0u8; 32];
-  for iteration_count in 0..0x100000u64 {
+  for iteration_count in 0..0x0FFFFFu64 {
     let mut state = [0u8; 88];
     state[0..32].copy_from_slice(&last_hash);
     state[32..64].copy_from_slice(password_hash);
@@ -80,7 +80,7 @@ pub(super) fn password_aes_ccm_key(password_hash: &[u8; 32], salt: &[u8; 16]) ->
   state[0..32].copy_from_slice(&last_hash);
   state[32..64].copy_from_slice(password_hash);
   state[64..80].copy_from_slice(salt);
-  state[80..88].copy_from_slice(&(0x100000u64).to_le_bytes());
+  state[80..88].copy_from_slice(&(0x0FFFFFu64).to_le_bytes());
   Sha256::digest(state).into()
 }
 
@@ -478,7 +478,7 @@ mod tests {
     let key = password_aes_ccm_key(&password_hash, &salt);
     assert_eq!(
       to_hex(&key),
-      "6b7a50225419097a3a15a4990558d985873c2b3044cf71193f874877be14645b"
+      "241eddbf84a8f855da22ef18995a8e841c93ae93e4e5f3f90ace59b19c698188"
     );
   }
 }

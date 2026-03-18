@@ -413,6 +413,8 @@ fn decrypt_full_volume_encryption_key(
 
 #[cfg(test)]
 mod tests {
+  use std::path::Path;
+
   use aes::Aes256;
   use ccm::{
     Ccm,
@@ -436,7 +438,11 @@ mod tests {
     },
     *,
   };
-  use crate::{DataSource, volumes::bitlocker::BitlockerKeyProtectorKind};
+  use crate::{
+    DataSource, DataSourceHandle, FileDataSource,
+    images::ewf::EwfImage,
+    volumes::{bitlocker::BitlockerKeyProtectorKind, mbr::MbrDriver},
+  };
 
   type Aes256Ccm = Ccm<Aes256, U16, U12>;
 
@@ -461,6 +467,20 @@ mod tests {
     }
   }
 
+  fn fixture_path(relative_path: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("formats")
+      .join(relative_path)
+  }
+
+  fn open_bitlocker_fixture() -> BitlockerVolumeSystem {
+    let ewf_source: DataSourceHandle =
+      Arc::new(FileDataSource::open(fixture_path("bitlocker/bitlocker.E01")).unwrap());
+    let image: DataSourceHandle = Arc::new(EwfImage::open(ewf_source).unwrap());
+    let mbr = MbrDriver::open(image).unwrap();
+    BitlockerVolumeSystem::open(mbr.open_volume(0).unwrap()).unwrap()
+  }
+
   fn metadata_entry(entry_type: u16, value_type: u16, value: &[u8]) -> Vec<u8> {
     let size = u16::try_from(8 + value.len()).unwrap();
     let mut out = Vec::with_capacity(size as usize);
@@ -479,9 +499,9 @@ mod tests {
     metadata_entry(0, VALUE_TYPE_KEY, &value)
   }
 
-  fn stretch_key_property(method: BitlockerEncryptionMethod, salt: &[u8; 16]) -> Vec<u8> {
+  fn stretch_key_property(method: u32, salt: &[u8; 16]) -> Vec<u8> {
     let mut value = Vec::with_capacity(20);
-    value.extend_from_slice(&u32::from(method.raw()).to_le_bytes());
+    value.extend_from_slice(&method.to_le_bytes());
     value.extend_from_slice(salt);
     metadata_entry(0, VALUE_TYPE_STRETCH_KEY, &value)
   }
@@ -797,10 +817,7 @@ mod tests {
       vmk_entry(
         BitlockerKeyProtectorKind::Password,
         None,
-        Some(stretch_key_property(
-          BitlockerEncryptionMethod::Aes256Cbc,
-          &salt,
-        )),
+        Some(stretch_key_property(0x1001, &salt)),
         aes_ccm_property([1; 12], &vmk_plain, &password_key),
       ),
       fvek_entry(method, &vmk, &fvek, None),
@@ -831,10 +848,7 @@ mod tests {
       vmk_entry(
         BitlockerKeyProtectorKind::RecoveryPassword,
         None,
-        Some(stretch_key_property(
-          BitlockerEncryptionMethod::Aes256Cbc,
-          &salt,
-        )),
+        Some(stretch_key_property(0x1000, &salt)),
         aes_ccm_property([2; 12], &vmk_plain, &recovery_key),
       ),
       fvek_entry(method, &vmk, &fvek, None),
@@ -955,5 +969,62 @@ mod tests {
     let external = BitlockerMetadata::read_startup_key_file(&source).unwrap();
     assert_eq!(external.identifier, [0xAA; 16]);
     assert_eq!(external.key.unwrap().data, vec![0xBB; 32]);
+  }
+
+  #[test]
+  fn opens_fixture_metadata_through_ewf_and_mbr() {
+    let system = open_bitlocker_fixture();
+
+    assert!(system.is_locked());
+    assert_eq!(system.header().bytes_per_sector, 512);
+    assert_eq!(system.header().hidden_sector_count, 2048);
+    assert_eq!(
+      system.header().metadata_offsets,
+      [34_603_008, 253_059_072, 471_511_040]
+    );
+    assert_eq!(
+      system.metadata().block_header.volume_header_offset,
+      34_668_544
+    );
+    assert_eq!(system.metadata().volume_header_size, 8192);
+    assert_eq!(system.metadata().header.raw_encryption_method, 0x8002_8002);
+    assert_eq!(
+      system.metadata().header.encryption_method,
+      BitlockerEncryptionMethod::Aes128Cbc
+    );
+    assert_eq!(
+      system.metadata().description.as_deref(),
+      Some("ARK G: 2026/3/18")
+    );
+    assert_eq!(system.metadata().volume_master_keys.len(), 2);
+    assert!(system.metadata().password_vmk().is_some());
+    assert!(system.metadata().recovery_password_vmk().is_some());
+  }
+
+  #[test]
+  fn unlocks_fixture_with_recovery_password_and_reads_known_plaintext() {
+    const FIXTURE_RECOVERY_PASSWORD: &str =
+      "447854-362307-188650-128513-644006-423984-040843-662508";
+    const FIXTURE_FLAG_OFFSET: u64 = 3_862_528;
+
+    let expected_flag = std::fs::read(fixture_path("bitlocker/flag.txt")).unwrap();
+    let mut system = open_bitlocker_fixture();
+
+    assert!(
+      system
+        .unlock_with_recovery_password(FIXTURE_RECOVERY_PASSWORD)
+        .unwrap()
+    );
+    let volume = system.open_volume(0).unwrap();
+    let boot_sector = volume.read_bytes_at(0, 90).unwrap();
+
+    assert_eq!(&boot_sector[3..11], b"MSDOS5.0");
+    assert_eq!(&boot_sector[82..90], b"FAT32   ");
+    assert_eq!(
+      volume
+        .read_bytes_at(FIXTURE_FLAG_OFFSET, expected_flag.len())
+        .unwrap(),
+      expected_flag
+    );
   }
 }
