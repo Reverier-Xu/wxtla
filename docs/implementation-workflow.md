@@ -64,14 +64,14 @@ The active migration order is now image-first after the already-landed volume la
 - `vhdx`
 - `vmdk`
 - `udif`
+- `sparseimage`
 
 ### Current next target
 
-- `sparseimage`
+- `sparsebundle`
 
 ### Remaining image targets after that
 
-- `sparsebundle`
 - `pdi`
 - `splitraw` runtime image surface (probe groundwork already exists)
 

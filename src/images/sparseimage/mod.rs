@@ -1,4 +1,13 @@
-//! Sparseimage descriptor and probe registration.
+//! Sparseimage driver and probe registration.
+
+mod driver;
+mod header;
+mod image;
+mod parser;
+
+pub use driver::SparseImageDriver;
+pub use header::SparseImageHeader;
+pub use image::SparseImage;
 
 use crate::{
   FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry,
