@@ -1,14 +1,18 @@
 [package]
 authors      = ["Reverier-Xu <reverier.xu@woooo.tech>"]
 edition      = "2024"
+exclude      = ["formats/**", "tests/**", "docs/**"]
 name         = "wxtla"
 readme       = "README.md"
 rust-version = "1.93.1"
 version      = "0.0.4"
-exclude      = ["formats/**"]
 
-description = "Wired eXploring Target Layer Accessor"
-license     = "MIT or Apache-2.0"
+description   = "Wired eXploring Target Layer Accessor"
+documentation = "https://docs.rs/wxtla"
+homepage      = "https://www.woooo.tech/zh-cn/regressor"
+license       = "MIT or Apache-2.0"
+repository    = "https://github.com/Reverier-Xu/wxtla"
+
 
 [profile.release]
 codegen-units = 1
