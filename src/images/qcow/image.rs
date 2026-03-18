@@ -3,6 +3,7 @@
 use std::{io::Read, sync::Arc};
 
 use flate2::read::DeflateDecoder;
+use zstd::stream::Decoder as ZstdDecoder;
 
 use super::{
   DESCRIPTOR,
@@ -30,6 +31,7 @@ pub struct QcowImage {
   backing_file_format: Option<String>,
   external_data_path: Option<String>,
   backing_image: Option<DataSourceHandle>,
+  external_data_source: Option<DataSourceHandle>,
   header_extensions: Arc<[QcowHeaderExtension]>,
   snapshots: Arc<[QcowSnapshot]>,
   l1_table: Arc<[u64]>,
@@ -54,7 +56,12 @@ impl QcowImage {
   /// Open a QCOW image from a single-file source.
   pub fn open(source: DataSourceHandle) -> Result<Self> {
     let parsed = parse(source.clone())?;
-    Self::from_parsed(source, parsed, None, None, None)
+    if parsed.header.uses_external_data_file() {
+      return Err(Error::InvalidSourceReference(
+        "qcow external data files require source hints and a related-source resolver".to_string(),
+      ));
+    }
+    Self::from_parsed(source, parsed, None, None, None, None)
   }
 
   /// Open a QCOW image using source hints.
@@ -91,12 +98,49 @@ impl QcowImage {
       None
     };
 
-    Self::from_parsed(source, parsed, backing_image, None, None)
+    let external_data_source =
+      if let Some(external_data_path) = parsed.external_data_path.as_deref() {
+        let resolver = hints.resolver().ok_or_else(|| {
+          Error::InvalidSourceReference(
+            "qcow external data files require a related-source resolver".to_string(),
+          )
+        })?;
+        let identity = hints.source_identity().ok_or_else(|| {
+          Error::InvalidSourceReference(
+            "qcow external data files require a source identity hint".to_string(),
+          )
+        })?;
+        let external_path = identity.sibling_path(external_data_path)?;
+        Some(
+          resolver
+            .resolve(&crate::RelatedSourceRequest::new(
+              crate::RelatedSourcePurpose::Extent,
+              external_path,
+            ))?
+            .ok_or_else(|| {
+              Error::NotFound(format!(
+                "missing qcow external data file: {external_data_path}"
+              ))
+            })?,
+        )
+      } else {
+        None
+      };
+
+    Self::from_parsed(
+      source,
+      parsed,
+      backing_image,
+      external_data_source,
+      None,
+      None,
+    )
   }
 
   fn from_parsed(
     source: DataSourceHandle, parsed: ParsedQcow, backing_image: Option<DataSourceHandle>,
-    l1_table_override: Option<Arc<[u64]>>, virtual_size_override: Option<u64>,
+    external_data_source: Option<DataSourceHandle>, l1_table_override: Option<Arc<[u64]>>,
+    virtual_size_override: Option<u64>,
   ) -> Result<Self> {
     Ok(Self {
       source,
@@ -106,6 +150,7 @@ impl QcowImage {
       backing_file_format: parsed.backing_file_format,
       external_data_path: parsed.external_data_path,
       backing_image,
+      external_data_source,
       header_extensions: Arc::from(parsed.header_extensions),
       snapshots: Arc::from(parsed.snapshots),
       l1_table: l1_table_override.unwrap_or(parsed.l1_table),
@@ -132,6 +177,12 @@ impl QcowImage {
   /// Return the optional external data path extension string.
   pub fn external_data_path(&self) -> Option<&str> {
     self.external_data_path.as_deref()
+  }
+
+  /// Return `true` when the image reads guest clusters from an external data
+  /// source.
+  pub fn uses_external_data_file(&self) -> bool {
+    self.external_data_source.is_some()
   }
 
   /// Return parsed QCOW header extensions.
@@ -164,6 +215,7 @@ impl QcowImage {
       self.source.clone(),
       parsed,
       self.backing_image.clone(),
+      self.external_data_source.clone(),
       Some(snapshot.l1_table.clone()),
       Some(if snapshot.virtual_disk_size != 0 {
         snapshot.virtual_disk_size
@@ -233,7 +285,15 @@ impl QcowImage {
     self.cluster_cache.get_or_load(cluster_offset, || {
       let cluster_size = usize::try_from(self.cluster_size()?)
         .map_err(|_| Error::InvalidRange("qcow cluster size is too large".to_string()))?;
-      let cluster = self.source.read_bytes_at(cluster_offset, cluster_size)?;
+      let storage = if self.header.uses_external_data_file() {
+        self
+          .external_data_source
+          .as_ref()
+          .ok_or_else(|| Error::NotFound("qcow external data source is missing".to_string()))?
+      } else {
+        &self.source
+      };
+      let cluster = storage.read_bytes_at(cluster_offset, cluster_size)?;
       Ok(Arc::new(cluster))
     })
   }
@@ -322,6 +382,9 @@ impl QcowImage {
     if cluster_offset == 0 && zero {
       return Ok(ParsedL2Entry::Zero);
     }
+    if cluster_offset == 0 && self.header.uses_external_data_file() {
+      return Ok(ParsedL2Entry::Standard { cluster_offset: 0 });
+    }
     if cluster_offset == 0 {
       return Ok(ParsedL2Entry::Sparse);
     }
@@ -333,9 +396,22 @@ impl QcowImage {
     let compressed = self.source.read_bytes_at(host_offset, stored_size)?;
     let cluster_size = usize::try_from(self.cluster_size()?)
       .map_err(|_| Error::InvalidRange("qcow cluster size is too large".to_string()))?;
-    let mut decoder = DeflateDecoder::new(compressed.as_slice());
     let mut cluster = vec![0u8; cluster_size];
-    decoder.read_exact(&mut cluster).map_err(Error::Io)?;
+    match self.header.compression_method {
+      super::constants::QCOW_COMPRESSION_ZLIB => {
+        let mut decoder = DeflateDecoder::new(compressed.as_slice());
+        decoder.read_exact(&mut cluster).map_err(Error::Io)?;
+      }
+      super::constants::QCOW_COMPRESSION_ZSTD => {
+        let mut decoder = ZstdDecoder::new(compressed.as_slice()).map_err(Error::Io)?;
+        decoder.read_exact(&mut cluster).map_err(Error::Io)?;
+      }
+      method => {
+        return Err(Error::InvalidFormat(format!(
+          "unsupported qcow compressed cluster method: {method}"
+        )));
+      }
+    }
 
     Ok(Arc::new(cluster))
   }
@@ -585,7 +661,7 @@ mod tests {
   fn reads_compressed_clusters_from_synthetic_qcow() {
     let cluster = repeat_byte(0x7E, 65_536);
     let image = QcowImage::open(Arc::new(MemDataSource {
-      data: build_synthetic_qcow_from_cluster(SyntheticCluster::Compressed(&cluster), None),
+      data: build_synthetic_qcow_from_cluster(SyntheticCluster::CompressedZlib(&cluster), None),
     }))
     .unwrap();
 
@@ -608,11 +684,48 @@ mod tests {
   fn reads_version_one_compressed_qcow_clusters() {
     let cluster = repeat_byte(0x24, 65_536);
     let image = QcowImage::open(Arc::new(MemDataSource {
-      data: build_synthetic_qcow_v1(SyntheticCluster::Compressed(&cluster)),
+      data: build_synthetic_qcow_v1(SyntheticCluster::CompressedZlib(&cluster)),
     }))
     .unwrap();
 
     assert_eq!(image.read_all().unwrap(), cluster);
+  }
+
+  #[test]
+  fn reads_zstd_compressed_clusters_from_synthetic_qcow() {
+    let cluster = repeat_byte(0x19, 65_536);
+    let image = QcowImage::open(Arc::new(MemDataSource {
+      data: build_synthetic_qcow_from_cluster(SyntheticCluster::CompressedZstd(&cluster), None),
+    }))
+    .unwrap();
+
+    assert_eq!(image.read_all().unwrap(), cluster);
+  }
+
+  #[test]
+  fn reads_from_external_data_files() {
+    let external_cluster = repeat_byte(0xCC, 65_536);
+    let metadata_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: build_synthetic_qcow_external_data("disk.raw"),
+    });
+    let external_source: DataSourceHandle = Arc::new(MemDataSource {
+      data: external_cluster.clone(),
+    });
+    let resolver = Resolver {
+      files: HashMap::from([("images/disk.raw".to_string(), external_source)]),
+    };
+    let identity = SourceIdentity::from_relative_path("images/disk.qcow2").unwrap();
+
+    let image = QcowImage::open_with_hints(
+      metadata_source,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert!(image.uses_external_data_file());
+    assert_eq!(image.read_all().unwrap(), external_cluster);
   }
 
   #[test]
@@ -642,7 +755,8 @@ mod tests {
   enum SyntheticCluster<'a> {
     Sparse,
     Standard(&'a [u8]),
-    Compressed(&'a [u8]),
+    CompressedZlib(&'a [u8]),
+    CompressedZstd(&'a [u8]),
   }
 
   fn build_synthetic_qcow(cluster_data: Option<&[u8]>, backing_name: Option<&str>) -> Vec<u8> {
@@ -698,11 +812,20 @@ mod tests {
     let l2_entry = match cluster {
       SyntheticCluster::Sparse => 0,
       SyntheticCluster::Standard(_) => 0x8000_0000_0005_0000u64,
-      SyntheticCluster::Compressed(cluster_data) => {
+      SyntheticCluster::CompressedZlib(cluster_data) => {
         let compressed = deflate_cluster(cluster_data);
         let compressed_sectors = compressed.len().div_ceil(512);
         let additional_sectors = compressed_sectors.saturating_sub(1);
+        constants::QCOW_OFLAG_COMPRESSED
+          | ((u64::try_from(additional_sectors).unwrap()) << (70 - CLUSTER_BITS))
+          | DATA_OFFSET
+      }
+      SyntheticCluster::CompressedZstd(cluster_data) => {
+        let compressed = zstd_cluster(cluster_data);
+        let compressed_sectors = compressed.len().div_ceil(512);
+        let additional_sectors = compressed_sectors.saturating_sub(1);
         data[72..80].copy_from_slice(&constants::QCOW_INCOMPAT_COMPRESSION.to_be_bytes());
+        data[104] = constants::QCOW_COMPRESSION_ZSTD;
         constants::QCOW_OFLAG_COMPRESSED
           | ((u64::try_from(additional_sectors).unwrap()) << (70 - CLUSTER_BITS))
           | DATA_OFFSET
@@ -715,8 +838,13 @@ mod tests {
         data[DATA_OFFSET as usize..DATA_OFFSET as usize + cluster_data.len()]
           .copy_from_slice(cluster_data);
       }
-      SyntheticCluster::Compressed(cluster_data) => {
+      SyntheticCluster::CompressedZlib(cluster_data) => {
         let compressed = deflate_cluster(cluster_data);
+        data[DATA_OFFSET as usize..DATA_OFFSET as usize + compressed.len()]
+          .copy_from_slice(&compressed);
+      }
+      SyntheticCluster::CompressedZstd(cluster_data) => {
+        let compressed = zstd_cluster(cluster_data);
         data[DATA_OFFSET as usize..DATA_OFFSET as usize + compressed.len()]
           .copy_from_slice(&compressed);
       }
@@ -729,6 +857,10 @@ mod tests {
     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(data).unwrap();
     encoder.finish().unwrap()
+  }
+
+  fn zstd_cluster(data: &[u8]) -> Vec<u8> {
+    zstd::stream::encode_all(data, 1).unwrap()
   }
 
   fn build_synthetic_qcow_v1(cluster: SyntheticCluster<'_>) -> Vec<u8> {
@@ -754,12 +886,13 @@ mod tests {
     let l2_entry = match cluster {
       SyntheticCluster::Sparse => 0,
       SyntheticCluster::Standard(_) => DATA_OFFSET,
-      SyntheticCluster::Compressed(cluster_data) => {
+      SyntheticCluster::CompressedZlib(cluster_data) => {
         let compressed = deflate_cluster(cluster_data);
         let shift = 63 - u32::from(CLUSTER_BITS);
         let stored_size = u64::try_from(compressed.len()).unwrap();
         (1u64 << 63) | (stored_size << shift) | DATA_OFFSET
       }
+      SyntheticCluster::CompressedZstd(_) => unreachable!("qcow v1 only uses zlib compression"),
     };
     data[L2_OFFSET as usize..L2_OFFSET as usize + 8].copy_from_slice(&l2_entry.to_be_bytes());
     match cluster {
@@ -768,11 +901,12 @@ mod tests {
         data[DATA_OFFSET as usize..DATA_OFFSET as usize + cluster_data.len()]
           .copy_from_slice(cluster_data);
       }
-      SyntheticCluster::Compressed(cluster_data) => {
+      SyntheticCluster::CompressedZlib(cluster_data) => {
         let compressed = deflate_cluster(cluster_data);
         data[DATA_OFFSET as usize..DATA_OFFSET as usize + compressed.len()]
           .copy_from_slice(&compressed);
       }
+      SyntheticCluster::CompressedZstd(_) => unreachable!("qcow v1 only uses zlib compression"),
     }
 
     data
@@ -860,6 +994,51 @@ mod tests {
       .copy_from_slice(&(0x8000_0000_0006_0000u64).to_be_bytes());
     data[SNAPSHOT_DATA_OFFSET as usize..SNAPSHOT_DATA_OFFSET as usize + snapshot_cluster.len()]
       .copy_from_slice(snapshot_cluster);
+
+    data
+  }
+
+  fn build_synthetic_qcow_external_data(external_name: &str) -> Vec<u8> {
+    const CLUSTER_BITS: u32 = 16;
+    const CLUSTER_SIZE: usize = 1 << (CLUSTER_BITS as usize);
+    const VIRTUAL_SIZE: u64 = CLUSTER_SIZE as u64;
+    const L1_OFFSET: u64 = 0x0003_0000;
+    const L2_OFFSET: u64 = 0x0004_0000;
+    const REFCOUNT_TABLE_OFFSET: u64 = 0x0001_0000;
+    let mut data = vec![0u8; 0x0005_0000];
+
+    data[0..4].copy_from_slice(b"QFI\xfb");
+    data[4..8].copy_from_slice(&3u32.to_be_bytes());
+    data[20..24].copy_from_slice(&CLUSTER_BITS.to_be_bytes());
+    data[24..32].copy_from_slice(&VIRTUAL_SIZE.to_be_bytes());
+    data[32..36].copy_from_slice(&0u32.to_be_bytes());
+    data[36..40].copy_from_slice(&1u32.to_be_bytes());
+    data[40..48].copy_from_slice(&L1_OFFSET.to_be_bytes());
+    data[48..56].copy_from_slice(&REFCOUNT_TABLE_OFFSET.to_be_bytes());
+    data[56..60].copy_from_slice(&1u32.to_be_bytes());
+    data[60..64].copy_from_slice(&0u32.to_be_bytes());
+    data[64..72].copy_from_slice(&0u64.to_be_bytes());
+    data[72..80].copy_from_slice(&constants::QCOW_INCOMPAT_DATA_FILE.to_be_bytes());
+    data[80..88].copy_from_slice(&0u64.to_be_bytes());
+    data[88..96].copy_from_slice(&0u64.to_be_bytes());
+    data[96..100].copy_from_slice(&4u32.to_be_bytes());
+    data[100..104].copy_from_slice(&112u32.to_be_bytes());
+    data[104] = 0;
+
+    let ext_offset = 112usize;
+    data[ext_offset..ext_offset + 4].copy_from_slice(&0x44415441u32.to_be_bytes());
+    data[ext_offset + 4..ext_offset + 8]
+      .copy_from_slice(&(external_name.len() as u32).to_be_bytes());
+    data[ext_offset + 8..ext_offset + 8 + external_name.len()]
+      .copy_from_slice(external_name.as_bytes());
+    let ext_end = ext_offset + 8 + external_name.len();
+    let ext_aligned_end = ext_end + (8 - (ext_end % 8)) % 8;
+    data[ext_aligned_end..ext_aligned_end + 8].fill(0);
+
+    data[L1_OFFSET as usize..L1_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0004_0000u64).to_be_bytes());
+    data[L2_OFFSET as usize..L2_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0000_0000u64).to_be_bytes());
 
     data
   }

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use super::{
   constants::{
-    QCOW_COMPRESSION_ZLIB, QCOW_CRYPT_NONE, QCOW_INCOMPAT_COMPRESSION, QCOW_INCOMPAT_CORRUPT,
-    QCOW_INCOMPAT_DATA_FILE, QCOW_INCOMPAT_DIRTY, QCOW_INCOMPAT_EXTL2,
+    QCOW_COMPRESSION_ZLIB, QCOW_COMPRESSION_ZSTD, QCOW_CRYPT_NONE, QCOW_INCOMPAT_COMPRESSION,
+    QCOW_INCOMPAT_CORRUPT, QCOW_INCOMPAT_DIRTY, QCOW_INCOMPAT_EXTL2,
   },
   extension::QcowHeaderExtension,
   header::QcowHeader,
@@ -61,23 +61,25 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
       "encrypted qcow images are not supported yet".to_string(),
     ));
   }
-  if (header.incompatible_features & QCOW_INCOMPAT_DATA_FILE) != 0 {
-    return Err(Error::InvalidFormat(
-      "qcow external data files are not supported yet".to_string(),
-    ));
-  }
   if (header.incompatible_features & QCOW_INCOMPAT_EXTL2) != 0 {
     return Err(Error::InvalidFormat(
       "qcow extended l2 entries are not supported yet".to_string(),
     ));
   }
   if (header.incompatible_features & QCOW_INCOMPAT_COMPRESSION) != 0
-    && header.compression_method != QCOW_COMPRESSION_ZLIB
+    && header.compression_method != QCOW_COMPRESSION_ZSTD
   {
     return Err(Error::InvalidFormat(format!(
       "unsupported qcow compressed-cluster method: {}",
       header.compression_method
     )));
+  }
+  if (header.incompatible_features & QCOW_INCOMPAT_COMPRESSION) == 0
+    && header.compression_method != QCOW_COMPRESSION_ZLIB
+  {
+    return Err(Error::InvalidFormat(
+      "qcow default compression mode must use zlib".to_string(),
+    ));
   }
   if (header.incompatible_features & QCOW_INCOMPAT_DIRTY) != 0 {
     return Err(Error::InvalidFormat(
@@ -88,6 +90,18 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
     return Err(Error::InvalidFormat(
       "qcow images marked corrupt are not supported".to_string(),
     ));
+  }
+  if header.uses_external_data_file() {
+    if header.snapshot_count != 0 {
+      return Err(Error::InvalidFormat(
+        "qcow images with an external data file must not contain internal snapshots".to_string(),
+      ));
+    }
+    if header.uses_non_default_compression() {
+      return Err(Error::InvalidFormat(
+        "qcow images with an external data file must not use compressed clusters".to_string(),
+      ));
+    }
   }
 
   Ok(())

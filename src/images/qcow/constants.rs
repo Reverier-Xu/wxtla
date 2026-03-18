@@ -8,6 +8,7 @@ pub(super) const QCOW_VERSION_3: u32 = 3;
 
 pub(super) const QCOW_CRYPT_NONE: u32 = 0;
 pub(super) const QCOW_COMPRESSION_ZLIB: u8 = 0;
+pub(super) const QCOW_COMPRESSION_ZSTD: u8 = 1;
 
 pub(super) const QCOW_OFLAG_COMPRESSED: u64 = 1u64 << 62;
 pub(super) const QCOW_OFLAG_COPIED: u64 = 1u64 << 63;

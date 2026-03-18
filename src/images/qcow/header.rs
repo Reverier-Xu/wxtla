@@ -1,9 +1,9 @@
 //! QCOW header parsing.
 
 use super::constants::{
-  QCOW_COMPRESSION_ZLIB, QCOW_CRYPT_NONE, QCOW_V1_HEADER_SIZE, QCOW_V2_HEADER_SIZE,
-  QCOW_V3_HEADER_MIN_SIZE, QCOW_V3_HEADER_WITH_COMPRESSION, QCOW_VERSION_1, QCOW_VERSION_2,
-  QCOW_VERSION_3, SUPPORTED_CLUSTER_BITS, SUPPORTED_REFCOUNT_ORDER,
+  QCOW_COMPRESSION_ZLIB, QCOW_COMPRESSION_ZSTD, QCOW_CRYPT_NONE, QCOW_V1_HEADER_SIZE,
+  QCOW_V2_HEADER_SIZE, QCOW_V3_HEADER_MIN_SIZE, QCOW_V3_HEADER_WITH_COMPRESSION, QCOW_VERSION_1,
+  QCOW_VERSION_2, QCOW_VERSION_3, SUPPORTED_CLUSTER_BITS, SUPPORTED_REFCOUNT_ORDER,
 };
 use crate::{DataSource, Error, Result};
 
@@ -138,7 +138,7 @@ impl QcowHeader {
       } else {
         QCOW_COMPRESSION_ZLIB
       };
-    if compression_method != QCOW_COMPRESSION_ZLIB {
+    if compression_method != QCOW_COMPRESSION_ZLIB && compression_method != QCOW_COMPRESSION_ZSTD {
       return Err(Error::InvalidFormat(format!(
         "unsupported qcow compression method: {compression_method}"
       )));
@@ -222,6 +222,21 @@ impl QcowHeader {
     1u64
       .checked_shl(self.l2_table_bits)
       .ok_or_else(|| Error::InvalidRange("qcow l2 entry count overflow".to_string()))
+  }
+
+  /// Return `true` when the image uses an external data file.
+  pub const fn uses_external_data_file(&self) -> bool {
+    (self.incompatible_features & super::constants::QCOW_INCOMPAT_DATA_FILE) != 0
+  }
+
+  /// Return `true` when the image declares an alternate compression type.
+  pub const fn uses_non_default_compression(&self) -> bool {
+    (self.incompatible_features & super::constants::QCOW_INCOMPAT_COMPRESSION) != 0
+  }
+
+  /// Return `true` when the raw-external-data auto-clear bit is set.
+  pub const fn raw_external_data(&self) -> bool {
+    (self.autoclear_features & 0x0000_0002) != 0
   }
 }
 
