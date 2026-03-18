@@ -1,9 +1,19 @@
-//! VHD image descriptor and probe registration.
+//! VHD image driver and probe registration.
 
-use crate::{
-  FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
-  ProbeRegistry, ProbeResult, Result,
-};
+mod cache;
+mod constants;
+mod driver;
+mod dynamic_header;
+mod footer;
+mod image;
+mod parser;
+
+pub use driver::VhdDriver;
+pub use dynamic_header::{VhdDynamicHeader, VhdParentLocator};
+pub use footer::{VhdDiskGeometry, VhdDiskType, VhdFooter};
+pub use image::VhdImage;
+
+use crate::{FormatDescriptor, FormatKind, ProbeConfidence, ProbeRegistry};
 
 /// VHD image descriptor.
 pub const DESCRIPTOR: FormatDescriptor = FormatDescriptor::new("image.vhd", FormatKind::Image);
@@ -12,48 +22,35 @@ inventory::submit! {
   crate::formats::FormatInventoryEntry::new(DESCRIPTOR, register_probes)
 }
 
-const FOOTER_MAGIC: &[u8] = b"conectix";
-
 fn register_probes(registry: &mut ProbeRegistry) {
   registry.register(VhdProbe);
 }
 
 struct VhdProbe;
 
-impl FormatProbe for VhdProbe {
-  fn descriptor(&self) -> FormatDescriptor {
+impl crate::FormatProbe for VhdProbe {
+  fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn probe(&self, context: &ProbeContext<'_>) -> Result<ProbeResult> {
-    if let Ok(header) = context.header(FOOTER_MAGIC.len())
-      && header == FOOTER_MAGIC
-    {
-      return Ok(ProbeResult::matched(ProbeMatch::new(
-        DESCRIPTOR,
-        ProbeConfidence::Exact,
-        "vhd footer signature found at file start",
-      )));
-    }
-
+  fn probe(&self, context: &crate::ProbeContext<'_>) -> crate::Result<crate::ProbeResult> {
     let size = context.size()?;
     if size < 512 {
-      return Ok(ProbeResult::rejected());
+      return Ok(crate::ProbeResult::rejected());
     }
-
     let footer_offset = size - 512;
-    let Ok(footer_magic) = context.read_bytes_at(footer_offset, FOOTER_MAGIC.len()) else {
-      return Ok(ProbeResult::rejected());
+    let Ok(signature) = context.read_bytes_at(footer_offset, 8) else {
+      return Ok(crate::ProbeResult::rejected());
     };
 
-    if footer_magic == FOOTER_MAGIC {
-      Ok(ProbeResult::matched(ProbeMatch::new(
+    if signature == constants::FOOTER_COOKIE {
+      Ok(crate::ProbeResult::matched(crate::ProbeMatch::new(
         DESCRIPTOR,
         ProbeConfidence::Exact,
         "vhd footer signature found at trailer",
       )))
     } else {
-      Ok(ProbeResult::rejected())
+      Ok(crate::ProbeResult::rejected())
     }
   }
 }
