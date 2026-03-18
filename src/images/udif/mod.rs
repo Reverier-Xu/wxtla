@@ -1,4 +1,16 @@
-//! UDIF image descriptor and probe registration.
+//! UDIF image driver and probe registration.
+
+mod block_map;
+mod cache;
+mod driver;
+mod image;
+mod parser;
+mod trailer;
+
+pub use block_map::UdifCompressionMethod;
+pub use driver::UdifDriver;
+pub use image::UdifImage;
+pub use trailer::UdifTrailer;
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
