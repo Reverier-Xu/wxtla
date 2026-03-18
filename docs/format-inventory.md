@@ -53,8 +53,8 @@ Current image phase status:
 | --- | --- | --- | --- |
 | AD1 / ADF | AccessData + `pyad1` spec | wxtla | Logical evidence container; archive semantics |
 | TAR | native implementation target | wxtla | Landed |
-| ZIP | native implementation target | wxtla | Next archive target |
-| 7z | native implementation target + cache fallback | wxtla | After zip |
+| ZIP | native implementation target + cache fallback for encrypted access | wxtla | Landed |
+| 7z | native implementation target + cache fallback | wxtla | Next archive target |
 | RAR | native implementation target + cache fallback | wxtla | After 7z |
 
 Supporting data formats used by the image/container family:

@@ -655,6 +655,7 @@ dependencies = [
  "encoding_rs",
  "flate2",
  "inventory",
+ "libc",
  "lzfse",
  "md5",
  "plist",

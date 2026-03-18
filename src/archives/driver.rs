@@ -19,6 +19,17 @@ pub trait Archive: Send + Sync {
 
   /// Open file content for a readable archive entry.
   fn open_file(&self, entry_id: &ArchiveEntryId) -> Result<DataSourceHandle>;
+
+  /// Return `true` when the archive is currently locked behind an optional
+  /// secret.
+  fn is_locked(&self) -> bool {
+    false
+  }
+
+  /// Attempt to unlock the archive with a password.
+  fn unlock_with_password(&mut self, _password: &str) -> Result<bool> {
+    Ok(false)
+  }
 }
 
 /// Opens a specific archive format into a read-only archive surface.
