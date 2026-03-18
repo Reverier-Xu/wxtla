@@ -68,14 +68,15 @@ The active migration order is now image-first after the already-landed volume la
 - `sparsebundle`
 - `pdi`
 - `splitraw`
+- `ad1`
 
 ### Current next target
 
-- `ad1`
+- `tar`
 
 ### Remaining image targets after that
 
-- none from the original migration list, but `ad1` has been added as an additional image target
+- none - the image phase is complete
 
 ### After images
 

@@ -43,6 +43,18 @@ These are the only formats allowed to delegate parsing to mature crates directly
 | Split Raw | regressor via keramics | wxtla | In-house parser required |
 | PDI | regressor via keramics | wxtla | In-house parser required |
 
+Current image phase status:
+
+- complete
+
+## 3a. Archive formats
+
+| Format | Current source | Planned owner | Notes |
+| --- | --- | --- | --- |
+| AD1 / ADF | AccessData + `pyad1` spec | wxtla | Logical evidence container; archive semantics |
+| TAR | native implementation target | wxtla | Next archive target |
+| ZIP | native implementation target | wxtla | Follow tar |
+
 Supporting data formats used by the image/container family:
 
 | Supporting format | Current source | Planned owner | Notes |
@@ -117,6 +129,6 @@ Already landed in `wxtla`:
 - `pdi`
 - `splitraw`
 
-Current next image target:
+Current next archive target:
 
-- `ad1`
+- `tar`

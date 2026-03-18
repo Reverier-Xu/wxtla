@@ -2,14 +2,15 @@ mod support;
 
 use support::{FileDataSource, FixtureResolver, fixture_identity, fixture_path};
 use wxtla::{
-  FormatDescriptor, FormatKind, ProbeConfidence, ProbeOptions, filesystems, formats, images,
-  volumes,
+  FormatDescriptor, FormatKind, ProbeConfidence, ProbeOptions, archives, filesystems, formats,
+  images, volumes,
 };
 
 #[test]
 fn builtin_probes_match_sample_formats() {
   let registry = formats::probe_registry_from_inventory(formats::builtin_inventory());
-  let cases: [(&str, FormatDescriptor); 19] = [
+  let cases: [(&str, FormatDescriptor); 20] = [
+    ("adf/text-and-pictures.ad1", archives::adf::DESCRIPTOR),
     ("ewf/ext2.E01", images::ewf::DESCRIPTOR),
     ("qcow/ext2.qcow2", images::qcow::DESCRIPTOR),
     ("vhd/ext2.vhd", images::vhd::DESCRIPTOR),
