@@ -7,7 +7,7 @@ rust-version = "1.93.1"
 version      = "0.0.3"
 
 description = "Wired eXploring Target Layer Accessor"
-license     = "AGPL-3.0-only"
+license     = "MIT or Apache-2.0"
 
 [profile.release]
 codegen-units = 1
@@ -17,21 +17,21 @@ strip         = true
 
 
 [dependencies]
-adc        = "0.2"
-adler2    = "2.0"
-bzip2      = "0.6"
-crc32fast = "1.5"
-crc32c    = "0.6"
+adc         = "0.2"
+adler2      = "2.0"
+bzip2       = "0.6"
+crc32c      = "0.6"
+crc32fast   = "1.5"
 encoding_rs = "0.8"
-flate2    = "1.1"
-inventory = "0.3"
-lzfse      = "0.2"
-plist      = "1.8"
-quick-xml = { version = "0.39", features = ["serialize"] }
-serde      = { version = "1.0", features = ["derive"] }
-thiserror = "2.0"
-xz2        = "0.1"
-zstd      = "0.13"
+flate2      = "1.1"
+inventory   = "0.3"
+lzfse       = "0.2"
+plist       = "1.8"
+quick-xml   = { version = "0.39", features = ["serialize"] }
+serde       = { version = "1.0", features = ["derive"] }
+thiserror   = "2.0"
+xz2         = "0.1"
+zstd        = "0.13"
 
 [dev-dependencies]
 md5 = "0.8"
