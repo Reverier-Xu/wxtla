@@ -2,12 +2,14 @@
 
 mod cache;
 mod constants;
+mod cowd_header;
 mod descriptor;
 mod driver;
 mod header;
 mod image;
 mod parser;
 
+pub use cowd_header::VmdkCowdHeader;
 pub use descriptor::{
   VmdkDescriptor, VmdkDescriptorExtent, VmdkExtentAccessMode, VmdkExtentType, VmdkFileType,
 };
@@ -28,6 +30,7 @@ inventory::submit! {
 }
 
 const MAGIC: &[u8] = b"KDMV";
+const COWD_MAGIC: &[u8] = b"COWD";
 
 fn register_probes(registry: &mut ProbeRegistry) {
   registry.register(OffsetMagicProbe::new(
@@ -36,6 +39,13 @@ fn register_probes(registry: &mut ProbeRegistry) {
     MAGIC,
     ProbeConfidence::Exact,
     "vmdk sparse header found",
+  ));
+  registry.register(OffsetMagicProbe::new(
+    DESCRIPTOR,
+    0,
+    COWD_MAGIC,
+    ProbeConfidence::Exact,
+    "vmdk cowd header found",
   ));
   registry.register(VmdkDescriptorProbe);
 }

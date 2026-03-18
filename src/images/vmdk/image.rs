@@ -6,11 +6,15 @@ use super::{
   DESCRIPTOR,
   cache::VmdkCache,
   constants,
+  cowd_header::VmdkCowdHeader,
   descriptor::{
     VmdkDescriptor, VmdkDescriptorExtent, VmdkExtentAccessMode, VmdkExtentType, VmdkFileType,
   },
   header::VmdkSparseHeader,
-  parser::{ParsedVmdk, grain_table_entry_count, parse},
+  parser::{
+    ParsedCowdVmdk, ParsedVmdk, cowd_grain_table_entry_count, grain_table_entry_count, parse,
+    parse_cowd,
+  },
 };
 use crate::{
   DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, RelatedPathBuf,
@@ -27,6 +31,7 @@ pub struct VmdkImage {
 
 enum VmdkBackend {
   Sparse(VmdkSparseBackend),
+  Cowd(VmdkCowdBackend),
   Descriptor(VmdkDescriptorBackend),
 }
 
@@ -39,6 +44,13 @@ struct VmdkSparseBackend {
 
 struct VmdkDescriptorBackend {
   extents: Vec<VmdkResolvedExtent>,
+}
+
+struct VmdkCowdBackend {
+  source: DataSourceHandle,
+  header: VmdkCowdHeader,
+  grain_directory: Arc<[u32]>,
+  grain_table_cache: VmdkCache<Vec<u32>>,
 }
 
 struct VmdkResolvedExtent {
@@ -62,6 +74,10 @@ impl VmdkImage {
       let parsed = parse(source.clone())?;
       return Self::from_sparse_parsed(source, parsed);
     }
+    if is_cowd_extent(source.as_ref())? {
+      let parsed = parse_cowd(source.clone())?;
+      return Self::from_cowd_parsed(source, parsed);
+    }
 
     let descriptor = VmdkDescriptor::from_bytes(&source.read_all()?)?;
     Self::from_descriptor(descriptor, hints)
@@ -73,6 +89,36 @@ impl VmdkImage {
       is_sparse: true,
       descriptor: parsed.descriptor,
       backend: VmdkBackend::Sparse(VmdkSparseBackend {
+        source,
+        header: parsed.header,
+        grain_directory: parsed.grain_directory,
+        grain_table_cache: VmdkCache::new(64),
+      }),
+    })
+  }
+
+  fn from_cowd_parsed(source: DataSourceHandle, parsed: ParsedCowdVmdk) -> Result<Self> {
+    let size = parsed.header.virtual_size_bytes()?;
+    let descriptor = VmdkDescriptor {
+      version: 1,
+      content_id: parsed.header.generation,
+      parent_content_id: None,
+      file_type: VmdkFileType::VmfsSparse,
+      extents: vec![VmdkDescriptorExtent {
+        access_mode: VmdkExtentAccessMode::ReadWrite,
+        sector_count: u64::from(parsed.header.capacity_sectors),
+        extent_type: VmdkExtentType::VmfsSparse,
+        file_name: None,
+        start_sector: 0,
+      }],
+      parent_file_name_hint: None,
+    };
+
+    Ok(Self {
+      descriptor,
+      size,
+      is_sparse: true,
+      backend: VmdkBackend::Cowd(VmdkCowdBackend {
         source,
         header: parsed.header,
         grain_directory: parsed.grain_directory,
@@ -151,9 +197,18 @@ impl VmdkImage {
           ));
         }
         VmdkExtentType::VmfsSparse => {
-          return Err(Error::InvalidFormat(
-            "vmfs sparse cowd extents are not supported yet".to_string(),
-          ));
+          let resolver = resolver.ok_or_else(|| {
+            Error::InvalidSourceReference(
+              "descriptor-backed vmdk images require a related-source resolver".to_string(),
+            )
+          })?;
+          let identity = identity.ok_or_else(|| {
+            Error::InvalidSourceReference(
+              "descriptor-backed vmdk images require a source identity hint".to_string(),
+            )
+          })?;
+          image_is_sparse = true;
+          resolve_vmfs_sparse_extent(extent, resolver, identity)?
         }
       };
       extents.push(VmdkResolvedExtent {
@@ -177,7 +232,14 @@ impl VmdkImage {
   pub fn header(&self) -> Option<&VmdkSparseHeader> {
     match &self.backend {
       VmdkBackend::Sparse(backend) => Some(&backend.header),
-      VmdkBackend::Descriptor(_) => None,
+      VmdkBackend::Cowd(_) | VmdkBackend::Descriptor(_) => None,
+    }
+  }
+
+  pub fn cowd_header(&self) -> Option<&VmdkCowdHeader> {
+    match &self.backend {
+      VmdkBackend::Cowd(backend) => Some(&backend.header),
+      VmdkBackend::Sparse(_) | VmdkBackend::Descriptor(_) => None,
     }
   }
 
@@ -217,6 +279,49 @@ impl VmdkImage {
           offset,
           usize::try_from(byte_count)
             .map_err(|_| Error::InvalidRange("vmdk grain-table size is too large".to_string()))?,
+        )?;
+        let entries = raw
+          .chunks_exact(4)
+          .map(|chunk| Ok(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])))
+          .collect::<Result<Vec<_>>>()?;
+        Ok(Arc::new(entries))
+      })
+      .map(Some)
+  }
+
+  fn read_cowd_grain_table(
+    backend: &VmdkCowdBackend, directory_index: u64,
+  ) -> Result<Option<Arc<Vec<u32>>>> {
+    let raw_sector = *backend
+      .grain_directory
+      .get(usize::try_from(directory_index).map_err(|_| {
+        Error::InvalidRange("vmdk cowd grain-directory index is too large".to_string())
+      })?)
+      .ok_or_else(|| {
+        Error::InvalidFormat(format!(
+          "vmdk cowd grain-directory entry {directory_index} is out of bounds"
+        ))
+      })?;
+    if raw_sector == 0 {
+      return Ok(None);
+    }
+
+    backend
+      .grain_table_cache
+      .get_or_load(directory_index, || {
+        let offset = u64::from(raw_sector)
+          .checked_mul(constants::BYTES_PER_SECTOR)
+          .ok_or_else(|| {
+            Error::InvalidRange("vmdk cowd grain-table offset overflow".to_string())
+          })?;
+        let byte_count = cowd_grain_table_entry_count()
+          .checked_mul(4)
+          .ok_or_else(|| Error::InvalidRange("vmdk cowd grain-table size overflow".to_string()))?;
+        let raw = backend.source.read_bytes_at(
+          offset,
+          usize::try_from(byte_count).map_err(|_| {
+            Error::InvalidRange("vmdk cowd grain-table size is too large".to_string())
+          })?,
         )?;
         let entries = raw
           .chunks_exact(4)
@@ -333,12 +438,75 @@ impl VmdkImage {
 
     Ok(copied)
   }
+
+  fn read_cowd_at(
+    backend: &VmdkCowdBackend, offset: u64, size: u64, buf: &mut [u8],
+  ) -> Result<usize> {
+    if offset >= size || buf.is_empty() {
+      return Ok(0);
+    }
+
+    let grain_size = backend.header.grain_size_bytes()?;
+    let table_entries = cowd_grain_table_entry_count();
+    let mut copied = 0usize;
+    while copied < buf.len() {
+      let absolute_offset = offset
+        .checked_add(copied as u64)
+        .ok_or_else(|| Error::InvalidRange("vmdk read offset overflow".to_string()))?;
+      if absolute_offset >= size {
+        break;
+      }
+
+      let grain_index = absolute_offset / grain_size;
+      let within_grain = absolute_offset % grain_size;
+      let directory_index = grain_index / table_entries;
+      let table_index = usize::try_from(grain_index % table_entries)
+        .map_err(|_| Error::InvalidRange("vmdk cowd grain-table index is too large".to_string()))?;
+      let available = usize::try_from(
+        (grain_size - within_grain)
+          .min(size - absolute_offset)
+          .min((buf.len() - copied) as u64),
+      )
+      .map_err(|_| Error::InvalidRange("vmdk read chunk is too large".to_string()))?;
+
+      match Self::read_cowd_grain_table(backend, directory_index)? {
+        None => {
+          buf[copied..copied + available].fill(0);
+        }
+        Some(table) => {
+          let grain_sector = *table.get(table_index).ok_or_else(|| {
+            Error::InvalidFormat(
+              "vmdk cowd grain table does not cover the requested grain".to_string(),
+            )
+          })?;
+          if grain_sector == 0 {
+            buf[copied..copied + available].fill(0);
+          } else {
+            let data_offset = u64::from(grain_sector)
+              .checked_mul(constants::BYTES_PER_SECTOR)
+              .and_then(|value| value.checked_add(within_grain))
+              .ok_or_else(|| {
+                Error::InvalidRange("vmdk cowd grain data offset overflow".to_string())
+              })?;
+            backend
+              .source
+              .read_exact_at(data_offset, &mut buf[copied..copied + available])?;
+          }
+        }
+      }
+
+      copied += available;
+    }
+
+    Ok(copied)
+  }
 }
 
 impl DataSource for VmdkImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     match &self.backend {
       VmdkBackend::Sparse(backend) => Self::read_sparse_at(backend, offset, self.size, buf),
+      VmdkBackend::Cowd(backend) => Self::read_cowd_at(backend, offset, self.size, buf),
       VmdkBackend::Descriptor(backend) => Self::read_descriptor_at(backend, offset, self.size, buf),
     }
   }
@@ -350,6 +518,9 @@ impl DataSource for VmdkImage {
   fn capabilities(&self) -> DataSourceCapabilities {
     let preferred_chunk_size = match &self.backend {
       VmdkBackend::Sparse(backend) => {
+        usize::try_from(backend.header.grain_size_bytes().unwrap_or(64 * 1024)).unwrap_or(64 * 1024)
+      }
+      VmdkBackend::Cowd(backend) => {
         usize::try_from(backend.header.grain_size_bytes().unwrap_or(64 * 1024)).unwrap_or(64 * 1024)
       }
       VmdkBackend::Descriptor(_) => 64 * 1024,
@@ -386,20 +557,24 @@ fn is_sparse_extent(source: &dyn DataSource) -> Result<bool> {
   Ok(source.read_at(0, &mut magic)? == magic.len() && &magic == constants::SPARSE_HEADER_MAGIC)
 }
 
+fn is_cowd_extent(source: &dyn DataSource) -> Result<bool> {
+  let mut magic = [0u8; 4];
+  Ok(source.read_at(0, &mut magic)? == magic.len() && &magic == constants::COWD_HEADER_MAGIC)
+}
+
 fn validate_descriptor_file_type(file_type: VmdkFileType) -> Result<()> {
   match file_type {
     VmdkFileType::Unknown => Err(Error::InvalidFormat(
       "unsupported vmdk descriptor create type".to_string(),
-    )),
-    VmdkFileType::VmfsSparse | VmdkFileType::VmfsThin => Err(Error::InvalidFormat(
-      "vmfs sparse vmdk descriptors are not supported yet".to_string(),
     )),
     VmdkFileType::MonolithicSparse
     | VmdkFileType::MonolithicFlat
     | VmdkFileType::StreamOptimized
     | VmdkFileType::Flat2GbExtent
     | VmdkFileType::Sparse2GbExtent
-    | VmdkFileType::Vmfs => Ok(()),
+    | VmdkFileType::Vmfs
+    | VmdkFileType::VmfsSparse
+    | VmdkFileType::VmfsThin => Ok(()),
   }
 }
 
@@ -452,6 +627,38 @@ fn resolve_sparse_extent(
     .ok_or_else(|| Error::InvalidFormat("vmdk sparse extent is missing a file name".to_string()))?;
   let (source, path) = resolve_extent_source(resolver, identity, file_name)?
     .ok_or_else(|| Error::NotFound("unable to resolve the vmdk sparse extent".to_string()))?;
+  if &path == identity.logical_path() {
+    return Err(Error::InvalidFormat(
+      "vmdk descriptor extent resolves back to the descriptor file".to_string(),
+    ));
+  }
+
+  let extent_identity = SourceIdentity::new(path);
+  let image = VmdkImage::open_with_hints(
+    source,
+    SourceHints::new()
+      .with_resolver(resolver)
+      .with_source_identity(&extent_identity),
+  )?;
+  Ok(VmdkResolvedExtentKind::Source(
+    Arc::new(image) as DataSourceHandle
+  ))
+}
+
+fn resolve_vmfs_sparse_extent(
+  extent: &VmdkDescriptorExtent, resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity,
+) -> Result<VmdkResolvedExtentKind> {
+  if extent.start_sector != 0 {
+    return Err(Error::InvalidFormat(
+      "vmdk vmfssparse extents must start at sector 0".to_string(),
+    ));
+  }
+
+  let file_name = extent.file_name.as_deref().ok_or_else(|| {
+    Error::InvalidFormat("vmdk vmfssparse extent is missing a file name".to_string())
+  })?;
+  let (source, path) = resolve_extent_source(resolver, identity, file_name)?
+    .ok_or_else(|| Error::NotFound("unable to resolve the vmdk vmfssparse extent".to_string()))?;
   if &path == identity.logical_path() {
     return Err(Error::InvalidFormat(
       "vmdk descriptor extent resolves back to the descriptor file".to_string(),
@@ -580,6 +787,32 @@ mod tests {
   }
 
   #[test]
+  fn opens_cowd_fixture_metadata() {
+    let image = VmdkImage::open(sample_source("vmdk/ext2.cowd")).unwrap();
+    let header = image.cowd_header().unwrap();
+
+    assert_eq!(header.format_version, 1);
+    assert_eq!(header.sectors_per_grain, 128);
+    assert_eq!(header.grain_directory_entries, 16);
+    assert_eq!(header.parent_path, "");
+    assert_eq!(image.descriptor_data().file_type, VmdkFileType::VmfsSparse);
+    assert_eq!(image.size().unwrap(), 4_194_304);
+  }
+
+  #[test]
+  fn reads_full_ext2_cowd_fixture() {
+    let image = VmdkImage::open(sample_source("vmdk/ext2.cowd")).unwrap();
+    let raw = std::fs::read(
+      Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formats")
+        .join("ext/ext2.raw"),
+    )
+    .unwrap();
+
+    assert_eq!(image.read_all().unwrap(), raw);
+  }
+
+  #[test]
   fn opens_descriptor_backed_sparse_fixture_via_resolver() {
     let descriptor = sample_source("vmdk/ext2-descriptor.vmdk");
     let extent = sample_source("vmdk/ext2.vmdk");
@@ -603,6 +836,34 @@ mod tests {
     .unwrap();
 
     assert_eq!(image.read_all().unwrap(), raw);
+  }
+
+  #[test]
+  fn opens_descriptor_backed_cowd_fixture_via_resolver() {
+    let descriptor = sample_source("vmdk/ext2-cowd-descriptor.vmdk");
+    let extent = sample_source("vmdk/ext2.cowd");
+    let resolver = Resolver {
+      files: HashMap::from([("vmdk/ext2.cowd".to_string(), extent)]),
+    };
+    let identity = SourceIdentity::from_relative_path("vmdk/ext2-cowd-descriptor.vmdk").unwrap();
+    let raw = std::fs::read(
+      Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formats")
+        .join("ext/ext2.raw"),
+    )
+    .unwrap();
+
+    let image = VmdkImage::open_with_hints(
+      descriptor,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert_eq!(image.read_all().unwrap(), raw);
+    assert!(image.is_sparse());
+    assert_eq!(image.descriptor_data().file_type, VmdkFileType::VmfsSparse);
   }
 
   #[test]
@@ -691,6 +952,15 @@ RW 1 FLAT "part2.bin" 0
   }
 
   #[test]
+  fn descriptor_backed_cowd_images_require_resolution_hints() {
+    let descriptor = sample_source("vmdk/ext2-cowd-descriptor.vmdk");
+
+    let result = VmdkImage::open(descriptor);
+
+    assert!(matches!(result, Err(Error::InvalidSourceReference(_))));
+  }
+
+  #[test]
   fn flat_descriptor_images_require_resolution_hints() {
     let descriptor = sample_source("vmdk/ext2-flat-descriptor.vmdk");
 
@@ -735,5 +1005,21 @@ RW 1 FLAT "part2.bin" 0
     let result = VmdkImage::open(Arc::new(MemDataSource { data }));
 
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
+
+  #[test]
+  fn rejects_parent_backed_cowd_headers_in_current_step() {
+    let mut data = std::fs::read(
+      Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formats")
+        .join("vmdk/ext2.cowd"),
+    )
+    .unwrap();
+    data[32..43].copy_from_slice(b"parent.vmdk");
+    data[1056..1060].copy_from_slice(&1u32.to_le_bytes());
+
+    let result = VmdkImage::open(Arc::new(MemDataSource { data }));
+
+    assert!(matches!(result, Err(Error::InvalidSourceReference(_))));
   }
 }
