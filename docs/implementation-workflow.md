@@ -58,6 +58,8 @@ The active migration order is now image-first after the already-landed volume la
 - `mbr`
 - `gpt`
 - `apm`
+- `bitlocker`
+- `lvm2`
 - `ewf`
 - `qcow`
 - `vhd`
@@ -87,7 +89,7 @@ The active migration order is now image-first after the already-landed volume la
   - `ntfs`
   - `hfs`
   - `xfs`
-- `lvm2`
+- stacked-volume polish only after the filesystem layer is stable
 
 ## 3. Quality policy for parser code
 

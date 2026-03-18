@@ -6,6 +6,7 @@ mod record;
 pub mod apm;
 pub mod bitlocker;
 pub mod gpt;
+pub mod lvm;
 pub mod mbr;
 
 pub use driver::{VolumeSystem, VolumeSystemDriver};

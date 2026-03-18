@@ -286,6 +286,7 @@ The migration is successful when:
 The current landed state is:
 
 - volume layer completed for `mbr`, `gpt`, and `apm`
+- stacked volume-manager support completed for `bitlocker` and `lvm2`
 - image layer completed for `ewf`, `qcow`, `vhd`, `vhdx`, `vmdk`, `udif`, `sparseimage`, `sparsebundle`, `pdi`, and `splitraw`
 - archive layer started with `ad1`
 - current next format target is `tar`
@@ -294,7 +295,7 @@ The active migration strategy is therefore:
 
 1. finish the remaining archive drivers
 2. move on to full filesystem drivers
-3. finish stacked volume-manager support
+3. revisit stacked-volume polish only after the filesystem layer lands
 
 The concrete next-stage order is:
 
@@ -305,4 +306,4 @@ The concrete next-stage order is:
    - `ntfs`
    - `hfs` / `hfs+` / `hfsx`
    - `xfs`
-3. `lvm2` and deeper stacking/performance work
+3. deeper stacking/performance work

@@ -69,7 +69,8 @@ Supporting data formats used by the image/container family:
 | MBR | regressor via keramics | wxtla | In-house parser required |
 | GPT | regressor via keramics | wxtla | In-house parser required |
 | APM | regressor via keramics | wxtla | In-house parser required |
-| LVM2 | native regressor | wxtla | In-house parser required |
+| BitLocker | libyal `libbde` + synthetic coverage | wxtla | In-house parser required |
+| LVM2 | native regressor + libyal `libvslvm` test blobs | wxtla | In-house parser required |
 
 ## 5. Filesystem formats
 
