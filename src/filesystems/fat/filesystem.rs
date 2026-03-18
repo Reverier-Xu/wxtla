@@ -23,6 +23,7 @@ const ATTR_DIRECTORY: u8 = 0x10;
 const ATTR_VOLUME_LABEL: u8 = 0x08;
 
 pub struct FatFileSystem {
+  volume_label: Option<String>,
   nodes: HashMap<u64, FatNode>,
   children: HashMap<u64, Vec<DirectoryEntry>>,
 }
@@ -30,12 +31,27 @@ pub struct FatFileSystem {
 struct FatNode {
   record: FileSystemNodeRecord,
   data_source: Option<DataSourceHandle>,
+  details: FatNodeDetails,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FatNodeDetails {
+  pub short_name: String,
+  pub attribute_flags: u8,
+  pub created_time: u16,
+  pub created_date: u16,
+  pub created_centiseconds: u8,
+  pub accessed_date: u16,
+  pub modified_time: u16,
+  pub modified_date: u16,
+  pub start_cluster: u32,
 }
 
 struct FatBuilder {
   source: DataSourceHandle,
   boot_sector: FatBootSector,
   fat_table: FatTable,
+  volume_label: Option<String>,
   nodes: HashMap<u64, FatNode>,
   children: HashMap<u64, Vec<DirectoryEntry>>,
   next_node_id: u64,
@@ -50,9 +66,22 @@ enum DirectorySource {
 #[derive(Debug, Clone)]
 struct FatDirectoryEntryRecord {
   name: String,
+  short_name: String,
   kind: FileSystemNodeKind,
+  attribute_flags: u8,
+  created_time: u16,
+  created_date: u16,
+  created_centiseconds: u8,
+  accessed_date: u16,
+  modified_time: u16,
+  modified_date: u16,
   start_cluster: u32,
   size: u64,
+}
+
+struct FatDirectoryListing {
+  volume_label: Option<String>,
+  entries: Vec<FatDirectoryEntryRecord>,
 }
 
 struct FatTable {
@@ -91,6 +120,7 @@ impl FatFileSystem {
       source,
       boot_sector,
       fat_table,
+      volume_label: None,
       nodes: HashMap::new(),
       children: HashMap::new(),
       next_node_id: ROOT_NODE_ID + 1,
@@ -105,6 +135,17 @@ impl FatFileSystem {
           0,
         ),
         data_source: None,
+        details: FatNodeDetails {
+          short_name: String::new(),
+          attribute_flags: ATTR_DIRECTORY,
+          created_time: 0,
+          created_date: 0,
+          created_centiseconds: 0,
+          accessed_date: 0,
+          modified_time: 0,
+          modified_date: 0,
+          start_cluster: 0,
+        },
       },
     );
     let root_source = match builder.boot_sector.fat_type {
@@ -119,9 +160,23 @@ impl FatFileSystem {
     builder.populate_directory(ROOT_NODE_ID, root_source)?;
 
     Ok(Self {
+      volume_label: builder.volume_label,
       nodes: builder.nodes,
       children: builder.children,
     })
+  }
+
+  pub fn volume_label(&self) -> Option<&str> {
+    self.volume_label.as_deref()
+  }
+
+  pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<FatNodeDetails> {
+    let node_id = decode_node_id(node_id)?;
+    self
+      .nodes
+      .get(&node_id)
+      .map(|node| node.details.clone())
+      .ok_or_else(|| Error::NotFound(format!("fat node {node_id} was not found")))
   }
 }
 
@@ -172,10 +227,13 @@ impl FileSystem for FatFileSystem {
 
 impl FatBuilder {
   fn populate_directory(&mut self, directory_id: u64, source: DirectorySource) -> Result<()> {
-    let entries = self.read_directory(source)?;
-    let mut children = Vec::with_capacity(entries.len());
+    let listing = self.read_directory(source)?;
+    if directory_id == ROOT_NODE_ID && self.volume_label.is_none() {
+      self.volume_label = listing.volume_label;
+    }
+    let mut children = Vec::with_capacity(listing.entries.len());
 
-    for entry in entries {
+    for entry in listing.entries {
       let node_id = self.next_node_id;
       self.next_node_id = self
         .next_node_id
@@ -211,6 +269,17 @@ impl FatBuilder {
         FatNode {
           record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(node_id), entry.kind, size),
           data_source,
+          details: FatNodeDetails {
+            short_name: entry.short_name,
+            attribute_flags: entry.attribute_flags,
+            created_time: entry.created_time,
+            created_date: entry.created_date,
+            created_centiseconds: entry.created_centiseconds,
+            accessed_date: entry.accessed_date,
+            modified_time: entry.modified_time,
+            modified_date: entry.modified_date,
+            start_cluster: entry.start_cluster,
+          },
         },
       );
       children.push(DirectoryEntry::new(
@@ -230,7 +299,7 @@ impl FatBuilder {
     Ok(())
   }
 
-  fn read_directory(&self, source: DirectorySource) -> Result<Vec<FatDirectoryEntryRecord>> {
+  fn read_directory(&self, source: DirectorySource) -> Result<FatDirectoryListing> {
     let bytes = match source {
       DirectorySource::Fixed { offset, size } => self.source.read_bytes_at(offset, size)?,
       DirectorySource::Chain(chain) => self.read_cluster_chain_bytes(&chain)?,
@@ -429,8 +498,9 @@ impl DataSource for FatChainDataSource {
   }
 }
 
-fn parse_directory_entries(bytes: &[u8]) -> Result<Vec<FatDirectoryEntryRecord>> {
+fn parse_directory_entries(bytes: &[u8]) -> Result<FatDirectoryListing> {
   let mut entries = Vec::new();
+  let mut volume_label = None;
   let mut pending_long_name = Vec::<LongNameFragment>::new();
 
   for slot in bytes.chunks_exact(32) {
@@ -449,17 +519,27 @@ fn parse_directory_entries(bytes: &[u8]) -> Result<Vec<FatDirectoryEntryRecord>>
       continue;
     }
 
-    if attributes & ATTR_VOLUME_LABEL != 0 {
-      pending_long_name.clear();
-      continue;
-    }
-
+    let short_name = decode_short_name(slot)?;
     let name = if pending_long_name.is_empty() {
-      decode_short_name(slot)?
+      short_name.clone()
     } else {
       assemble_long_name(&pending_long_name)?
     };
     pending_long_name.clear();
+
+    if attributes & ATTR_VOLUME_LABEL != 0 {
+      let volume_name = if pending_long_name.is_empty() {
+        decode_volume_label(slot)?
+      } else {
+        name
+      };
+      if !volume_name.is_empty() {
+        volume_label = Some(volume_name);
+      }
+      pending_long_name.clear();
+      continue;
+    }
+
     if name == "." || name == ".." {
       continue;
     }
@@ -468,17 +548,28 @@ fn parse_directory_entries(bytes: &[u8]) -> Result<Vec<FatDirectoryEntryRecord>>
     let file_size = u64::from(le_u32(&slot[28..32]));
     entries.push(FatDirectoryEntryRecord {
       name,
+      short_name,
       kind: if attributes & ATTR_DIRECTORY != 0 {
         FileSystemNodeKind::Directory
       } else {
         FileSystemNodeKind::File
       },
+      attribute_flags: attributes,
+      created_time: le_u16(&slot[14..16]),
+      created_date: le_u16(&slot[16..18]),
+      created_centiseconds: slot[13],
+      accessed_date: le_u16(&slot[18..20]),
+      modified_time: le_u16(&slot[22..24]),
+      modified_date: le_u16(&slot[24..26]),
       start_cluster,
       size: file_size,
     });
   }
 
-  Ok(entries)
+  Ok(FatDirectoryListing {
+    volume_label,
+    entries,
+  })
 }
 
 #[derive(Debug)]
@@ -535,9 +626,9 @@ fn decode_short_name(slot: &[u8]) -> Result<String> {
   if stem[0] == 0x05 {
     stem[0] = 0xE5;
   }
-  let extension = &slot[8..11];
-  let stem = decode_short_component(&stem)?;
-  let extension = decode_short_component(extension)?;
+  let nt_reserved = slot[12];
+  let stem = decode_short_component(&stem, nt_reserved & 0x08 != 0)?;
+  let extension = decode_short_component(&slot[8..11], nt_reserved & 0x10 != 0)?;
   if extension.is_empty() {
     Ok(stem)
   } else {
@@ -545,14 +636,29 @@ fn decode_short_name(slot: &[u8]) -> Result<String> {
   }
 }
 
-fn decode_short_component(bytes: &[u8]) -> Result<String> {
-  let trimmed = bytes
+fn decode_volume_label(slot: &[u8]) -> Result<String> {
+  let trimmed = slot[0..11]
     .iter()
     .copied()
     .take_while(|byte| *byte != b' ')
     .collect::<Vec<_>>();
   String::from_utf8(trimmed)
-    .map_err(|_| Error::InvalidFormat("fat short name is not valid ASCII/UTF-8".to_string()))
+    .map_err(|_| Error::InvalidFormat("fat volume label is not valid ASCII/UTF-8".to_string()))
+}
+
+fn decode_short_component(bytes: &[u8], lowercase: bool) -> Result<String> {
+  let trimmed = bytes
+    .iter()
+    .copied()
+    .take_while(|byte| *byte != b' ')
+    .collect::<Vec<_>>();
+  let component = String::from_utf8(trimmed)
+    .map_err(|_| Error::InvalidFormat("fat short name is not valid ASCII/UTF-8".to_string()))?;
+  if lowercase {
+    Ok(component.to_ascii_lowercase())
+  } else {
+    Ok(component)
+  }
 }
 
 fn decode_node_id(node_id: &FileSystemNodeId) -> Result<u64> {
@@ -581,7 +687,17 @@ fn le_u32(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+  use std::path::Path;
+
   use super::*;
+
+  fn fixture_path(relative: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("formats")
+      .join("fat")
+      .join("libfsfat")
+      .join(relative)
+  }
 
   #[test]
   fn decodes_short_names() {
@@ -590,6 +706,16 @@ mod tests {
     slot[8..11].copy_from_slice(b"TXT");
 
     assert_eq!(decode_short_name(&slot).unwrap(), "README.TXT");
+  }
+
+  #[test]
+  fn decodes_short_names_with_nt_lowercase_flags() {
+    let mut slot = [b' '; 32];
+    slot[0..8].copy_from_slice(b"README  ");
+    slot[8..11].copy_from_slice(b"TXT");
+    slot[12] = 0x18;
+
+    assert_eq!(decode_short_name(&slot).unwrap(), "readme.txt");
   }
 
   #[test]
@@ -606,5 +732,35 @@ mod tests {
     ];
 
     assert_eq!(assemble_long_name(&fragments).unwrap(), "My very long");
+  }
+
+  #[test]
+  fn parses_libfsfat_directory_entry_fixture() {
+    let bytes = std::fs::read(fixture_path("directory_entry.1")).unwrap();
+    let listing = parse_directory_entries(&bytes).unwrap();
+
+    assert_eq!(listing.volume_label, None);
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(listing.entries[0].name, "testdir1");
+    assert_eq!(listing.entries[0].short_name, "testdir1");
+    assert_eq!(listing.entries[0].kind, FileSystemNodeKind::Directory);
+    assert_eq!(listing.entries[0].attribute_flags, 0x10);
+    assert_eq!(listing.entries[0].created_centiseconds, 0x82);
+    assert_eq!(listing.entries[0].created_time, 0xA259);
+    assert_eq!(listing.entries[0].created_date, 0x52C9);
+    assert_eq!(listing.entries[0].accessed_date, 0x52C9);
+    assert_eq!(listing.entries[0].modified_time, 0xA25A);
+    assert_eq!(listing.entries[0].modified_date, 0x52C9);
+    assert_eq!(listing.entries[0].start_cluster, 2);
+    assert_eq!(listing.entries[0].size, 0);
+  }
+
+  #[test]
+  fn parses_libfsfat_directory_fixture_volume_label() {
+    let bytes = std::fs::read(fixture_path("directory.1")).unwrap();
+    let listing = parse_directory_entries(&bytes).unwrap();
+
+    assert_eq!(listing.volume_label.as_deref(), Some("TESTVOLUME"));
+    assert!(listing.entries.iter().any(|entry| entry.name == "testdir1"));
   }
 }

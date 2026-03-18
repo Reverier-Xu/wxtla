@@ -298,7 +298,17 @@ fn le_u32(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+  use std::path::Path;
+
   use super::*;
+
+  fn fixture_path(relative: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("formats")
+      .join("fat")
+      .join("libfsfat")
+      .join(relative)
+  }
 
   fn build_fat32_boot_sector() -> [u8; BOOT_SECTOR_SIZE] {
     let mut sector = [0u8; BOOT_SECTOR_SIZE];
@@ -336,5 +346,21 @@ mod tests {
 
     let error = FatBootSector::from_sector(&sector).unwrap_err();
     assert!(matches!(error, Error::InvalidFormat(_)));
+  }
+
+  #[test]
+  fn parses_libfsfat_boot_sector_fixture() {
+    let bytes = std::fs::read(fixture_path("boot_sector.1")).unwrap();
+    let boot_sector = FatBootSector::from_bytes(&bytes).unwrap();
+
+    assert_eq!(boot_sector.fat_type, FatType::Fat12);
+    assert_eq!(boot_sector.bytes_per_sector, 512);
+    assert_eq!(boot_sector.sectors_per_cluster, 4);
+    assert_eq!(boot_sector.reserved_sectors, 6);
+    assert_eq!(boot_sector.fat_count, 2);
+    assert_eq!(boot_sector.root_entry_count, 512);
+    assert_eq!(boot_sector.total_sectors, 6016);
+    assert_eq!(boot_sector.sectors_per_fat, 5);
+    assert_eq!(boot_sector.media_descriptor, 0xF8);
   }
 }

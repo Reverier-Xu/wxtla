@@ -42,6 +42,7 @@ fn fat12_fixture_exposes_root_and_directory_entries() {
   let root_entries = file_system.read_dir(&root_id).unwrap();
 
   assert_eq!(root.kind, FileSystemNodeKind::Directory);
+  assert_eq!(file_system.volume_label(), Some("FAT12_TEST"));
   assert!(root_entries.iter().any(|entry| entry.name == "emptyfile"));
   assert!(root_entries.iter().any(|entry| entry.name == "testdir1"));
 
@@ -83,7 +84,10 @@ fn fat12_fixture_reads_regular_and_empty_files() {
   let testdir_entry = child_named(&file_system, &root_id, "testdir1").unwrap();
   let testfile_entry = child_named(&file_system, &testdir_entry.node_id, "testfile1").unwrap();
   let testfile = file_system.open_file(&testfile_entry.node_id).unwrap();
+  let testfile_details = file_system.node_details(&testfile_entry.node_id).unwrap();
   assert_eq!(file_system.node(&testfile_entry.node_id).unwrap().size, 9);
+  assert_eq!(testfile_details.short_name, "TESTFI~1");
+  assert_eq!(testfile_details.attribute_flags, 0x20);
   assert_eq!(testfile.read_all().unwrap(), b"Keramics\n");
 
   let long_name_entry = child_named(
@@ -105,9 +109,13 @@ fn fat12_fixture_reads_regular_and_empty_files() {
 
 #[test]
 fn fat16_and_fat32_qcow_fixtures_open_and_read_files() {
-  for relative_path in ["qcow/fat16.qcow2", "qcow/fat32.qcow2"] {
+  for (relative_path, expected_label) in [
+    ("qcow/fat16.qcow2", "FAT16_TEST"),
+    ("qcow/fat32.qcow2", "FAT32_TEST"),
+  ] {
     let file_system = open_qcow_fixture_file_system(relative_path).unwrap();
     let root_id = file_system.root_node_id();
+    assert_eq!(file_system.volume_label(), Some(expected_label));
     let testdir_entry = child_named(&file_system, &root_id, "testdir1").unwrap();
     let testfile_entry = child_named(&file_system, &testdir_entry.node_id, "testfile1").unwrap();
     let license_entry = child_named(&file_system, &testdir_entry.node_id, "TestFile2").unwrap();

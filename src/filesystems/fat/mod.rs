@@ -6,7 +6,7 @@ mod filesystem;
 
 pub use boot_sector::{FatBootSector, FatType};
 pub use driver::FatDriver;
-pub use filesystem::FatFileSystem;
+pub use filesystem::{FatFileSystem, FatNodeDetails};
 
 use self::boot_sector::BOOT_SECTOR_SIZE;
 use crate::{
