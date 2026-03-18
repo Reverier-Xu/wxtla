@@ -66,14 +66,15 @@ The active migration order is now image-first after the already-landed volume la
 - `udif`
 - `sparseimage`
 - `sparsebundle`
+- `pdi`
 
 ### Current next target
 
-- `pdi`
+- `splitraw`
 
 ### Remaining image targets after that
 
-- `splitraw` runtime image surface (probe groundwork already exists)
+- none - `splitraw` is the final remaining image target
 
 ### After images
 

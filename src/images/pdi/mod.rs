@@ -1,4 +1,13 @@
-//! Parallels PDI descriptor and probe registration.
+//! Parallels PDI driver and probe registration.
+
+mod descriptor;
+mod driver;
+mod image;
+mod sparse_extent;
+
+pub use descriptor::{PdiDescriptor, PdiDescriptorImageType, PdiSnapshot};
+pub use driver::PdiDriver;
+pub use image::PdiImage;
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,

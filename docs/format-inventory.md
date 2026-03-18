@@ -114,7 +114,8 @@ Already landed in `wxtla`:
 - `udif`
 - `sparseimage`
 - `sparsebundle`
+- `pdi`
 
 Current next image target:
 
-- `pdi`
+- `splitraw`
