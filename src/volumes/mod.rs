@@ -4,6 +4,7 @@ mod driver;
 mod record;
 
 pub mod apm;
+pub mod bitlocker;
 pub mod gpt;
 pub mod mbr;
 
