@@ -62,12 +62,12 @@ impl GptHeader {
     }
 
     let header_size = u32::from_le_bytes([block[12], block[13], block[14], block[15]]);
-    if header_size as usize != constants::HEADER_MIN_SIZE {
+    if (header_size as usize) < constants::HEADER_MIN_SIZE {
       return Err(Error::InvalidFormat(format!(
         "unsupported gpt header size: {header_size}"
       )));
     }
-    if header_size as usize > block.len() {
+    if (header_size as usize) > block.len() {
       return Err(Error::InvalidFormat(
         "gpt header size exceeds the block size".to_string(),
       ));
@@ -132,5 +132,26 @@ mod tests {
       header.disk_guid.to_string(),
       "e86e657a-d840-4c09-afe3-a1a5f665cf44"
     );
+  }
+
+  #[test]
+  fn accepts_larger_header_sizes() {
+    let mut block = vec![0u8; 128];
+    block[0..8].copy_from_slice(constants::HEADER_SIGNATURE);
+    block[8..12].copy_from_slice(&constants::GPT_FORMAT_REVISION.to_le_bytes());
+    block[12..16].copy_from_slice(&128u32.to_le_bytes());
+    block[24..32].copy_from_slice(&1u64.to_le_bytes());
+    block[32..40].copy_from_slice(&127u64.to_le_bytes());
+    block[40..48].copy_from_slice(&34u64.to_le_bytes());
+    block[48..56].copy_from_slice(&126u64.to_le_bytes());
+    block[56..72].copy_from_slice(&[1; 16]);
+    block[72..80].copy_from_slice(&2u64.to_le_bytes());
+    block[80..84].copy_from_slice(&128u32.to_le_bytes());
+    block[84..88].copy_from_slice(&128u32.to_le_bytes());
+
+    let header = GptHeader::parse(&block).unwrap();
+
+    assert_eq!(header.header_size, 128);
+    assert_eq!(header.entry_count, 128);
   }
 }

@@ -295,6 +295,15 @@ mod tests {
   }
 
   #[test]
+  fn infers_2048_block_size_from_valid_layout() {
+    let system = GptDriver::open(synthetic_source(synthetic_gpt(2048))).unwrap();
+
+    assert_eq!(system.block_size(), 2048);
+    assert_eq!(system.partitions().len(), 1);
+    assert_eq!(system.partitions()[0].record.name.as_deref(), Some("linux"));
+  }
+
+  #[test]
   fn rejects_missing_protective_mbr() {
     let mut disk = synthetic_gpt(512);
     disk[446 + 4] = 0x00;
