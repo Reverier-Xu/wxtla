@@ -47,6 +47,7 @@ pub(super) struct MetadataLogicalVolume {
 pub(super) struct MetadataSegment {
   pub(super) start_extent: u64,
   pub(super) extent_count: u64,
+  pub(super) stripe_size_bytes: Option<u64>,
   pub(super) stripes: Vec<MetadataStripe>,
 }
 
@@ -79,19 +80,21 @@ pub(super) fn build_logical_volume_info(
   let mut size = 0u64;
 
   for segment in &logical_volume.segments {
-    let chunk = build_segment_chunk(
+    let segment_chunks = build_segment_chunks(
       label,
       extent_size_bytes,
       current_pv_name,
       current_pv_pe_start,
       segment,
     )?;
-    let chunk_end = chunk
-      .logical_offset
-      .checked_add(chunk.size)
-      .ok_or_else(|| Error::InvalidRange("LVM logical volume size overflow".to_string()))?;
-    chunks.push(chunk);
-    size = size.max(chunk_end);
+    for chunk in segment_chunks {
+      let chunk_end = chunk
+        .logical_offset
+        .checked_add(chunk.size)
+        .ok_or_else(|| Error::InvalidRange("LVM logical volume size overflow".to_string()))?;
+      chunks.push(chunk);
+      size = size.max(chunk_end);
+    }
   }
 
   chunks.sort_by_key(|chunk| chunk.logical_offset);
@@ -110,18 +113,20 @@ pub(super) fn logical_volume_size(
   let mut size = 0u64;
 
   for segment in &logical_volume.segments {
-    let chunk = build_segment_chunk(
+    let segment_chunks = build_segment_chunks(
       label,
       extent_size_bytes,
       current_pv_name,
       current_pv_pe_start,
       segment,
     )?;
-    let chunk_end = chunk
-      .logical_offset
-      .checked_add(chunk.size)
-      .ok_or_else(|| Error::InvalidRange("LVM logical volume size overflow".to_string()))?;
-    size = size.max(chunk_end);
+    for chunk in segment_chunks {
+      let chunk_end = chunk
+        .logical_offset
+        .checked_add(chunk.size)
+        .ok_or_else(|| Error::InvalidRange("LVM logical volume size overflow".to_string()))?;
+      size = size.max(chunk_end);
+    }
   }
 
   Ok(size)
@@ -167,17 +172,10 @@ fn resolve_data_area_offset(data_areas: &[AreaDescriptor], mut offset: u64) -> O
   None
 }
 
-fn build_segment_chunk(
+fn build_segment_chunks(
   label: &PhysicalVolumeLabel, extent_size_bytes: u64, current_pv_name: &str,
   current_pv_pe_start: Option<u64>, segment: &MetadataSegment,
-) -> Result<LvmChunk> {
-  if segment.stripes.len() != 1 {
-    return Err(Error::InvalidFormat(
-      "unsupported LVM segment stripe count (only 1 is supported)".to_string(),
-    ));
-  }
-
-  let stripe = &segment.stripes[0];
+) -> Result<Vec<LvmChunk>> {
   let logical_offset = segment
     .start_extent
     .checked_mul(extent_size_bytes)
@@ -187,48 +185,124 @@ fn build_segment_chunk(
     .checked_mul(extent_size_bytes)
     .ok_or_else(|| Error::InvalidRange("LVM segment size overflow".to_string()))?;
 
-  let physical_offset = if stripe.pv_name == current_pv_name {
-    let stripe_rel = stripe
-      .start_extent
-      .checked_mul(extent_size_bytes)
-      .ok_or_else(|| Error::InvalidRange("LVM stripe offset overflow".to_string()))?;
-    match resolve_data_area_offset(&label.data_areas, stripe_rel) {
-      Some(offset) => {
-        if let Some(pe_start) = current_pv_pe_start {
-          if offset < pe_start {
+  if segment.stripes.len() == 1 {
+    let stripe = &segment.stripes[0];
+    let physical_offset = if stripe.pv_name == current_pv_name {
+      let stripe_rel = stripe
+        .start_extent
+        .checked_mul(extent_size_bytes)
+        .ok_or_else(|| Error::InvalidRange("LVM stripe offset overflow".to_string()))?;
+      match resolve_data_area_offset(&label.data_areas, stripe_rel) {
+        Some(offset) => {
+          if let Some(pe_start) = current_pv_pe_start {
+            if offset < pe_start {
+              Some(
+                pe_start
+                  .checked_add(stripe_rel)
+                  .ok_or_else(|| Error::InvalidRange("LVM physical offset overflow".to_string()))?,
+              )
+            } else {
+              Some(offset)
+            }
+          } else {
+            Some(offset)
+          }
+        }
+        None => {
+          if let Some(pe_start) = current_pv_pe_start {
             Some(
               pe_start
                 .checked_add(stripe_rel)
                 .ok_or_else(|| Error::InvalidRange("LVM physical offset overflow".to_string()))?,
             )
           } else {
+            Some(stripe_rel)
+          }
+        }
+      }
+    } else {
+      None
+    };
+
+    return Ok(vec![LvmChunk {
+      logical_offset,
+      size: segment_size,
+      physical_offset,
+    }]);
+  }
+
+  let stripe_size = segment.stripe_size_bytes.ok_or_else(|| {
+    Error::InvalidFormat("LVM striped segments require an explicit stripe size".to_string())
+  })?;
+  if stripe_size == 0 {
+    return Err(Error::InvalidFormat(
+      "LVM striped segments require a non-zero stripe size".to_string(),
+    ));
+  }
+
+  let stripe_count = u64::try_from(segment.stripes.len())
+    .map_err(|_| Error::InvalidRange("LVM stripe count is too large".to_string()))?;
+  let chunk_count = segment_size.div_ceil(stripe_size);
+  let mut chunks = Vec::with_capacity(usize::try_from(chunk_count).unwrap_or(0));
+  for chunk_index in 0..chunk_count {
+    let stripe_index = usize::try_from(chunk_index % stripe_count)
+      .map_err(|_| Error::InvalidRange("LVM stripe index is too large".to_string()))?;
+    let row = chunk_index / stripe_count;
+    let chunk_logical_offset = logical_offset
+      .checked_add(
+        chunk_index
+          .checked_mul(stripe_size)
+          .ok_or_else(|| Error::InvalidRange("LVM stripe logical offset overflow".to_string()))?,
+      )
+      .ok_or_else(|| Error::InvalidRange("LVM stripe logical offset overflow".to_string()))?;
+    let remaining = segment_size - chunk_index * stripe_size;
+    let chunk_size = remaining.min(stripe_size);
+    let stripe = &segment.stripes[stripe_index];
+    let physical_offset = if stripe.pv_name == current_pv_name {
+      let stripe_rel = stripe
+        .start_extent
+        .checked_mul(extent_size_bytes)
+        .and_then(|offset| offset.checked_add(row * stripe_size))
+        .ok_or_else(|| Error::InvalidRange("LVM stripe offset overflow".to_string()))?;
+      match resolve_data_area_offset(&label.data_areas, stripe_rel) {
+        Some(offset) => {
+          if let Some(pe_start) = current_pv_pe_start {
+            if offset < pe_start {
+              Some(
+                pe_start
+                  .checked_add(stripe_rel)
+                  .ok_or_else(|| Error::InvalidRange("LVM physical offset overflow".to_string()))?,
+              )
+            } else {
+              Some(offset)
+            }
+          } else {
             Some(offset)
           }
-        } else {
-          Some(offset)
+        }
+        None => {
+          if let Some(pe_start) = current_pv_pe_start {
+            Some(
+              pe_start
+                .checked_add(stripe_rel)
+                .ok_or_else(|| Error::InvalidRange("LVM physical offset overflow".to_string()))?,
+            )
+          } else {
+            Some(stripe_rel)
+          }
         }
       }
-      None => {
-        if let Some(pe_start) = current_pv_pe_start {
-          Some(
-            pe_start
-              .checked_add(stripe_rel)
-              .ok_or_else(|| Error::InvalidRange("LVM physical offset overflow".to_string()))?,
-          )
-        } else {
-          Some(stripe_rel)
-        }
-      }
-    }
-  } else {
-    None
-  };
+    } else {
+      None
+    };
+    chunks.push(LvmChunk {
+      logical_offset: chunk_logical_offset,
+      size: chunk_size,
+      physical_offset,
+    });
+  }
 
-  Ok(LvmChunk {
-    logical_offset,
-    size: segment_size,
-    physical_offset,
-  })
+  Ok(chunks)
 }
 
 fn normalize_lvm_id(value: &str) -> String {

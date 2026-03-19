@@ -127,8 +127,8 @@ mod tests {
   }
 
   #[test]
-  fn lvm_rejects_multi_stripe_segments() {
-    let image = build_lvm_image_with_raw_metadata(
+  fn lvm_reads_multi_stripe_segments() {
+    let mut image = build_lvm_image_with_raw_metadata(
       r#"
 vg0 {
   id = "vgid"
@@ -148,18 +148,31 @@ vg0 {
       segment_count = 1
       segment1 {
         start_extent = 0
-        extent_count = 1
+        extent_count = 2
+        stripe_size = 4
         stripe_count = 2
-        stripes = [ "pv0", 0, "pv1", 0 ]
+        stripes = [ "pv0", 0, "pv0", 1 ]
       }
     }
   }
 }
 "#,
     );
+    image[0x10000..0x10800].fill(b'A');
+    image[0x10800..0x11000].fill(b'B');
+    image[0x11000..0x11800].fill(b'C');
+    image[0x11800..0x12000].fill(b'D');
 
-    let result = LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle);
-    assert!(result.is_err());
+    let system =
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+    let source = system.open_volume(0).unwrap();
+    let data = source.read_all().unwrap();
+
+    assert_eq!(data.len(), 8192);
+    assert!(data[..2048].iter().all(|byte| *byte == b'A'));
+    assert!(data[2048..4096].iter().all(|byte| *byte == b'C'));
+    assert!(data[4096..6144].iter().all(|byte| *byte == b'B'));
+    assert!(data[6144..].iter().all(|byte| *byte == b'D'));
   }
 
   #[test]

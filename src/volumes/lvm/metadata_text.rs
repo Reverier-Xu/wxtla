@@ -90,10 +90,13 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
       let segment_object = as_object(segment_node)?;
       let start_extent = get_number(segment_object, "start_extent")?;
       let extent_count = get_number(segment_object, "extent_count")?;
+      let stripe_size_bytes =
+        get_optional_number(segment_object, "stripe_size").and_then(|value| value.checked_mul(512));
       let stripes = parse_segment_stripes(segment_object)?;
       segments.push(MetadataSegment {
         start_extent,
         extent_count,
+        stripe_size_bytes,
         stripes,
       });
     }
