@@ -22,6 +22,7 @@ Completed since the initial scan:
 - NTFS `$MFT` attribute-list bootstrap support landed in `src/filesystems/ntfs/filesystem.rs`
 - VHDX BAT-state compatibility now accepts the legacy v0.95 unmapped payload alias and rejects dynamic images that incorrectly allocate sector bitmap blocks in `src/images/vhdx/parser.rs`
 - VHDX active log replay now runs through a read-only in-memory overlay in `src/images/vhdx/log_replay.rs`
+- QCOW dirty images now open in read-only mode instead of being rejected up front in `src/images/qcow/parser.rs`
 
 ### High priority
 
@@ -29,7 +30,7 @@ These items block common real-world images or prevent entire formats from openin
 
 | Area | Format | Missing feature | Evidence | Impact | Planned work |
 | --- | --- | --- | --- | --- | --- |
-| Image | QCOW | Encrypted images, extended L2 entries, dirty images, and images marked corrupt are rejected | `src/images/qcow/parser.rs` | Real qcow2 images can fail before any child volume/filesystem is reachable | Split support into read-only safe subsets: extended L2 first, then dirty/corrupt handling, then encryption policy |
+| Image | QCOW | Encrypted images, extended L2 entries, and images marked corrupt are rejected | `src/images/qcow/parser.rs` | Real qcow2 images can still fail before any child volume/filesystem is reachable | Split support into read-only safe subsets: extended L2 first, then corrupt-flag handling, then encryption policy |
 
 ### Medium priority
 

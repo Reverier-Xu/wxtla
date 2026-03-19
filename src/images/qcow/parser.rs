@@ -5,7 +5,6 @@ use std::sync::Arc;
 use super::{
   constants::{
     QCOW_COMPRESSION_ZLIB, QCOW_COMPRESSION_ZSTD, QCOW_CRYPT_NONE, QCOW_INCOMPAT_COMPRESSION,
-    QCOW_INCOMPAT_CORRUPT, QCOW_INCOMPAT_DIRTY, QCOW_INCOMPAT_EXTL2,
   },
   extension::QcowHeaderExtension,
   header::QcowHeader,
@@ -61,7 +60,7 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
       "encrypted qcow images are not supported yet".to_string(),
     ));
   }
-  if (header.incompatible_features & QCOW_INCOMPAT_EXTL2) != 0 {
+  if header.uses_extended_l2() {
     return Err(Error::InvalidFormat(
       "qcow extended l2 entries are not supported yet".to_string(),
     ));
@@ -81,12 +80,7 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
       "qcow default compression mode must use zlib".to_string(),
     ));
   }
-  if (header.incompatible_features & QCOW_INCOMPAT_DIRTY) != 0 {
-    return Err(Error::InvalidFormat(
-      "qcow dirty images are not supported yet".to_string(),
-    ));
-  }
-  if (header.incompatible_features & QCOW_INCOMPAT_CORRUPT) != 0 {
+  if header.is_marked_corrupt() {
     return Err(Error::InvalidFormat(
       "qcow images marked corrupt are not supported".to_string(),
     ));
@@ -263,6 +257,26 @@ mod tests {
     assert_eq!(parsed.header.virtual_size, 4_194_304);
     assert_eq!(parsed.l1_table.len(), 1);
     assert_eq!(parsed.backing_file_name, None);
+  }
+
+  #[test]
+  fn accepts_dirty_qcow_images_for_read_only_parsing() {
+    let mut data = std::fs::read(
+      Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formats")
+        .join("qcow/ext2.qcow2"),
+    )
+    .unwrap();
+    let incompatible = u64::from_be_bytes(data[72..80].try_into().unwrap())
+      | super::super::constants::QCOW_INCOMPAT_DIRTY;
+    data[72..80].copy_from_slice(&incompatible.to_be_bytes());
+
+    let parsed = parse(Arc::new(MemDataSource { data })).unwrap();
+
+    assert_eq!(
+      parsed.header.incompatible_features & super::super::constants::QCOW_INCOMPAT_DIRTY,
+      super::super::constants::QCOW_INCOMPAT_DIRTY
+    );
   }
 
   #[test]
