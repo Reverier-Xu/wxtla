@@ -457,11 +457,7 @@ fn stream_size(attributes: &[NtfsDataAttribute]) -> Result<u64> {
     .collect::<Result<Vec<_>>>()?;
   non_resident.sort_by_key(|attribute| attribute.first_vcn);
 
-  let stream_size = non_resident
-    .iter()
-    .map(|attribute| attribute.data_size)
-    .max()
-    .unwrap_or(0);
+  let stream_size = primary_non_resident_sizes(non_resident.iter().copied()).0;
   let mut expected_vcn = 0u64;
   for attribute in non_resident {
     if attribute.first_vcn != expected_vcn {
@@ -469,10 +465,7 @@ fn stream_size(attributes: &[NtfsDataAttribute]) -> Result<u64> {
         "ntfs non-resident attribute chains must have continuous VCN ranges".to_string(),
       ));
     }
-    expected_vcn = attribute
-      .last_vcn
-      .checked_add(1)
-      .ok_or_else(|| Error::InvalidRange("ntfs VCN range overflow".to_string()))?;
+    expected_vcn = next_vcn_after_attribute(attribute)?;
   }
 
   Ok(stream_size)
@@ -515,16 +508,8 @@ fn build_stream_data_source(
     .collect::<Result<Vec<_>>>()?;
   non_resident.sort_by_key(|(_, attribute)| attribute.first_vcn);
 
-  let stream_size = non_resident
-    .iter()
-    .map(|(_, attribute)| attribute.data_size)
-    .max()
-    .unwrap_or(0);
-  let valid_size = non_resident
-    .iter()
-    .map(|(_, attribute)| attribute.valid_data_size)
-    .max()
-    .unwrap_or(stream_size);
+  let (stream_size, valid_size) =
+    primary_non_resident_sizes(non_resident.iter().map(|(_, attribute)| attribute));
   let mut expected_vcn = 0u64;
   let mut runs = Vec::<NtfsDataRun>::new();
 
@@ -544,10 +529,7 @@ fn build_stream_data_source(
       cluster_size,
       base_logical_offset,
     )?);
-    expected_vcn = attribute
-      .last_vcn
-      .checked_add(1)
-      .ok_or_else(|| Error::InvalidRange("ntfs VCN range overflow".to_string()))?;
+    expected_vcn = next_vcn_after_attribute(&attribute)?;
   }
 
   Ok(Arc::new(NtfsNonResidentDataSource::new(
@@ -556,6 +538,28 @@ fn build_stream_data_source(
     stream_size,
     valid_size.min(stream_size),
   )) as DataSourceHandle)
+}
+
+fn primary_non_resident_sizes<'a>(
+  attributes: impl IntoIterator<Item = &'a NtfsNonResidentAttribute>,
+) -> (u64, u64) {
+  attributes
+    .into_iter()
+    .find(|attribute| attribute.first_vcn == 0)
+    .map_or((0, 0), |attribute| {
+      (attribute.data_size, attribute.valid_data_size)
+    })
+}
+
+fn next_vcn_after_attribute(attribute: &NtfsNonResidentAttribute) -> Result<u64> {
+  if attribute.first_vcn == 0 && attribute.last_vcn == u64::MAX && attribute.data_size == 0 {
+    return Ok(0);
+  }
+
+  attribute
+    .last_vcn
+    .checked_add(1)
+    .ok_or_else(|| Error::InvalidRange("ntfs VCN range overflow".to_string()))
 }
 
 fn parse_attribute_runs(
@@ -607,6 +611,37 @@ mod tests {
     }
   }
 
+  fn non_resident_data_attribute(
+    first_vcn: u64, last_vcn: u64, data_size: u64, valid_data_size: u64, runlist: &[u8],
+    attribute_id: u16,
+  ) -> NtfsDataAttribute {
+    NtfsDataAttribute {
+      attribute_id,
+      name: None,
+      data_flags: 0,
+      value: NtfsDataAttributeValue::NonResident(NtfsNonResidentAttribute {
+        first_vcn,
+        last_vcn,
+        data_size,
+        valid_data_size,
+        runlist: Arc::from(runlist),
+      }),
+    }
+  }
+
+  fn sample_boot_sector() -> NtfsBootSector {
+    NtfsBootSector {
+      bytes_per_sector: 512,
+      sectors_per_cluster: 8,
+      total_sectors: 4096,
+      mft_cluster: 4,
+      mft_mirror_cluster: 8,
+      clusters_per_file_record: 0xF6,
+      clusters_per_index_buffer: 1,
+      volume_serial_number: 0,
+    }
+  }
+
   #[test]
   fn resolves_attribute_list_extension_records() {
     let base_record = NtfsFileRecord {
@@ -649,5 +684,43 @@ mod tests {
 
     assert_eq!(resolved.file_names[0].name, "merged.txt");
     assert_eq!(resolved.data_attributes.len(), 2);
+  }
+
+  #[test]
+  fn stream_size_accepts_empty_nonresident_attributes() {
+    let attributes = [non_resident_data_attribute(0, u64::MAX, 0, 0, &[0], 1)];
+
+    assert_eq!(stream_size(&attributes).unwrap(), 0);
+  }
+
+  #[test]
+  fn build_stream_data_source_accepts_empty_nonresident_attributes() {
+    let source = Arc::new(BytesDataSource::new(Vec::<u8>::new())) as DataSourceHandle;
+    let attributes = [non_resident_data_attribute(0, u64::MAX, 0, 0, &[0], 1)];
+
+    let stream = build_stream_data_source(source, &sample_boot_sector(), &attributes).unwrap();
+
+    assert_eq!(stream.size().unwrap(), 0);
+    assert_eq!(stream.read_all().unwrap(), Vec::<u8>::new());
+  }
+
+  #[test]
+  fn build_stream_data_source_uses_primary_extent_sizes() {
+    let mut bytes = vec![0u8; 3 * 4096];
+    bytes[4096..8192].fill(b'A');
+    bytes[8192..12288].fill(b'B');
+    let source = Arc::new(BytesDataSource::new(bytes)) as DataSourceHandle;
+    let attributes = [
+      non_resident_data_attribute(0, 0, 8192, 8192, &[0x11, 0x01, 0x01, 0x00], 1),
+      non_resident_data_attribute(1, 1, 16384, 12288, &[0x11, 0x01, 0x02, 0x00], 2),
+    ];
+
+    let stream = build_stream_data_source(source, &sample_boot_sector(), &attributes).unwrap();
+    let data = stream.read_all().unwrap();
+
+    assert_eq!(stream.size().unwrap(), 8192);
+    assert_eq!(data.len(), 8192);
+    assert!(data[..4096].iter().all(|byte| *byte == b'A'));
+    assert!(data[4096..].iter().all(|byte| *byte == b'B'));
   }
 }
