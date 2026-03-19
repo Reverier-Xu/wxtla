@@ -11,11 +11,69 @@ env:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            timeout_minutes: 45
+            run_fmt: true
+            run_clippy: true
+          - os: macos-latest
+            timeout_minutes: 60
+            run_fmt: false
+            run_clippy: false
+          - os: windows-latest
+            timeout_minutes: 60
+            run_fmt: false
+            run_clippy: false
 
     steps:
       - name: checkout
         uses: actions/checkout@v6
+
+      - name: install archive tools (linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if ! command -v 7z >/dev/null 2>&1; then
+            if command -v sudo >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y p7zip-full
+            else
+              apt-get update
+              apt-get install -y p7zip-full
+            fi
+          fi
+          7z >/dev/null
+
+      - name: install archive tools (macos)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if ! command -v 7z >/dev/null 2>&1; then
+            brew install sevenzip
+            if ! command -v 7z >/dev/null 2>&1 && command -v 7zz >/dev/null 2>&1; then
+              mkdir -p "$HOME/.local/bin"
+              ln -sf "$(command -v 7zz)" "$HOME/.local/bin/7z"
+              printf '%s\n' "$HOME/.local/bin" >> "$GITHUB_PATH"
+            fi
+          fi
+          7z >/dev/null
+
+      - name: install archive tools (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+            choco install 7zip -y
+            Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\7-Zip'
+            $env:Path += ';C:\Program Files\7-Zip'
+          }
+          7z | Out-Null
 
       - name: install nightly rust toolchain
         uses: dtolnay/rust-toolchain@nightly
@@ -26,13 +84,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: cargo check
-        run: cargo check --all-targets --all-features --locked
+        run: cargo +nightly check --workspace --all-targets --all-features --locked
 
       - name: cargo fmt
+        if: matrix.run_fmt
         run: cargo +nightly fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        if: matrix.run_clippy
+        run: cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
-        run: cargo test --all-targets --all-features --locked
+        run: cargo test --workspace --all-features --locked
