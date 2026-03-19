@@ -75,10 +75,16 @@ The active migration order is now image-first after the already-landed volume la
 - `zip`
 - `7z`
 - `rar`
+- `ntfs`
+- `fat`
+- `ext`
+- `hfs`
+- `xfs`
+- `refs`
 
 ### Current next target
 
-- `ntfs`
+- `apfs`
 
 ### Remaining image targets after that
 
@@ -94,9 +100,17 @@ The active migration order is now image-first after the already-landed volume la
   - `xfs`
   - `refs`
 - then long-term modern filesystems:
-  - `apfs`
-  - `btrfs`
-  - `zfs`
+  1. APFS (`libfsapfs`, https://github.com/fox-it/dissect.apfs)
+  2. Btrfs (https://github.com/fox-it/dissect.btrfs)
+  3. ZFS (https://github.com/openzfs/zfs/blob/master/include/libzfs.h)
+  4. VMFS (VMWare VMFS, https://github.com/fox-it/dissect.vmfs)
+  5. squashfs (https://github.com/fox-it/dissect.squashfs)
+  6. FFS (https://github.com/fox-it/dissect.ffs)
+  7. LUKS (https://github.com/fox-it/dissect.fve)
+  8. JFFS2 (https://github.com/fox-it/dissect.jffs)
+  9. QNXFS (https://github.com/fox-it/dissect.qnxfs)
+  10. CRAMFS (https://github.com/fox-it/dissect.cramfs)
+  11. CLFS (https://github.com/fox-it/dissect.clfs)
 - then table/database formats through the planned `TableSource` layer:
   - `esedb`
   - `wtcdb`

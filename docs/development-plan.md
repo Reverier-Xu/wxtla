@@ -363,33 +363,9 @@ The current landed state is:
 - stacked volume-manager support completed for `bitlocker` and `lvm2`
 - image layer completed for `ewf`, `qcow`, `vhd`, `vhdx`, `vmdk`, `udif`, `sparseimage`, `sparsebundle`, `pdi`, and `splitraw`
 - archive layer completed for `ad1`, `tar`, `zip`, `7z`, and `rar`
-- current next format target is `ntfs`
 
 The active migration strategy is therefore:
 
 1. move on to full filesystem drivers
 2. add the `TableSource` database wave after the filesystem layer has initial coverage
 3. revisit stacked-volume polish only after filesystems and table stores are stable
-
-The concrete next-stage order is:
-
-1. filesystem formats in this order:
-   - `ntfs`
-   - `fat12` / `fat16` / `fat32`
-   - `ext2` / `ext3` / `ext4`
-   - `hfs` / `hfs+` / `hfsx`
-   - `xfs`
-   - `refs`
-2. long-term filesystem targets:
-   - `apfs`
-   - `btrfs`
-   - `zfs`
-3. `TableSource` database formats in this order:
-   - `esedb`
-   - `wtcdb`
-   - `agdb`
-   - `msiecf`
-   - `mapidb`
-   - `nsfdb`
-   - `pff` table projections
-4. deeper stacking/performance work
