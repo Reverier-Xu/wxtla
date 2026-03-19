@@ -8,7 +8,9 @@ use std::{
 use super::{
   DESCRIPTOR,
   superblock::{ExtGroupDescriptor, ExtSuperblock, INODE_FLAG_EXTENTS, read_group_descriptors},
-  xattr::{ExtExtendedAttribute, parse_external_attribute_block, parse_inode_extended_attributes},
+  xattr::{
+    ExtExtendedAttribute, parse_external_attribute_block_with, parse_inode_extended_attributes_with,
+  },
 };
 use crate::{
   BytesDataSource, DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result,
@@ -170,14 +172,37 @@ impl ExtFileSystem {
   ) -> Result<Vec<ExtExtendedAttribute>> {
     let node = self.lookup_node(node_id)?;
     let inode = &node.inode;
-    let mut attributes =
-      parse_inode_extended_attributes(inode.raw_bytes.as_ref(), inode.extended_inode_size)?;
+    let mut attributes = parse_inode_extended_attributes_with(
+      inode.raw_bytes.as_ref(),
+      inode.extended_inode_size,
+      |value_inode, value_size| self.read_external_xattr_inode_value(value_inode, value_size),
+    )?;
     if inode.file_acl_block != 0 {
-      attributes.extend(parse_external_attribute_block(
-        &self.read_block(inode.file_acl_block)?,
+      let block = self.read_block(inode.file_acl_block)?;
+      attributes.extend(parse_external_attribute_block_with(
+        &block,
+        |value_inode, value_size| self.read_external_xattr_inode_value(value_inode, value_size),
       )?);
     }
     Ok(attributes)
+  }
+
+  fn read_external_xattr_inode_value(
+    &self, inode_number: u32, value_size: u32,
+  ) -> Result<Arc<[u8]>> {
+    let inode = read_inode(
+      self.source.as_ref(),
+      &self.superblock,
+      &self.groups,
+      inode_number,
+    )?;
+    let value = self.build_data_source(&inode)?.read_bytes_at(
+      0,
+      usize::try_from(value_size)
+        .map_err(|_| Error::InvalidRange("ext xattr value size is too large".to_string()))?,
+    )?;
+
+    Ok(Arc::from(value.into_boxed_slice()))
   }
 
   fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<Arc<ExtNode>> {

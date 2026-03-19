@@ -24,9 +24,11 @@ pub(crate) struct ExtExtendedAttributeDescriptor {
   pub entry_size: usize,
 }
 
-pub(crate) fn parse_inode_extended_attributes(
-  inode: &[u8], extended_inode_size: u16,
-) -> Result<Vec<ExtExtendedAttribute>> {
+pub(crate) fn parse_inode_extended_attributes_with<F>(
+  inode: &[u8], extended_inode_size: u16, mut resolve_external_inode: F,
+) -> Result<Vec<ExtExtendedAttribute>>
+where
+  F: FnMut(u32, u32) -> Result<Arc<[u8]>>, {
   let offset = 128usize
     .checked_add(usize::from(extended_inode_size))
     .ok_or_else(|| Error::InvalidRange("ext inode xattr offset overflow".to_string()))?;
@@ -34,10 +36,19 @@ pub(crate) fn parse_inode_extended_attributes(
     return Ok(Vec::new());
   }
 
-  parse_attribute_entries(&inode[offset + 4..], 0, BLOCK_HEADER_SIZE)
+  parse_attribute_entries(
+    &inode[offset + 4..],
+    0,
+    BLOCK_HEADER_SIZE,
+    &mut resolve_external_inode,
+  )
 }
 
-pub(crate) fn parse_external_attribute_block(bytes: &[u8]) -> Result<Vec<ExtExtendedAttribute>> {
+pub(crate) fn parse_external_attribute_block_with<F>(
+  bytes: &[u8], mut resolve_external_inode: F,
+) -> Result<Vec<ExtExtendedAttribute>>
+where
+  F: FnMut(u32, u32) -> Result<Arc<[u8]>>, {
   if bytes.len() < BLOCK_HEADER_SIZE {
     return Err(Error::InvalidFormat(
       "ext extended-attribute block is truncated".to_string(),
@@ -54,7 +65,12 @@ pub(crate) fn parse_external_attribute_block(bytes: &[u8]) -> Result<Vec<ExtExte
     ));
   }
 
-  parse_attribute_entries(bytes, BLOCK_HEADER_SIZE, BLOCK_HEADER_SIZE)
+  parse_attribute_entries(
+    bytes,
+    BLOCK_HEADER_SIZE,
+    BLOCK_HEADER_SIZE,
+    &mut resolve_external_inode,
+  )
 }
 
 pub(crate) fn parse_attribute_descriptor(bytes: &[u8]) -> Result<ExtExtendedAttributeDescriptor> {
@@ -91,6 +107,7 @@ pub(crate) fn parse_attribute_descriptor(bytes: &[u8]) -> Result<ExtExtendedAttr
 
 fn parse_attribute_entries(
   bytes: &[u8], start_offset: usize, minimum_value_offset: usize,
+  resolve_external_inode: &mut impl FnMut(u32, u32) -> Result<Arc<[u8]>>,
 ) -> Result<Vec<ExtExtendedAttribute>> {
   let mut attributes = Vec::new();
   let mut offset = start_offset;
@@ -101,14 +118,10 @@ fn parse_attribute_entries(
     }
 
     let descriptor = parse_attribute_descriptor(&bytes[offset..])?;
-    if descriptor.value_inode != 0 {
-      return Err(Error::InvalidFormat(
-        "ext xattrs stored in external inode references are not supported".to_string(),
-      ));
-    }
-
     let value = if descriptor.value_size == 0 {
       Arc::<[u8]>::from(Vec::<u8>::new())
+    } else if descriptor.value_inode != 0 {
+      resolve_external_inode(descriptor.value_inode, descriptor.value_size)?
     } else {
       let value_offset = usize::from(descriptor.value_offset);
       if value_offset < minimum_value_offset {
@@ -201,5 +214,32 @@ mod tests {
     assert_eq!(descriptor.value_inode, 0);
     assert_eq!(descriptor.value_size, 25);
     assert_eq!(descriptor.entry_size, 24);
+  }
+
+  #[test]
+  fn parses_external_inode_xattr_values() {
+    let name = b"myxattr";
+    let entry_size = align_to_four(ENTRY_HEADER_SIZE + name.len());
+    let mut bytes = vec![0u8; BLOCK_HEADER_SIZE + entry_size + 4];
+    bytes[0..4].copy_from_slice(&ATTRIBUTE_MAGIC.to_le_bytes());
+    bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+    bytes[BLOCK_HEADER_SIZE] = name.len() as u8;
+    bytes[BLOCK_HEADER_SIZE + 1] = 1;
+    bytes[BLOCK_HEADER_SIZE + 4..BLOCK_HEADER_SIZE + 8].copy_from_slice(&42u32.to_le_bytes());
+    bytes[BLOCK_HEADER_SIZE + 8..BLOCK_HEADER_SIZE + 12].copy_from_slice(&5u32.to_le_bytes());
+    bytes
+      [BLOCK_HEADER_SIZE + ENTRY_HEADER_SIZE..BLOCK_HEADER_SIZE + ENTRY_HEADER_SIZE + name.len()]
+      .copy_from_slice(name);
+
+    let attributes = parse_external_attribute_block_with(&bytes, |value_inode, value_size| {
+      assert_eq!(value_inode, 42);
+      assert_eq!(value_size, 5);
+      Ok(Arc::from(&b"hello"[..]))
+    })
+    .unwrap();
+
+    assert_eq!(attributes.len(), 1);
+    assert_eq!(attributes[0].name, "user.myxattr");
+    assert_eq!(attributes[0].value.as_ref(), b"hello");
   }
 }
