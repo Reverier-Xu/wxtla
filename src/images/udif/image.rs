@@ -19,6 +19,9 @@ use crate::{
   SourceHints, images::Image,
 };
 
+const MAX_DECOMPRESSED_CACHE_ENTRIES: usize = 8;
+const MAX_CACHED_DECOMPRESSED_RANGE_SIZE: usize = 8 * 1024 * 1024;
+
 pub struct UdifImage {
   source: DataSourceHandle,
   trailer: UdifTrailer,
@@ -44,7 +47,7 @@ impl UdifImage {
       ranges: parsed.ranges,
       compression_method: parsed.compression_method,
       has_sparse_ranges: parsed.has_sparse_ranges,
-      decompressed_cache: UdifCache::new(64),
+      decompressed_cache: UdifCache::new(MAX_DECOMPRESSED_CACHE_ENTRIES),
     })
   }
 
@@ -71,55 +74,74 @@ impl UdifImage {
   }
 
   fn read_decompressed_range(&self, index: usize, range: &UdifRange) -> Result<Arc<Vec<u8>>> {
-    self.decompressed_cache.get_or_load(range.media_offset, || {
-      let compressed = self.source.read_bytes_at(
-        range.data_offset,
-        usize::try_from(range.data_size)
-          .map_err(|_| Error::InvalidRange("udif compressed range is too large".to_string()))?,
-      )?;
-      let expected_size = usize::try_from(range.size)
-        .map_err(|_| Error::InvalidRange("udif range size is too large".to_string()))?;
-      let mut output = vec![0u8; expected_size];
+    let expected_size = usize::try_from(range.size)
+      .map_err(|_| Error::InvalidRange("udif range size is too large".to_string()))?;
+    let load_range = || self.decompress_range(index, range, expected_size);
 
-      match range.kind {
-        UdifRangeKind::Adc => {
-          let mut decoder = AdcDecoder::new(compressed.as_slice());
-          read_full(&mut decoder, &mut output)?;
-        }
-        UdifRangeKind::Zlib => {
-          let mut decoder = ZlibDecoder::new(compressed.as_slice());
-          read_full(&mut decoder, &mut output)?;
-        }
-        UdifRangeKind::Bzip2 => {
-          let mut decoder = BzDecoder::new(compressed.as_slice());
-          read_full(&mut decoder, &mut output)?;
-        }
-        UdifRangeKind::Lzfse => {
-          let temp_len = expected_size
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(1))
-            .ok_or_else(|| Error::InvalidRange("udif lzfse buffer overflow".to_string()))?;
-          let mut temp = vec![0u8; temp_len];
-          let decoded_size = lzfse::decode_buffer(&compressed, &mut temp).map_err(|error| {
-            Error::InvalidFormat(format!("unable to decompress udif lzfse block: {error:?}"))
-          })?;
-          let copy_size = decoded_size.min(expected_size);
-          output[..copy_size].copy_from_slice(&temp[..copy_size]);
-        }
-        UdifRangeKind::Lzma => {
-          let mut decoder = XzDecoder::new(compressed.as_slice());
-          read_full(&mut decoder, &mut output)?;
-        }
-        UdifRangeKind::Raw | UdifRangeKind::Sparse => {
-          return Err(Error::InvalidFormat(format!(
-            "udif range {index} does not require decompression"
-          )));
-        }
-      }
-
-      Ok(Arc::new(output))
-    })
+    if should_cache_decompressed_range(expected_size) {
+      self
+        .decompressed_cache
+        .get_or_load(range.media_offset, load_range)
+    } else {
+      load_range()
+    }
   }
+
+  fn decompress_range(
+    &self, index: usize, range: &UdifRange, expected_size: usize,
+  ) -> Result<Arc<Vec<u8>>> {
+    let compressed = self.source.read_bytes_at(
+      range.data_offset,
+      usize::try_from(range.data_size)
+        .map_err(|_| Error::InvalidRange("udif compressed range is too large".to_string()))?,
+    )?;
+    let mut output = vec![0u8; expected_size];
+
+    match range.kind {
+      UdifRangeKind::Adc => {
+        let mut decoder = AdcDecoder::new(compressed.as_slice());
+        read_full(&mut decoder, &mut output)?;
+      }
+      UdifRangeKind::Zlib => {
+        let mut decoder = ZlibDecoder::new(compressed.as_slice());
+        read_full(&mut decoder, &mut output)?;
+      }
+      UdifRangeKind::Bzip2 => {
+        let mut decoder = BzDecoder::new(compressed.as_slice());
+        read_full(&mut decoder, &mut output)?;
+      }
+      UdifRangeKind::Lzfse => {
+        let output_len = expected_size
+          .checked_add(1)
+          .ok_or_else(|| Error::InvalidRange("udif lzfse buffer overflow".to_string()))?;
+        let mut decoded = vec![0u8; output_len];
+        let decoded_size = lzfse::decode_buffer(&compressed, &mut decoded).map_err(|error| {
+          Error::InvalidFormat(format!("unable to decompress udif lzfse block: {error:?}"))
+        })?;
+        if decoded_size != expected_size {
+          return Err(Error::InvalidFormat(
+            "udif lzfse block does not expand to the expected size".to_string(),
+          ));
+        }
+        output.copy_from_slice(&decoded[..expected_size]);
+      }
+      UdifRangeKind::Lzma => {
+        let mut decoder = XzDecoder::new(compressed.as_slice());
+        read_full(&mut decoder, &mut output)?;
+      }
+      UdifRangeKind::Raw | UdifRangeKind::Sparse => {
+        return Err(Error::InvalidFormat(format!(
+          "udif range {index} does not require decompression"
+        )));
+      }
+    }
+
+    Ok(Arc::new(output))
+  }
+}
+
+fn should_cache_decompressed_range(expected_size: usize) -> bool {
+  expected_size <= MAX_CACHED_DECOMPRESSED_RANGE_SIZE
 }
 
 impl DataSource for UdifImage {
@@ -247,16 +269,49 @@ fn read_full<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
-  use std::{path::Path, sync::Arc};
+  use std::{
+    io::Write,
+    path::Path,
+    sync::{
+      Arc,
+      atomic::{AtomicUsize, Ordering},
+    },
+  };
+
+  use flate2::{Compression, write::ZlibEncoder};
 
   use super::*;
+  use crate::images::udif::trailer::UdifTrailer;
 
   struct MemDataSource {
     data: Vec<u8>,
   }
 
+  struct CountingDataSource {
+    data: Vec<u8>,
+    reads: AtomicUsize,
+  }
+
   impl DataSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+      let offset = usize::try_from(offset)
+        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+      if offset >= self.data.len() {
+        return Ok(0);
+      }
+      let read = buf.len().min(self.data.len() - offset);
+      buf[..read].copy_from_slice(&self.data[offset..offset + read]);
+      Ok(read)
+    }
+
+    fn size(&self) -> Result<u64> {
+      Ok(self.data.len() as u64)
+    }
+  }
+
+  impl DataSource for CountingDataSource {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+      self.reads.fetch_add(1, Ordering::Relaxed);
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
       if offset >= self.data.len() {
@@ -298,6 +353,28 @@ mod tests {
     trailer[488..492].copy_from_slice(&1u32.to_be_bytes());
     trailer[492..500].copy_from_slice(&(sector_count as u64).to_be_bytes());
     image
+  }
+
+  fn compress_zlib(data: &[u8]) -> Vec<u8> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
+  }
+
+  fn synthetic_trailer(data_size: u64, sector_count: u64) -> UdifTrailer {
+    UdifTrailer {
+      flags: 0,
+      data_fork_offset: 0,
+      data_fork_size: data_size,
+      plist_offset: 0,
+      plist_size: 0,
+      data_checksum_type: 0,
+      data_checksum: [0; 128],
+      master_checksum_type: 0,
+      master_checksum: [0; 128],
+      image_type: 1,
+      sector_count,
+    }
   }
 
   #[test]
@@ -362,6 +439,42 @@ mod tests {
 
     assert_eq!(image.compression_method(), UdifCompressionMethod::None);
     assert_eq!(image.read_all().unwrap()[..payload.len()], payload[..]);
+  }
+
+  #[test]
+  fn large_decompressed_ranges_bypass_the_cache() {
+    let payload = vec![0xA5; MAX_CACHED_DECOMPRESSED_RANGE_SIZE + 1];
+    let compressed = compress_zlib(&payload);
+    let source = Arc::new(CountingDataSource {
+      data: compressed.clone(),
+      reads: AtomicUsize::new(0),
+    });
+    let image = UdifImage {
+      source: source.clone(),
+      trailer: synthetic_trailer(
+        compressed.len() as u64,
+        (payload.len() as u64).div_ceil(SECTOR_SIZE),
+      ),
+      media_size: payload.len() as u64,
+      ranges: Arc::from(vec![UdifRange {
+        media_offset: 0,
+        size: payload.len() as u64,
+        data_offset: 0,
+        data_size: compressed.len() as u64,
+        kind: UdifRangeKind::Zlib,
+      }]),
+      compression_method: UdifCompressionMethod::Zlib,
+      has_sparse_ranges: false,
+      decompressed_cache: UdifCache::new(MAX_DECOMPRESSED_CACHE_ENTRIES),
+    };
+    let mut buf = vec![0u8; 4096];
+
+    image.read_exact_at(0, &mut buf).unwrap();
+    let reads_after_first = source.reads.load(Ordering::Relaxed);
+    image.read_exact_at(0, &mut buf).unwrap();
+
+    assert_eq!(&buf[..], &payload[..buf.len()]);
+    assert!(source.reads.load(Ordering::Relaxed) > reads_after_first);
   }
 
   #[test]

@@ -16,6 +16,11 @@ struct GptCandidate {
   partitions: Vec<GptPartitionInfo>,
 }
 
+#[derive(Debug)]
+struct GptHeaderCandidate {
+  header: GptHeader,
+}
+
 pub(super) fn open(source: DataSourceHandle) -> Result<GptVolumeSystem> {
   for block_size in constants::SUPPORTED_BLOCK_SIZES {
     if let Ok(system) = open_with_block_size(source.clone(), block_size) {
@@ -33,56 +38,88 @@ pub(super) fn open_with_block_size(
 ) -> Result<GptVolumeSystem> {
   validate_protective_mbr(source.as_ref())?;
 
-  let primary_candidate = read_candidate(source.as_ref(), block_size, GptHeaderLocation::Primary);
-  let backup_candidate = read_candidate(source.as_ref(), block_size, GptHeaderLocation::Backup);
+  let primary_header =
+    read_header_candidate(source.as_ref(), block_size, GptHeaderLocation::Primary);
+  let backup_header = read_header_candidate(source.as_ref(), block_size, GptHeaderLocation::Backup);
 
-  match (primary_candidate, backup_candidate) {
+  match (primary_header, backup_header) {
     (Ok(primary), Ok(backup)) => {
-      if validate_header_pair(&primary.header, &backup.header).is_ok() {
+      let headers_match = validate_header_pair(&primary.header, &backup.header).is_ok();
+      if let Ok(primary_candidate) = read_partitions_candidate(
+        source.as_ref(),
+        block_size,
+        GptHeaderLocation::Primary,
+        primary.header.clone(),
+      ) {
         GptVolumeSystem::new(
           source,
           block_size,
           GptHeaderLocation::Primary,
           Some(primary.header),
+          headers_match.then_some(backup.header),
+          primary_candidate.partitions,
+        )
+      } else if let Ok(backup_candidate) = read_partitions_candidate(
+        source.as_ref(),
+        block_size,
+        GptHeaderLocation::Backup,
+        backup.header.clone(),
+      ) {
+        GptVolumeSystem::new(
+          source,
+          block_size,
+          GptHeaderLocation::Backup,
+          None,
           Some(backup.header),
-          primary.partitions,
+          backup_candidate.partitions,
         )
       } else {
-        GptVolumeSystem::new(
-          source,
-          block_size,
-          GptHeaderLocation::Primary,
-          Some(primary.header),
-          None,
-          primary.partitions,
-        )
+        Err(Error::InvalidFormat(
+          "unable to open a valid primary or backup gpt header".to_string(),
+        ))
       }
     }
-    (Ok(primary), Err(_)) => GptVolumeSystem::new(
-      source,
-      block_size,
-      GptHeaderLocation::Primary,
-      Some(primary.header),
-      None,
-      primary.partitions,
-    ),
-    (Err(_), Ok(backup)) => GptVolumeSystem::new(
-      source,
-      block_size,
-      GptHeaderLocation::Backup,
-      None,
-      Some(backup.header),
-      backup.partitions,
-    ),
+    (Ok(primary), Err(_)) => {
+      let primary = read_partitions_candidate(
+        source.as_ref(),
+        block_size,
+        GptHeaderLocation::Primary,
+        primary.header.clone(),
+      )?;
+      GptVolumeSystem::new(
+        source,
+        block_size,
+        GptHeaderLocation::Primary,
+        Some(primary.header),
+        None,
+        primary.partitions,
+      )
+    }
+    (Err(_), Ok(backup)) => {
+      let backup = read_partitions_candidate(
+        source.as_ref(),
+        block_size,
+        GptHeaderLocation::Backup,
+        backup.header.clone(),
+      )?;
+      GptVolumeSystem::new(
+        source,
+        block_size,
+        GptHeaderLocation::Backup,
+        None,
+        Some(backup.header),
+        backup.partitions,
+      )
+    }
     (Err(_primary_error), Err(_backup_error)) => Err(Error::InvalidFormat(
       "unable to open a valid primary or backup gpt header".to_string(),
     )),
   }
 }
 
-fn read_candidate(
+fn read_header_candidate(
   source: &dyn DataSource, block_size: u32, location: GptHeaderLocation,
-) -> Result<GptCandidate> {
+) -> Result<GptHeaderCandidate> {
   let source_size = source.size()?;
   let expected_current_lba = match location {
     GptHeaderLocation::Primary => constants::PRIMARY_HEADER_LBA,
@@ -90,6 +127,18 @@ fn read_candidate(
   };
   let (header, header_block) = read_header_block(source, block_size, expected_current_lba)?;
   validate_header_crc(&header_block, &header)?;
+
+  Ok(GptHeaderCandidate { header })
+}
+
+fn read_partitions_candidate(
+  source: &dyn DataSource, block_size: u32, location: GptHeaderLocation, header: GptHeader,
+) -> Result<GptCandidate> {
+  let source_size = source.size()?;
+  let expected_current_lba = match location {
+    GptHeaderLocation::Primary => constants::PRIMARY_HEADER_LBA,
+    GptHeaderLocation::Backup => last_lba(source_size, block_size)?,
+  };
 
   let entry_array = read_entry_array(source, block_size, &header)?;
   validate_entry_array_crc(&entry_array, header.entry_array_crc32)?;

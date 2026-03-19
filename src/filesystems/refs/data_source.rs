@@ -13,6 +13,21 @@ pub(crate) struct RefsDataRunsDataSource {
   pub(crate) data_runs: Arc<[RefsDataRun]>,
 }
 
+impl RefsDataRunsDataSource {
+  fn run_for_offset(&self, offset: u64) -> Option<&RefsDataRun> {
+    let index = self
+      .data_runs
+      .partition_point(|run| run.logical_offset <= offset)
+      .checked_sub(1)?;
+    let run = self.data_runs.get(index)?;
+    let run_end = run
+      .logical_offset
+      .checked_add(run.block_count.checked_mul(self.metadata_block_size)?)?;
+
+    (offset < run_end).then_some(run)
+  }
+}
+
 impl DataSource for RefsDataRunsDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.data_size || buf.is_empty() {
@@ -28,18 +43,9 @@ impl DataSource for RefsDataRunsDataSource {
       let absolute = offset
         .checked_add(written as u64)
         .ok_or_else(|| Error::InvalidRange("refs read offset overflow".to_string()))?;
-      let run = self
-        .data_runs
-        .iter()
-        .find(|run| {
-          let run_end = run
-            .logical_offset
-            .saturating_add(run.block_count * self.metadata_block_size);
-          absolute >= run.logical_offset && absolute < run_end
-        })
-        .ok_or_else(|| {
-          Error::InvalidFormat("refs data run is missing for the requested offset".to_string())
-        })?;
+      let run = self.run_for_offset(absolute).ok_or_else(|| {
+        Error::InvalidFormat("refs data run is missing for the requested offset".to_string())
+      })?;
 
       let run_length = run.block_count * self.metadata_block_size;
       let run_offset = absolute - run.logical_offset;
@@ -77,5 +83,47 @@ impl DataSource for RefsDataRunsDataSource {
 
   fn capabilities(&self) -> DataSourceCapabilities {
     self.source.capabilities()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+
+  use super::*;
+  use crate::BytesDataSource;
+
+  #[test]
+  fn refs_data_source_handles_fragmented_random_reads() {
+    let mut backing = vec![0u8; 16 * 1024];
+    backing[4096..8192].fill(0x33);
+    backing[12 * 1024..16 * 1024].fill(0x44);
+    let source = RefsDataRunsDataSource {
+      source: Arc::new(BytesDataSource::new(backing)),
+      metadata_block_size: 4096,
+      data_size: 8192,
+      valid_data_size: 8192,
+      data_runs: Arc::from(
+        vec![
+          RefsDataRun {
+            logical_offset: 0,
+            block_count: 1,
+            physical_block_number: 1,
+          },
+          RefsDataRun {
+            logical_offset: 4096,
+            block_count: 1,
+            physical_block_number: 3,
+          },
+        ]
+        .into_boxed_slice(),
+      ),
+    };
+    let mut buf = [0u8; 1024];
+
+    let read = source.read_at(5120, &mut buf).unwrap();
+
+    assert_eq!(read, buf.len());
+    assert!(buf.iter().all(|byte| *byte == 0x44));
   }
 }

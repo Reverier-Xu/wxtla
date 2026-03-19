@@ -11,7 +11,7 @@ use super::{
   parser::{
     ATTRIBUTE_NON_RESIDENT_HEADER_SIZE, OBJECTS_TREE_INDEX, ROOT_DIRECTORY_OBJECT_ID,
     RefsAttribute, RefsAttributeValue, RefsBlockReference, RefsCheckpoint, RefsMinistoreNode,
-    RefsNodeRecord, RefsVolumeHeader, build_object_key, decode_utf16le_string, le_u32, le_u64,
+    RefsNodeRecord, RefsVolumeHeader, decode_utf16le_string, le_u32, le_u64,
     parse_block_reference_v1, parse_checkpoint_metadata, parse_data_run,
     parse_directory_entry_name, parse_directory_entry_type, parse_directory_values,
     parse_file_values, parse_metadata_block_header_v1, parse_ministore_node_data,
@@ -60,7 +60,7 @@ pub struct RefsFileSystem {
 struct RefsContext {
   source: DataSourceHandle,
   volume_header: RefsVolumeHeader,
-  objects_root: RefsMinistoreNode,
+  object_references: HashMap<u64, RefsBlockReference>,
 }
 
 impl RefsFileSystem {
@@ -105,11 +105,13 @@ impl RefsFileSystem {
         "refs objects tree root node must be a root node".to_string(),
       ));
     }
+    let object_references =
+      build_object_reference_index(source.clone(), &volume_header, &objects_root)?;
 
     let context = RefsContext {
       source,
       volume_header,
-      objects_root,
+      object_references,
     };
     let mut nodes = HashMap::new();
     let mut children = HashMap::new();
@@ -373,18 +375,78 @@ fn parse_file_entry(context: &RefsContext, record: &RefsNodeRecord) -> Result<Re
 fn get_object_ministore_tree(
   context: &RefsContext, object_identifier: u64,
 ) -> Result<RefsMinistoreNode> {
-  let key = build_object_key(object_identifier);
-  let records = collect_leaf_records_from_source(context, &context.objects_root)?;
-  let record = records
-    .iter()
-    .find(|record| record.key_data.as_ref() == key)
+  let reference = context
+    .object_references
+    .get(&object_identifier)
     .ok_or_else(|| {
       Error::NotFound(format!(
         "refs object 0x{object_identifier:08x} was not found"
       ))
     })?;
-  let reference = parse_block_reference_v1(&record.value_data)?;
-  read_ministore_node_from_reference(context.source.clone(), &context.volume_header, &reference)
+  read_ministore_node_from_reference(context.source.clone(), &context.volume_header, reference)
+}
+
+fn build_object_reference_index(
+  source: DataSourceHandle, volume_header: &RefsVolumeHeader, root: &RefsMinistoreNode,
+) -> Result<HashMap<u64, RefsBlockReference>> {
+  let mut loader = |reference: &RefsBlockReference| {
+    read_ministore_node_from_reference(source.clone(), volume_header, reference)
+  };
+  build_object_reference_index_with(root, 0, &mut loader)
+}
+
+fn build_object_reference_index_with<F>(
+  node: &RefsMinistoreNode, depth: usize, load_subnode: &mut F,
+) -> Result<HashMap<u64, RefsBlockReference>>
+where
+  F: FnMut(&RefsBlockReference) -> Result<RefsMinistoreNode>, {
+  let mut object_references = HashMap::new();
+  collect_object_references_with(node, depth, load_subnode, &mut object_references)?;
+  Ok(object_references)
+}
+
+fn collect_object_references_with<F>(
+  node: &RefsMinistoreNode, depth: usize, load_subnode: &mut F,
+  object_references: &mut HashMap<u64, RefsBlockReference>,
+) -> Result<()>
+where
+  F: FnMut(&RefsBlockReference) -> Result<RefsMinistoreNode>, {
+  if depth > 256 {
+    return Err(Error::InvalidFormat(
+      "refs tree recursion depth exceeded".to_string(),
+    ));
+  }
+  if node.node_type_flags & 0x01 == 0 {
+    for record in &node.records {
+      let object_identifier = parse_object_identifier(&record.key_data)?;
+      let reference = parse_block_reference_v1(&record.value_data)?;
+      if object_references
+        .insert(object_identifier, reference)
+        .is_some()
+      {
+        return Err(Error::InvalidFormat(format!(
+          "duplicate refs object identifier: 0x{object_identifier:08x}"
+        )));
+      }
+    }
+    return Ok(());
+  }
+
+  for record in &node.records {
+    let reference = parse_block_reference_v1(&record.value_data)?;
+    let sub_node = load_subnode(&reference)?;
+    collect_object_references_with(&sub_node, depth + 1, load_subnode, object_references)?;
+  }
+
+  Ok(())
+}
+
+fn parse_object_identifier(key_data: &[u8]) -> Result<u64> {
+  let key_data = key_data
+    .get(..16)
+    .ok_or_else(|| Error::InvalidFormat("refs object-tree key data is truncated".to_string()))?;
+
+  Ok(le_u64(&key_data[8..16]))
 }
 
 fn collect_file_attributes(
@@ -487,13 +549,17 @@ fn build_stream_sources(
         valid_data_size,
         data_runs,
         ..
-      } => Arc::new(RefsDataRunsDataSource {
-        source: context.source.clone(),
-        metadata_block_size: u64::from(context.volume_header.metadata_block_size),
-        data_size: *data_size,
-        valid_data_size: *valid_data_size,
-        data_runs: Arc::from(data_runs.clone().into_boxed_slice()),
-      }) as DataSourceHandle,
+      } => {
+        let mut sorted_runs = data_runs.clone();
+        sorted_runs.sort_by_key(|run| run.logical_offset);
+        Arc::new(RefsDataRunsDataSource {
+          source: context.source.clone(),
+          metadata_block_size: u64::from(context.volume_header.metadata_block_size),
+          data_size: *data_size,
+          valid_data_size: *valid_data_size,
+          data_runs: Arc::from(sorted_runs.into_boxed_slice()),
+        }) as DataSourceHandle
+      }
     };
     streams.insert(name, source);
   }
@@ -593,7 +659,7 @@ mod tests {
   use std::{collections::HashMap, sync::Arc};
 
   use super::*;
-  use crate::BytesDataSource;
+  use crate::{BytesDataSource, filesystems::refs::parser::build_object_key};
 
   fn sample_context() -> RefsContext {
     RefsContext {
@@ -608,11 +674,7 @@ mod tests {
         volume_serial_number: 1,
         container_size: 0,
       },
-      objects_root: RefsMinistoreNode {
-        header_data: Arc::<[u8]>::from(Vec::<u8>::new()),
-        node_type_flags: 0x02,
-        records: vec![],
-      },
+      object_references: HashMap::new(),
     }
   }
 
@@ -630,6 +692,12 @@ mod tests {
       key_data: Arc::<[u8]>::from(Vec::<u8>::new()),
       value_data: Arc::from(value.into_boxed_slice()),
     }
+  }
+
+  fn object_record_with_reference(object_identifier: u64, block_number: u64) -> RefsNodeRecord {
+    let mut record = record_with_reference(block_number);
+    record.key_data = Arc::from(build_object_key(object_identifier));
+    record
   }
 
   #[test]
@@ -692,5 +760,34 @@ mod tests {
         .unwrap(),
       b"named"
     );
+  }
+
+  #[test]
+  fn builds_object_reference_index_from_branch_nodes() {
+    let leaf = RefsMinistoreNode {
+      header_data: Arc::<[u8]>::from(Vec::<u8>::new()),
+      node_type_flags: 0x02,
+      records: vec![
+        object_record_with_reference(0x600, 7),
+        object_record_with_reference(0x601, 9),
+      ],
+    };
+    let branch = RefsMinistoreNode {
+      header_data: Arc::<[u8]>::from(Vec::<u8>::new()),
+      node_type_flags: 0x03,
+      records: vec![record_with_reference(11)],
+    };
+    let mut children = HashMap::from([(11u64, leaf)]);
+    let mut loader = |reference: &RefsBlockReference| {
+      children
+        .remove(&reference.block_number)
+        .ok_or_else(|| Error::NotFound("missing synthetic child node".to_string()))
+    };
+
+    let object_references = build_object_reference_index_with(&branch, 0, &mut loader).unwrap();
+
+    assert_eq!(object_references.len(), 2);
+    assert_eq!(object_references.get(&0x600).unwrap().block_number, 7);
+    assert_eq!(object_references.get(&0x601).unwrap().block_number, 9);
   }
 }

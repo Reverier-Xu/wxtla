@@ -22,3 +22,4 @@ pub(super) const SUPPORTED_HEADER_FLAGS: u32 = FLAG_VALID_NEWLINE_TEST
 pub(super) const GD_AT_END: u64 = u64::MAX;
 pub(super) const COWD_SUPPORTED_FLAGS: u32 = 0x0000_0003;
 pub(super) const COWD_GRAIN_TABLE_ENTRIES: u64 = 4096;
+pub(super) const MAX_DESCRIPTOR_FILE_SIZE: u64 = 1024 * 1024;

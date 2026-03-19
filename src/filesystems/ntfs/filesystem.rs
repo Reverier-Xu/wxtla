@@ -2,7 +2,7 @@
 
 use std::{
   collections::{BTreeMap, HashMap},
-  sync::Arc,
+  sync::{Arc, Mutex},
 };
 
 use super::{
@@ -24,18 +24,22 @@ use crate::{
 
 const ROOT_FILE_RECORD_NUMBER: u64 = 5;
 
+type NtfsChildrenIndex = Arc<HashMap<u64, Arc<[DirectoryEntry]>>>;
+
 pub struct NtfsFileSystem {
   source: DataSourceHandle,
   boot_sector: NtfsBootSector,
-  nodes: HashMap<u64, NtfsNode>,
-  children: HashMap<u64, Vec<DirectoryEntry>>,
+  mft_stream: DataSourceHandle,
+  file_record_size: u64,
+  record_count: u64,
+  nodes: Mutex<HashMap<u64, Arc<NtfsNode>>>,
+  children: Mutex<Option<NtfsChildrenIndex>>,
 }
 
 struct NtfsNode {
   name: String,
   parent_id: Option<u64>,
   record: FileSystemNodeRecord,
-  data_source: Option<DataSourceHandle>,
   data_attributes: Arc<[NtfsDataAttribute]>,
   reparse_point: Option<NtfsReparsePointInfo>,
 }
@@ -74,92 +78,23 @@ impl NtfsFileSystem {
       ));
     }
 
-    let record_count = mft_stream_size / file_record_size;
-    let mut parsed_records = HashMap::new();
-
-    for record_number in 0..record_count {
-      let record_bytes = read_file_record(
-        mft_stream.as_ref(),
-        record_number
-          .checked_mul(file_record_size)
-          .ok_or_else(|| Error::InvalidRange("ntfs MFT record offset overflow".to_string()))?,
-        file_record_size,
-      )?;
-      let Some(record) = parse_file_record(&record_bytes, record_number)? else {
-        continue;
-      };
-      parsed_records.insert(record_number, record);
-    }
-
-    let mut nodes = HashMap::new();
-    for record_number in 0..record_count {
-      let Some(record) = parsed_records.get(&record_number) else {
-        continue;
-      };
-      if record.base_record_number.is_some() {
-        continue;
-      }
-      let record = resolve_attribute_list_record(record_number, record, &parsed_records)?;
-      let Some(name) = record.preferred_name().cloned() else {
-        continue;
-      };
-
-      let parent_id = if record_number == ROOT_FILE_RECORD_NUMBER {
-        None
-      } else {
-        Some(name.parent_record_number)
-      };
-      let (kind, data_source, size) = classify_node(source.clone(), &boot_sector, &record)?;
-      nodes.insert(
-        record_number,
-        NtfsNode {
-          name: if record_number == ROOT_FILE_RECORD_NUMBER {
-            String::new()
-          } else {
-            name.name
-          },
-          parent_id,
-          record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(record_number), kind, size),
-          data_source,
-          data_attributes: Arc::from(record.data_attributes),
-          reparse_point: record.reparse_point,
-        },
-      );
-    }
-
-    if !nodes.contains_key(&ROOT_FILE_RECORD_NUMBER) {
+    let filesystem = Self {
+      source,
+      boot_sector,
+      mft_stream,
+      file_record_size,
+      record_count: mft_stream_size / file_record_size,
+      nodes: Mutex::new(HashMap::new()),
+      children: Mutex::new(None),
+    };
+    let root_id = FileSystemNodeId::from_u64(ROOT_FILE_RECORD_NUMBER);
+    if filesystem.lookup_node(&root_id).is_err() {
       return Err(Error::InvalidFormat(
         "ntfs root directory record is missing".to_string(),
       ));
     }
 
-    let mut children = HashMap::<u64, Vec<DirectoryEntry>>::new();
-    for (record_number, node) in &nodes {
-      let Some(parent_id) = node.parent_id else {
-        continue;
-      };
-      if *record_number == ROOT_FILE_RECORD_NUMBER {
-        continue;
-      }
-      children
-        .entry(parent_id)
-        .or_default()
-        .push(DirectoryEntry::new(
-          node.name.clone(),
-          node.record.id.clone(),
-          node.record.kind,
-        ));
-    }
-    for entries in children.values_mut() {
-      entries.sort_by(|left, right| left.name.cmp(&right.name));
-    }
-
-    Ok(Self {
-      source,
-      boot_sector,
-      nodes,
-      children,
-    })
+    Ok(filesystem)
   }
 
   pub fn data_streams(&self, node_id: &FileSystemNodeId) -> Result<Vec<NtfsDataStreamInfo>> {
@@ -167,8 +102,7 @@ impl NtfsFileSystem {
     let mut streams = Vec::new();
     for (name, attributes) in grouped_stream_attributes(&node.data_attributes) {
       streams.push(NtfsDataStreamInfo {
-        size: build_stream_data_source(self.source.clone(), &self.boot_sector, &attributes)?
-          .size()?,
+        size: stream_size(&attributes)?,
         name,
       });
     }
@@ -210,12 +144,140 @@ impl NtfsFileSystem {
     )
   }
 
-  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<&NtfsNode> {
+  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<Arc<NtfsNode>> {
     let record_number = decode_node_id(node_id)?;
     self
-      .nodes
-      .get(&record_number)
+      .load_node(record_number)?
       .ok_or_else(|| Error::NotFound(format!("ntfs node {record_number} was not found")))
+  }
+
+  fn load_node(&self, record_number: u64) -> Result<Option<Arc<NtfsNode>>> {
+    if let Some(node) = self
+      .nodes
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(&record_number)
+      .cloned()
+    {
+      return Ok(Some(node));
+    }
+
+    let Some(record) = self.load_resolved_record(record_number)? else {
+      return Ok(None);
+    };
+    let Some(name) = record.preferred_name().cloned() else {
+      return Ok(None);
+    };
+    let parent_id = if record_number == ROOT_FILE_RECORD_NUMBER {
+      None
+    } else {
+      Some(name.parent_record_number)
+    };
+    let (kind, size) = classify_node(&record)?;
+    let node = Arc::new(NtfsNode {
+      name: if record_number == ROOT_FILE_RECORD_NUMBER {
+        String::new()
+      } else {
+        name.name
+      },
+      parent_id,
+      record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(record_number), kind, size),
+      data_attributes: Arc::from(record.data_attributes),
+      reparse_point: record.reparse_point,
+    });
+
+    let mut nodes = self
+      .nodes
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = nodes.get(&record_number).cloned() {
+      return Ok(Some(cached));
+    }
+    nodes.insert(record_number, node.clone());
+
+    Ok(Some(node))
+  }
+
+  fn load_resolved_record(&self, record_number: u64) -> Result<Option<NtfsFileRecord>> {
+    let Some(record) = self.read_parsed_record(record_number)? else {
+      return Ok(None);
+    };
+    if record.base_record_number.is_some() {
+      return Ok(None);
+    }
+
+    resolve_attribute_list_record(record_number, &record, &mut |referenced_record| {
+      self.read_parsed_record(referenced_record)
+    })
+    .map(Some)
+  }
+
+  fn read_parsed_record(&self, record_number: u64) -> Result<Option<NtfsFileRecord>> {
+    if record_number >= self.record_count {
+      return Ok(None);
+    }
+
+    let record_bytes = read_file_record(
+      self.mft_stream.as_ref(),
+      record_number
+        .checked_mul(self.file_record_size)
+        .ok_or_else(|| Error::InvalidRange("ntfs MFT record offset overflow".to_string()))?,
+      self.file_record_size,
+    )?;
+    parse_file_record(&record_bytes, record_number)
+  }
+
+  fn children_index(&self) -> Result<NtfsChildrenIndex> {
+    if let Some(children) = self
+      .children
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .as_ref()
+      .cloned()
+    {
+      return Ok(children);
+    }
+
+    let mut children = HashMap::<u64, Vec<DirectoryEntry>>::new();
+    for record_number in 0..self.record_count {
+      let Some(node) = self.load_node(record_number)? else {
+        continue;
+      };
+      let Some(parent_id) = node.parent_id else {
+        continue;
+      };
+      if record_number == ROOT_FILE_RECORD_NUMBER {
+        continue;
+      }
+      children
+        .entry(parent_id)
+        .or_default()
+        .push(DirectoryEntry::new(
+          node.name.clone(),
+          node.record.id.clone(),
+          node.record.kind,
+        ));
+    }
+    let children = Arc::new(
+      children
+        .into_iter()
+        .map(|(parent_id, mut entries)| {
+          entries.sort_by(|left, right| left.name.cmp(&right.name));
+          (parent_id, Arc::from(entries.into_boxed_slice()))
+        })
+        .collect::<HashMap<_, _>>(),
+    );
+
+    let mut cached = self
+      .children
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = cached.as_ref().cloned() {
+      return Ok(existing);
+    }
+    *cached = Some(children.clone());
+
+    Ok(children)
   }
 }
 
@@ -241,22 +303,28 @@ impl FileSystem for NtfsFileSystem {
       )));
     }
 
+    let children = self.children_index()?;
     Ok(
-      self
-        .children
+      children
         .get(&record_number)
-        .cloned()
-        .unwrap_or_default(),
+        .map_or_else(Vec::new, |entries| entries.to_vec()),
     )
   }
 
   fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
     let record_number = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
-    node
-      .data_source
-      .clone()
-      .ok_or_else(|| Error::NotFound(format!("ntfs node {record_number} is not a readable file")))
+    if node.record.kind == FileSystemNodeKind::Directory {
+      return Err(Error::NotFound(format!(
+        "ntfs node {record_number} is not a readable file"
+      )));
+    }
+
+    build_default_data_source(
+      self.source.clone(),
+      &self.boot_sector,
+      &node.data_attributes,
+    )
   }
 }
 
@@ -273,9 +341,11 @@ fn grouped_stream_attributes(
   streams
 }
 
-fn resolve_attribute_list_record(
-  record_number: u64, record: &NtfsFileRecord, records: &HashMap<u64, NtfsFileRecord>,
-) -> Result<NtfsFileRecord> {
+fn resolve_attribute_list_record<F>(
+  record_number: u64, record: &NtfsFileRecord, load_record: &mut F,
+) -> Result<NtfsFileRecord>
+where
+  F: FnMut(u64) -> Result<Option<NtfsFileRecord>>, {
   if record.attribute_list_entries.is_empty() {
     return Ok(record.clone());
   }
@@ -289,7 +359,7 @@ fn resolve_attribute_list_record(
   }
 
   for referenced_record in referenced_records.keys() {
-    let extension = records.get(referenced_record).ok_or_else(|| {
+    let extension = load_record(*referenced_record)?.ok_or_else(|| {
       Error::InvalidFormat(format!(
         "ntfs attribute list references missing file record {referenced_record}"
       ))
@@ -314,38 +384,98 @@ fn resolve_attribute_list_record(
   Ok(resolved)
 }
 
-fn classify_node(
-  source: DataSourceHandle, boot_sector: &NtfsBootSector, record: &NtfsFileRecord,
-) -> Result<(FileSystemNodeKind, Option<DataSourceHandle>, u64)> {
+fn classify_node(record: &NtfsFileRecord) -> Result<(FileSystemNodeKind, u64)> {
   if record.is_directory() {
     let kind = if record.has_reparse_point {
       FileSystemNodeKind::Symlink
     } else {
       FileSystemNodeKind::Directory
     };
-    return Ok((kind, None, 0));
+    return Ok((kind, 0));
   }
 
-  let data_source = build_default_data_source(source, boot_sector, record)?;
-  let size = data_source.size()?;
+  let size = default_stream_size(&record.data_attributes)?;
   let kind = if record.has_reparse_point {
     FileSystemNodeKind::Symlink
   } else {
     FileSystemNodeKind::File
   };
-  Ok((kind, Some(data_source), size))
+  Ok((kind, size))
 }
 
 fn build_default_data_source(
-  source: DataSourceHandle, boot_sector: &NtfsBootSector, record: &NtfsFileRecord,
+  source: DataSourceHandle, boot_sector: &NtfsBootSector, data_attributes: &[NtfsDataAttribute],
 ) -> Result<DataSourceHandle> {
-  let data_attributes = record
-    .data_attributes
+  let data_attributes = data_attributes
     .iter()
     .filter(|attribute| attribute.name.is_none())
     .cloned()
     .collect::<Vec<_>>();
   build_stream_data_source(source, boot_sector, &data_attributes)
+}
+
+fn default_stream_size(data_attributes: &[NtfsDataAttribute]) -> Result<u64> {
+  let data_attributes = data_attributes
+    .iter()
+    .filter(|attribute| attribute.name.is_none())
+    .cloned()
+    .collect::<Vec<_>>();
+
+  stream_size(&data_attributes)
+}
+
+fn stream_size(attributes: &[NtfsDataAttribute]) -> Result<u64> {
+  if attributes.is_empty() {
+    return Ok(0);
+  }
+
+  let resident = attributes
+    .iter()
+    .map(|attribute| match &attribute.value {
+      NtfsDataAttributeValue::Resident(data) => Some(data.len()),
+      NtfsDataAttributeValue::NonResident(_) => None,
+    })
+    .collect::<Option<Vec<_>>>();
+  if let Some(mut resident) = resident {
+    if resident.len() != 1 {
+      return Err(Error::InvalidFormat(
+        "ntfs fragmented resident data attributes are not supported".to_string(),
+      ));
+    }
+    return u64::try_from(resident.remove(0))
+      .map_err(|_| Error::InvalidRange("ntfs resident data size is too large".to_string()));
+  }
+
+  let mut non_resident = attributes
+    .iter()
+    .map(|attribute| match &attribute.value {
+      NtfsDataAttributeValue::Resident(_) => Err(Error::InvalidFormat(
+        "ntfs mixed resident and non-resident data attributes are not supported".to_string(),
+      )),
+      NtfsDataAttributeValue::NonResident(non_resident) => Ok(non_resident),
+    })
+    .collect::<Result<Vec<_>>>()?;
+  non_resident.sort_by_key(|attribute| attribute.first_vcn);
+
+  let stream_size = non_resident
+    .iter()
+    .map(|attribute| attribute.data_size)
+    .max()
+    .unwrap_or(0);
+  let mut expected_vcn = 0u64;
+  for attribute in non_resident {
+    if attribute.first_vcn != expected_vcn {
+      return Err(Error::InvalidFormat(
+        "ntfs non-resident attribute chains must have continuous VCN ranges".to_string(),
+      ));
+    }
+    expected_vcn = attribute
+      .last_vcn
+      .checked_add(1)
+      .ok_or_else(|| Error::InvalidRange("ntfs VCN range overflow".to_string()))?;
+  }
+
+  Ok(stream_size)
 }
 
 fn build_stream_data_source(
@@ -513,8 +643,9 @@ mod tests {
       has_reparse_point: false,
     };
     let records = HashMap::from([(42u64, extension_record)]);
+    let mut load_record = |record_number| Ok(records.get(&record_number).cloned());
 
-    let resolved = resolve_attribute_list_record(5, &base_record, &records).unwrap();
+    let resolved = resolve_attribute_list_record(5, &base_record, &mut load_record).unwrap();
 
     assert_eq!(resolved.file_names[0].name, "merged.txt");
     assert_eq!(resolved.data_attributes.len(), 2);

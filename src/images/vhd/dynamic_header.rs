@@ -1,6 +1,8 @@
 //! VHD dynamic and differential header parsing.
 
-use super::constants::{DYNAMIC_HEADER_COOKIE, DYNAMIC_HEADER_SIZE, VHD_FORMAT_VERSION};
+use super::constants::{
+  DEFAULT_SECTOR_SIZE, DYNAMIC_HEADER_COOKIE, DYNAMIC_HEADER_SIZE, VHD_FORMAT_VERSION,
+};
 use crate::{DataSource, Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,10 +83,17 @@ impl VhdDynamicHeader {
       });
     }
 
+    let block_size = read_u32_be(data, 32)?;
+    if block_size == 0 || !block_size.is_multiple_of(DEFAULT_SECTOR_SIZE) {
+      return Err(Error::InvalidFormat(format!(
+        "invalid vhd block size: {block_size}"
+      )));
+    }
+
     Ok(Self {
       block_allocation_table_offset: read_u64_be(data, 16)?,
       block_count: read_u32_be(data, 28)?,
-      block_size: read_u32_be(data, 32)?,
+      block_size,
       parent_identifier: copy_array::<16>(&data[40..56])?,
       parent_name,
       parent_locators,
@@ -155,5 +164,21 @@ mod tests {
     assert_eq!(header.block_allocation_table_offset, 0x600);
     assert_eq!(header.block_count, 3);
     assert_eq!(header.block_size, 2_097_152);
+  }
+
+  #[test]
+  fn rejects_zero_block_sizes() {
+    let mut data = vec![0u8; DYNAMIC_HEADER_SIZE];
+    data[0..8].copy_from_slice(b"cxsparse");
+    data[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
+    data[16..24].copy_from_slice(&0x600u64.to_be_bytes());
+    data[24..28].copy_from_slice(&VHD_FORMAT_VERSION.to_be_bytes());
+    data[28..32].copy_from_slice(&3u32.to_be_bytes());
+    let checksum = ones_complement_checksum(&data);
+    data[36..40].copy_from_slice(&checksum.to_be_bytes());
+
+    let error = VhdDynamicHeader::parse(&data).unwrap_err();
+
+    assert!(matches!(error, Error::InvalidFormat(_)));
   }
 }

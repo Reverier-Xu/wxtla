@@ -218,4 +218,49 @@ mod tests {
 
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
+
+  #[test]
+  fn rejects_overlapping_partitions_even_when_entries_are_out_of_order() {
+    let mut disk = synthetic_apm(512);
+    write_partition_entry(
+      &mut disk,
+      TestPartitionSpec {
+        index: 0,
+        total_entry_count: 3,
+        start_block: 1,
+        block_count: 16,
+        name: "Apple",
+        type_identifier: type_identifiers::PARTITION_MAP,
+        status_flags: 0x0000_0003,
+      },
+    );
+    write_partition_entry(
+      &mut disk,
+      TestPartitionSpec {
+        index: 1,
+        total_entry_count: 3,
+        start_block: 40,
+        block_count: 8,
+        name: "Data",
+        type_identifier: type_identifiers::HFS,
+        status_flags: 0x4000_0033,
+      },
+    );
+    write_partition_entry(
+      &mut disk,
+      TestPartitionSpec {
+        index: 2,
+        total_entry_count: 3,
+        start_block: 35,
+        block_count: 12,
+        name: "Overlap",
+        type_identifier: type_identifiers::FREE,
+        status_flags: 0,
+      },
+    );
+
+    let result = ApmDriver::open(synthetic_source(disk));
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
 }

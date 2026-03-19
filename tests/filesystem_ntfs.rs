@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 
 use support::{FileDataSource, fixture_path};
 use wxtla::{
-  DataSourceHandle,
+  DataSourceHandle, ObservedDataSource,
   filesystems::{
     DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, ntfs::NtfsDriver,
   },
@@ -13,6 +13,19 @@ use wxtla::{
 fn open_fixture_file_system() -> wxtla::Result<wxtla::filesystems::ntfs::NtfsFileSystem> {
   let source: DataSourceHandle = Arc::new(FileDataSource::open(fixture_path("ntfs/ntfs.raw"))?);
   NtfsDriver::open(source)
+}
+
+fn open_observed_fixture_file_system() -> wxtla::Result<(
+  wxtla::filesystems::ntfs::NtfsFileSystem,
+  wxtla::DataSourceReadStats,
+)> {
+  let observed = Arc::new(ObservedDataSource::new(Arc::new(FileDataSource::open(
+    fixture_path("ntfs/ntfs.raw"),
+  )?)));
+  let stats = observed.stats();
+  let source: DataSourceHandle = observed;
+
+  Ok((NtfsDriver::open(source)?, stats))
 }
 
 fn child_named(
@@ -146,4 +159,17 @@ fn ntfs_fixture_exposes_named_data_streams() {
 
   assert_eq!(info_data.len(), 32);
   assert!(info_data.iter().any(|byte| *byte != 0));
+}
+
+#[test]
+fn ntfs_open_defers_the_full_mft_scan_until_directory_enumeration() {
+  let (file_system, stats) = open_observed_fixture_file_system().unwrap();
+  let after_open = stats.snapshot();
+
+  file_system.read_dir(&file_system.root_node_id()).unwrap();
+  let after_read_dir = stats.snapshot();
+
+  assert!(after_open.read_count > 0);
+  assert!(after_read_dir.read_count > after_open.read_count * 2);
+  assert!(after_read_dir.read_bytes > after_open.read_bytes * 2);
 }

@@ -10,8 +10,9 @@ use super::{
   metadata::{VhdxDiskType, VhdxMetadata},
   parent_locator::VhdxParentLocator,
   parser::{
-    ParsedVhdx, VhdxPayloadBlockState, VhdxSectorBitmapState, bat_file_offset, parse,
-    payload_bat_index, payload_block_state, sector_bitmap_bat_index, sector_bitmap_state,
+    ParsedVhdx, VhdxBatLayout, VhdxPayloadBlockState, VhdxSectorBitmapState, bat_file_offset,
+    parse, payload_bat_index, payload_block_state, read_bat_entry, sector_bitmap_bat_index,
+    sector_bitmap_state,
   },
 };
 use crate::{
@@ -19,11 +20,16 @@ use crate::{
   SourceHints, images::Image,
 };
 
+const MAX_BLOCK_CACHE_ENTRIES: usize = 64;
+const MAX_SECTOR_BITMAP_CACHE_ENTRIES: usize = 64;
+const BLOCK_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+const SECTOR_BITMAP_CACHE_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+
 pub struct VhdxImage {
   source: DataSourceHandle,
   image_header: VhdxImageHeader,
   metadata: VhdxMetadata,
-  bat: Arc<[u64]>,
+  bat: VhdxBatLayout,
   payload_block_count: u64,
   entries_per_chunk: u64,
   sector_bitmap_size: u64,
@@ -98,6 +104,11 @@ impl VhdxImage {
   fn from_parsed(
     source: DataSourceHandle, parsed: ParsedVhdx, parent_image: Option<DataSourceHandle>,
   ) -> Result<Self> {
+    let block_size = usize::try_from(parsed.metadata.block_size)
+      .map_err(|_| Error::InvalidRange("vhdx block size is too large".to_string()))?;
+    let sector_bitmap_size = usize::try_from(parsed.sector_bitmap_size)
+      .map_err(|_| Error::InvalidRange("vhdx sector bitmap size is too large".to_string()))?;
+
     Ok(Self {
       source,
       image_header: parsed.image_header,
@@ -107,8 +118,16 @@ impl VhdxImage {
       entries_per_chunk: parsed.entries_per_chunk,
       sector_bitmap_size: parsed.sector_bitmap_size,
       parent_image,
-      block_cache: VhdxCache::new(64),
-      sector_bitmap_cache: VhdxCache::new(64),
+      block_cache: VhdxCache::new(bounded_cache_capacity(
+        block_size,
+        BLOCK_CACHE_BUDGET_BYTES,
+        MAX_BLOCK_CACHE_ENTRIES,
+      )),
+      sector_bitmap_cache: VhdxCache::new(bounded_cache_capacity(
+        sector_bitmap_size,
+        SECTOR_BITMAP_CACHE_BUDGET_BYTES,
+        MAX_SECTOR_BITMAP_CACHE_ENTRIES,
+      )),
     })
   }
 
@@ -133,11 +152,7 @@ impl VhdxImage {
   }
 
   fn bat_entry(&self, index: usize) -> Result<u64> {
-    self
-      .bat
-      .get(index)
-      .copied()
-      .ok_or_else(|| Error::InvalidFormat(format!("vhdx BAT entry {index} is out of bounds")))
+    read_bat_entry(self.source.as_ref(), &self.bat, index)
   }
 
   fn payload_entry(&self, block_index: u64) -> Result<u64> {
@@ -213,6 +228,14 @@ impl VhdxImage {
     }
     Ok(())
   }
+}
+
+fn bounded_cache_capacity(entry_size: usize, byte_budget: usize, max_entries: usize) -> usize {
+  if entry_size == 0 || max_entries == 0 {
+    return 1;
+  }
+
+  (byte_budget / entry_size).max(1).min(max_entries)
 }
 
 impl DataSource for VhdxImage {
@@ -433,6 +456,18 @@ mod tests {
     Arc::new(MemDataSource {
       data: std::fs::read(path).unwrap(),
     })
+  }
+
+  #[test]
+  fn scales_cache_capacity_to_the_vhdx_block_budget() {
+    assert_eq!(
+      bounded_cache_capacity(8 * 1024 * 1024, BLOCK_CACHE_BUDGET_BYTES, 64),
+      8
+    );
+    assert_eq!(
+      bounded_cache_capacity(256 * 1024 * 1024, BLOCK_CACHE_BUDGET_BYTES, 64),
+      1
+    );
   }
 
   fn md5_hex(data: &[u8]) -> String {

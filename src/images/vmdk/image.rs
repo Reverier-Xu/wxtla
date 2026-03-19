@@ -5,7 +5,7 @@ use std::{io::Read, sync::Arc};
 use super::{
   DESCRIPTOR,
   cache::VmdkCache,
-  constants,
+  constants::{self, MAX_DESCRIPTOR_FILE_SIZE},
   cowd_header::VmdkCowdHeader,
   descriptor::{
     VmdkDescriptor, VmdkDescriptorExtent, VmdkExtentAccessMode, VmdkExtentType, VmdkFileType,
@@ -21,6 +21,9 @@ use crate::{
   RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SliceDataSource,
   SourceHints, SourceIdentity, images::Image,
 };
+
+const MAX_GRAIN_CACHE_ENTRIES: usize = 64;
+const GRAIN_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct VmdkImage {
   descriptor: VmdkDescriptor,
@@ -40,7 +43,6 @@ struct VmdkSparseBackend {
   source: DataSourceHandle,
   header: VmdkSparseHeader,
   grain_directory: Arc<[u32]>,
-  grain_table_cache: VmdkCache<Vec<u32>>,
   grain_cache: VmdkCache<Vec<u8>>,
   parent_source: Option<DataSourceHandle>,
 }
@@ -53,7 +55,6 @@ struct VmdkCowdBackend {
   source: DataSourceHandle,
   header: VmdkCowdHeader,
   grain_directory: Arc<[u32]>,
-  grain_table_cache: VmdkCache<Vec<u32>>,
   parent_source: Option<DataSourceHandle>,
 }
 
@@ -97,6 +98,12 @@ impl VmdkImage {
       return Self::from_cowd_parsed(source, parsed, parent_source);
     }
 
+    let descriptor_size = source.size()?;
+    if descriptor_size > MAX_DESCRIPTOR_FILE_SIZE {
+      return Err(Error::InvalidFormat(format!(
+        "vmdk descriptor file exceeds the supported size limit of {MAX_DESCRIPTOR_FILE_SIZE} bytes"
+      )));
+    }
     let descriptor = VmdkDescriptor::from_bytes(&source.read_all()?)?;
     Self::from_descriptor(descriptor, hints)
   }
@@ -106,6 +113,12 @@ impl VmdkImage {
     descriptor: VmdkDescriptor, parent_source: Option<DataSourceHandle>,
   ) -> Result<Self> {
     let has_backing_chain = parent_source.is_some();
+    let grain_cache_capacity = bounded_cache_capacity(
+      usize::try_from(header.grain_size_bytes()?)
+        .map_err(|_| Error::InvalidRange("vmdk grain size is too large".to_string()))?,
+      GRAIN_CACHE_BUDGET_BYTES,
+      MAX_GRAIN_CACHE_ENTRIES,
+    );
 
     Ok(Self {
       size: header.virtual_size_bytes()?,
@@ -116,8 +129,7 @@ impl VmdkImage {
         source,
         header,
         grain_directory,
-        grain_table_cache: VmdkCache::new(64),
-        grain_cache: VmdkCache::new(64),
+        grain_cache: VmdkCache::new(grain_cache_capacity),
         parent_source,
       }),
     })
@@ -152,7 +164,6 @@ impl VmdkImage {
         source,
         header: parsed.header,
         grain_directory: parsed.grain_directory,
-        grain_table_cache: VmdkCache::new(64),
         parent_source,
       }),
     })
@@ -289,9 +300,9 @@ impl VmdkImage {
     self.descriptor.content_id
   }
 
-  fn read_sparse_grain_table(
-    backend: &VmdkSparseBackend, directory_index: u64,
-  ) -> Result<Option<Arc<Vec<u32>>>> {
+  fn read_sparse_grain_entry(
+    backend: &VmdkSparseBackend, directory_index: u64, table_index: usize,
+  ) -> Result<Option<u32>> {
     let raw_sector =
       *backend
         .grain_directory
@@ -308,32 +319,24 @@ impl VmdkImage {
       return Ok(None);
     }
 
-    backend
-      .grain_table_cache
-      .get_or_load(directory_index, || {
-        let offset = u64::from(raw_sector)
-          .checked_mul(constants::BYTES_PER_SECTOR)
-          .ok_or_else(|| Error::InvalidRange("vmdk grain-table offset overflow".to_string()))?;
-        let byte_count = grain_table_entry_count(backend.header)
-          .checked_mul(4)
-          .ok_or_else(|| Error::InvalidRange("vmdk grain-table size overflow".to_string()))?;
-        let raw = backend.source.read_bytes_at(
-          offset,
-          usize::try_from(byte_count)
-            .map_err(|_| Error::InvalidRange("vmdk grain-table size is too large".to_string()))?,
-        )?;
-        let entries = raw
-          .chunks_exact(4)
-          .map(|chunk| Ok(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])))
-          .collect::<Result<Vec<_>>>()?;
-        Ok(Arc::new(entries))
+    let entry_offset = u64::from(raw_sector)
+      .checked_mul(constants::BYTES_PER_SECTOR)
+      .and_then(|offset| {
+        u64::try_from(table_index)
+          .ok()
+          .and_then(|index| index.checked_mul(4))
+          .and_then(|index_offset| offset.checked_add(index_offset))
       })
-      .map(Some)
+      .ok_or_else(|| Error::InvalidRange("vmdk grain-table entry offset overflow".to_string()))?;
+    let mut entry = [0u8; 4];
+    backend.source.read_exact_at(entry_offset, &mut entry)?;
+
+    Ok(Some(u32::from_le_bytes(entry)))
   }
 
-  fn read_cowd_grain_table(
-    backend: &VmdkCowdBackend, directory_index: u64,
-  ) -> Result<Option<Arc<Vec<u32>>>> {
+  fn read_cowd_grain_entry(
+    backend: &VmdkCowdBackend, directory_index: u64, table_index: usize,
+  ) -> Result<Option<u32>> {
     let raw_sector = *backend
       .grain_directory
       .get(usize::try_from(directory_index).map_err(|_| {
@@ -348,30 +351,21 @@ impl VmdkImage {
       return Ok(None);
     }
 
-    backend
-      .grain_table_cache
-      .get_or_load(directory_index, || {
-        let offset = u64::from(raw_sector)
-          .checked_mul(constants::BYTES_PER_SECTOR)
-          .ok_or_else(|| {
-            Error::InvalidRange("vmdk cowd grain-table offset overflow".to_string())
-          })?;
-        let byte_count = cowd_grain_table_entry_count()
-          .checked_mul(4)
-          .ok_or_else(|| Error::InvalidRange("vmdk cowd grain-table size overflow".to_string()))?;
-        let raw = backend.source.read_bytes_at(
-          offset,
-          usize::try_from(byte_count).map_err(|_| {
-            Error::InvalidRange("vmdk cowd grain-table size is too large".to_string())
-          })?,
-        )?;
-        let entries = raw
-          .chunks_exact(4)
-          .map(|chunk| Ok(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])))
-          .collect::<Result<Vec<_>>>()?;
-        Ok(Arc::new(entries))
+    let entry_offset = u64::from(raw_sector)
+      .checked_mul(constants::BYTES_PER_SECTOR)
+      .and_then(|offset| {
+        u64::try_from(table_index)
+          .ok()
+          .and_then(|index| index.checked_mul(4))
+          .and_then(|index_offset| offset.checked_add(index_offset))
       })
-      .map(Some)
+      .ok_or_else(|| {
+        Error::InvalidRange("vmdk cowd grain-table entry offset overflow".to_string())
+      })?;
+    let mut entry = [0u8; 4];
+    backend.source.read_exact_at(entry_offset, &mut entry)?;
+
+    Ok(Some(u32::from_le_bytes(entry)))
   }
 
   fn read_compressed_sparse_grain(
@@ -459,7 +453,7 @@ impl VmdkImage {
       )
       .map_err(|_| Error::InvalidRange("vmdk read chunk is too large".to_string()))?;
 
-      match Self::read_sparse_grain_table(backend, directory_index)? {
+      match Self::read_sparse_grain_entry(backend, directory_index, table_index)? {
         None => {
           fill_from_parent_or_zero(
             backend.parent_source.as_ref(),
@@ -467,10 +461,7 @@ impl VmdkImage {
             &mut buf[copied..copied + available],
           )?;
         }
-        Some(table) => {
-          let grain_sector = *table.get(table_index).ok_or_else(|| {
-            Error::InvalidFormat("vmdk grain table does not cover the requested grain".to_string())
-          })?;
+        Some(grain_sector) => {
           if grain_sector == 0 || (backend.header.uses_zero_grain_entries() && grain_sector == 1) {
             fill_from_parent_or_zero(
               backend.parent_source.as_ref(),
@@ -581,7 +572,7 @@ impl VmdkImage {
       )
       .map_err(|_| Error::InvalidRange("vmdk read chunk is too large".to_string()))?;
 
-      match Self::read_cowd_grain_table(backend, directory_index)? {
+      match Self::read_cowd_grain_entry(backend, directory_index, table_index)? {
         None => {
           fill_from_parent_or_zero(
             backend.parent_source.as_ref(),
@@ -589,12 +580,7 @@ impl VmdkImage {
             &mut buf[copied..copied + available],
           )?;
         }
-        Some(table) => {
-          let grain_sector = *table.get(table_index).ok_or_else(|| {
-            Error::InvalidFormat(
-              "vmdk cowd grain table does not cover the requested grain".to_string(),
-            )
-          })?;
+        Some(grain_sector) => {
           if grain_sector == 0 {
             fill_from_parent_or_zero(
               backend.parent_source.as_ref(),
@@ -696,6 +682,14 @@ fn fill_from_parent_or_zero(
   }
 
   Ok(())
+}
+
+fn bounded_cache_capacity(entry_size: usize, byte_budget: usize, max_entries: usize) -> usize {
+  if entry_size == 0 || max_entries == 0 {
+    return 1;
+  }
+
+  (byte_budget / entry_size).max(1).min(max_entries)
 }
 
 fn validate_descriptor_file_type(file_type: VmdkFileType) -> Result<()> {
@@ -1085,6 +1079,22 @@ mod tests {
     Arc::new(MemDataSource {
       data: std::fs::read(path).unwrap(),
     })
+  }
+
+  #[test]
+  fn scales_grain_cache_capacity_to_the_byte_budget() {
+    assert_eq!(
+      bounded_cache_capacity(64 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
+      64
+    );
+    assert_eq!(
+      bounded_cache_capacity(8 * 1024 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
+      8
+    );
+    assert_eq!(
+      bounded_cache_capacity(256 * 1024 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
+      1
+    );
   }
 
   const TEST_GRAIN_SECTORS: u64 = 8;

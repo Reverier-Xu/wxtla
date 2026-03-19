@@ -8,18 +8,23 @@ use super::{
   constants::DEFAULT_SECTOR_SIZE,
   dynamic_header::VhdDynamicHeader,
   footer::{VhdDiskType, VhdFooter},
-  parser::{ParsedVhd, parse},
+  parser::{ParsedVhd, VhdBatLayout, parse},
 };
 use crate::{
   DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
   SourceHints, images::Image,
 };
 
+const MAX_BITMAP_CACHE_ENTRIES: usize = 64;
+const MAX_BLOCK_CACHE_ENTRIES: usize = 64;
+const BITMAP_CACHE_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+const BLOCK_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
 pub struct VhdImage {
   source: DataSourceHandle,
   footer: VhdFooter,
   dynamic_header: Option<VhdDynamicHeader>,
-  bat: Arc<[u32]>,
+  bat: VhdBatLayout,
   parent_locator_paths: Arc<[String]>,
   parent_image: Option<DataSourceHandle>,
   bitmap_cache: VhdCache<Vec<u8>>,
@@ -81,6 +86,28 @@ impl VhdImage {
   fn from_parsed(
     source: DataSourceHandle, parsed: ParsedVhd, parent_image: Option<DataSourceHandle>,
   ) -> Result<Self> {
+    let (bitmap_cache_capacity, block_cache_capacity) = if let Some(header) = &parsed.dynamic_header
+    {
+      let bitmap_size = usize::try_from(header.sector_bitmap_size()?)
+        .map_err(|_| Error::InvalidRange("vhd sector bitmap size is too large".to_string()))?;
+      let block_size = usize::try_from(header.block_size)
+        .map_err(|_| Error::InvalidRange("vhd block size is too large".to_string()))?;
+      (
+        bounded_cache_capacity(
+          bitmap_size,
+          BITMAP_CACHE_BUDGET_BYTES,
+          MAX_BITMAP_CACHE_ENTRIES,
+        ),
+        bounded_cache_capacity(
+          block_size,
+          BLOCK_CACHE_BUDGET_BYTES,
+          MAX_BLOCK_CACHE_ENTRIES,
+        ),
+      )
+    } else {
+      (1, 1)
+    };
+
     Ok(Self {
       source,
       footer: parsed.footer,
@@ -88,8 +115,8 @@ impl VhdImage {
       bat: parsed.block_allocation_table,
       parent_locator_paths: Arc::from(parsed.parent_locator_paths),
       parent_image,
-      bitmap_cache: VhdCache::new(64),
-      block_cache: VhdCache::new(64),
+      bitmap_cache: VhdCache::new(bitmap_cache_capacity),
+      block_cache: VhdCache::new(block_cache_capacity),
     })
   }
 
@@ -105,6 +132,27 @@ impl VhdImage {
     &self.parent_locator_paths
   }
 
+  fn bat_entry(&self, block_index: u64) -> Result<u32> {
+    if block_index >= u64::from(self.bat.entry_count) {
+      return Err(Error::InvalidRange(format!(
+        "vhd block index {block_index} is out of bounds"
+      )));
+    }
+    let entry_offset = self
+      .bat
+      .file_offset
+      .checked_add(
+        block_index
+          .checked_mul(4)
+          .ok_or_else(|| Error::InvalidRange("vhd BAT entry offset overflow".to_string()))?,
+      )
+      .ok_or_else(|| Error::InvalidRange("vhd BAT entry offset overflow".to_string()))?;
+    let mut data = [0u8; 4];
+    self.source.read_exact_at(entry_offset, &mut data)?;
+
+    Ok(u32::from_be_bytes(data))
+  }
+
   fn read_bitmap(&self, block_index: u64) -> Result<Arc<Vec<u8>>> {
     let header = self
       .dynamic_header
@@ -112,15 +160,7 @@ impl VhdImage {
       .ok_or_else(|| Error::InvalidFormat("vhd dynamic header is missing".to_string()))?;
     let sector_bitmap_size = usize::try_from(header.sector_bitmap_size()?)
       .map_err(|_| Error::InvalidRange("vhd sector bitmap size is too large".to_string()))?;
-    let bat_entry = *self
-      .bat
-      .get(
-        usize::try_from(block_index)
-          .map_err(|_| Error::InvalidRange("vhd block index conversion overflow".to_string()))?,
-      )
-      .ok_or_else(|| {
-        Error::InvalidRange(format!("vhd block index {block_index} is out of bounds"))
-      })?;
+    let bat_entry = self.bat_entry(block_index)?;
     if bat_entry == u32::MAX {
       return Err(Error::InvalidFormat(
         "vhd sparse block bitmap was requested".to_string(),
@@ -143,15 +183,7 @@ impl VhdImage {
       .dynamic_header
       .as_ref()
       .ok_or_else(|| Error::InvalidFormat("vhd dynamic header is missing".to_string()))?;
-    let bat_entry = *self
-      .bat
-      .get(
-        usize::try_from(block_index)
-          .map_err(|_| Error::InvalidRange("vhd block index conversion overflow".to_string()))?,
-      )
-      .ok_or_else(|| {
-        Error::InvalidRange(format!("vhd block index {block_index} is out of bounds"))
-      })?;
+    let bat_entry = self.bat_entry(block_index)?;
     if bat_entry == u32::MAX {
       return Ok(None);
     }
@@ -171,6 +203,14 @@ impl VhdImage {
       })
       .map(Some)
   }
+}
+
+fn bounded_cache_capacity(entry_size: usize, byte_budget: usize, max_entries: usize) -> usize {
+  if entry_size == 0 || max_entries == 0 {
+    return 1;
+  }
+
+  (byte_budget / entry_size).max(1).min(max_entries)
 }
 
 impl DataSource for VhdImage {
@@ -375,6 +415,18 @@ mod tests {
     Arc::new(MemDataSource {
       data: std::fs::read(path).unwrap(),
     })
+  }
+
+  #[test]
+  fn scales_cache_capacity_to_the_block_budget() {
+    assert_eq!(
+      bounded_cache_capacity(2 * 1024 * 1024, BLOCK_CACHE_BUDGET_BYTES, 64),
+      32
+    );
+    assert_eq!(
+      bounded_cache_capacity(128 * 1024 * 1024, BLOCK_CACHE_BUDGET_BYTES, 64),
+      1
+    );
   }
 
   #[test]

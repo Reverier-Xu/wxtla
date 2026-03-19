@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+  collections::HashMap,
+  sync::{Arc, Mutex},
+};
 
 use super::{
   DESCRIPTOR,
@@ -39,6 +42,7 @@ struct XfsAgi {
 pub struct XfsFileSystem {
   source: DataSourceHandle,
   superblock: XfsSuperblock,
+  inode_chunk_cache: Mutex<HashMap<u64, Arc<[u32]>>>,
 }
 
 impl XfsFileSystem {
@@ -48,7 +52,11 @@ impl XfsFileSystem {
 
   pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let superblock = XfsSuperblock::read(source.as_ref())?;
-    Ok(Self { source, superblock })
+    Ok(Self {
+      source,
+      superblock,
+      inode_chunk_cache: Mutex::new(HashMap::new()),
+    })
   }
 
   pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<XfsNodeDetails> {
@@ -124,11 +132,52 @@ impl XfsFileSystem {
   }
 
   fn inode_chunk_exists(&self, agno: u64, agino: u64) -> Result<bool> {
-    let agi = self.read_agi(agno)?;
-    if agi.root == 0 || agi.level == 0 {
+    let chunk_starts = self.load_inode_chunk_starts(agno)?;
+    let agino = u32::try_from(agino)
+      .map_err(|_| Error::InvalidRange("xfs AG inode index is too large".to_string()))?;
+    let Some(index) = chunk_starts
+      .partition_point(|startino| *startino <= agino)
+      .checked_sub(1)
+    else {
       return Ok(false);
+    };
+    let startino = u64::from(chunk_starts[index]);
+
+    Ok(u64::from(agino) < startino.saturating_add(INODES_PER_CHUNK))
+  }
+
+  fn load_inode_chunk_starts(&self, agno: u64) -> Result<Arc<[u32]>> {
+    if let Some(chunk_starts) = self
+      .inode_chunk_cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(&agno)
+      .cloned()
+    {
+      return Ok(chunk_starts);
     }
-    self.search_inobt_for_agino(agno, u64::from(agi.root), agino, 0)
+
+    let agi = self.read_agi(agno)?;
+    let loaded = if agi.root == 0 || agi.level == 0 {
+      Arc::<[u32]>::from(Vec::<u32>::new().into_boxed_slice())
+    } else {
+      let mut chunk_starts = Vec::new();
+      self.collect_inode_chunk_starts(agno, u64::from(agi.root), 0, &mut chunk_starts)?;
+      chunk_starts.sort_unstable();
+      chunk_starts.dedup();
+      Arc::from(chunk_starts.into_boxed_slice())
+    };
+
+    let mut cache = self
+      .inode_chunk_cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(chunk_starts) = cache.get(&agno).cloned() {
+      return Ok(chunk_starts);
+    }
+    cache.insert(agno, loaded.clone());
+
+    Ok(loaded)
   }
 
   fn read_agi(&self, agno: u64) -> Result<XfsAgi> {
@@ -157,9 +206,9 @@ impl XfsFileSystem {
     })
   }
 
-  fn search_inobt_for_agino(
-    &self, agno: u64, agbno: u64, agino: u64, depth: usize,
-  ) -> Result<bool> {
+  fn collect_inode_chunk_starts(
+    &self, agno: u64, agbno: u64, depth: usize, out: &mut Vec<u32>,
+  ) -> Result<()> {
     if depth > 128 {
       return Err(Error::InvalidFormat(
         "xfs inode btree recursion depth exceeded".to_string(),
@@ -193,12 +242,9 @@ impl XfsFileSystem {
     if level == 0 {
       for index in 0..nrecs {
         let record = read_slice(&block, header_size + index * 16, 16)?;
-        let startino = u64::from(be_u32(&record[0..4]));
-        if agino >= startino && agino < startino + INODES_PER_CHUNK {
-          return Ok(true);
-        }
+        out.push(be_u32(&record[0..4]));
       }
-      return Ok(false);
+      return Ok(());
     }
 
     let records_data_size = block.len() - header_size;
@@ -209,22 +255,13 @@ impl XfsFileSystem {
       ));
     }
 
-    let mut record_index = 0usize;
     for index in 0..nrecs {
-      let key = u64::from(be_u32(read_slice(&block, header_size + index * 4, 4)?));
-      if agino < key {
-        break;
-      }
-      record_index += 1;
+      let ptr_offset = header_size + (pairs + index) * 4;
+      let child = u64::from(be_u32(read_slice(&block, ptr_offset, 4)?));
+      self.collect_inode_chunk_starts(agno, child, depth + 1, out)?;
     }
 
-    if record_index == 0 {
-      return Ok(false);
-    }
-
-    let ptr_offset = header_size + (pairs + record_index - 1) * 4;
-    let child = u64::from(be_u32(read_slice(&block, ptr_offset, 4)?));
-    self.search_inobt_for_agino(agno, child, agino, depth + 1)
+    Ok(())
   }
 
   fn read_symlink_target(&self, inode: &XfsInode, inode_number: u64) -> Result<String> {
@@ -553,4 +590,93 @@ fn decode_node_id(node_id: &FileSystemNodeId) -> Result<u64> {
   let mut raw = [0u8; 8];
   raw.copy_from_slice(bytes);
   Ok(u64::from_le_bytes(raw))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    collections::HashMap,
+    sync::{
+      Arc, Mutex,
+      atomic::{AtomicUsize, Ordering},
+    },
+  };
+
+  use super::*;
+  use crate::DataSource;
+
+  struct CountingDataSource {
+    data: Vec<u8>,
+    reads: AtomicUsize,
+  }
+
+  impl DataSource for CountingDataSource {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+      self.reads.fetch_add(1, Ordering::Relaxed);
+      let offset = usize::try_from(offset)
+        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+      if offset >= self.data.len() {
+        return Ok(0);
+      }
+      let read = buf.len().min(self.data.len() - offset);
+      buf[..read].copy_from_slice(&self.data[offset..offset + read]);
+      Ok(read)
+    }
+
+    fn size(&self) -> Result<u64> {
+      Ok(self.data.len() as u64)
+    }
+  }
+
+  #[test]
+  fn caches_inode_chunk_lookups_per_allocation_group() {
+    let source = Arc::new(CountingDataSource {
+      data: synthetic_inode_btree_source(),
+      reads: AtomicUsize::new(0),
+    });
+    let filesystem = XfsFileSystem {
+      source: source.clone(),
+      superblock: test_superblock(),
+      inode_chunk_cache: Mutex::new(HashMap::new()),
+    };
+
+    assert_eq!(filesystem.inode_offset(64).unwrap(), 32_768);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 2);
+
+    assert_eq!(filesystem.inode_offset(80).unwrap(), 40_960);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 2);
+  }
+
+  fn test_superblock() -> XfsSuperblock {
+    XfsSuperblock {
+      block_size: 4096,
+      sector_size: 512,
+      inode_size: 512,
+      inodes_per_block_log2: 3,
+      ag_blocks: 32,
+      ag_count: 1,
+      root_ino: 64,
+      format_version: 5,
+      secondary_feature_flags: 0,
+      dir_block_size: 4096,
+      relative_block_bits: 5,
+      relative_inode_bits: 8,
+    }
+  }
+
+  fn synthetic_inode_btree_source() -> Vec<u8> {
+    let mut data = vec![0u8; 5 * 4096];
+
+    data[1024..1028].copy_from_slice(b"XAGI");
+    data[1044..1048].copy_from_slice(&4u32.to_be_bytes());
+    data[1048..1052].copy_from_slice(&1u32.to_be_bytes());
+
+    let block = &mut data[4 * 4096..5 * 4096];
+    block[0..4].copy_from_slice(INOBT_SIG_V5);
+    block[4..6].copy_from_slice(&0u16.to_be_bytes());
+    block[6..8].copy_from_slice(&1u16.to_be_bytes());
+    block[56..60].copy_from_slice(&64u32.to_be_bytes());
+
+    data
+  }
 }

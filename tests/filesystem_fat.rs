@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use support::{FileDataSource, fixture_path};
 use wxtla::{
-  DataSourceHandle,
+  DataSourceHandle, DataSourceReadStats, ObservedDataSource,
   filesystems::{DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, fat::FatDriver},
   images::qcow::QcowDriver,
 };
@@ -14,6 +14,18 @@ fn open_raw_fixture_file_system(
 ) -> wxtla::Result<wxtla::filesystems::fat::FatFileSystem> {
   let source: DataSourceHandle = Arc::new(FileDataSource::open(fixture_path(relative_path))?);
   FatDriver::open(source)
+}
+
+fn open_observed_raw_fixture_file_system(
+  relative_path: &str,
+) -> wxtla::Result<(wxtla::filesystems::fat::FatFileSystem, DataSourceReadStats)> {
+  let observed = Arc::new(ObservedDataSource::new(Arc::new(FileDataSource::open(
+    fixture_path(relative_path),
+  )?)));
+  let stats = observed.stats();
+  let source: DataSourceHandle = observed;
+
+  Ok((FatDriver::open(source)?, stats))
 }
 
 fn open_qcow_fixture_file_system(
@@ -162,4 +174,30 @@ fn fat16_and_fat32_qcow_fixtures_open_and_read_files() {
       "fixture: {relative_path}"
     );
   }
+}
+
+#[test]
+fn fat_open_defers_subdirectory_scans_until_requested() {
+  let (file_system, stats) = open_observed_raw_fixture_file_system("fat/fat12.raw").unwrap();
+  let after_open = stats.snapshot();
+  let root_id = file_system.root_node_id();
+
+  let root_entries = file_system.read_dir(&root_id).unwrap();
+  let after_root = stats.snapshot();
+  let testdir_entry = root_entries
+    .into_iter()
+    .find(|entry| entry.name == "testdir1")
+    .unwrap();
+
+  file_system.read_dir(&testdir_entry.node_id).unwrap();
+  let after_subdir = stats.snapshot();
+
+  file_system.read_dir(&testdir_entry.node_id).unwrap();
+  let after_cached = stats.snapshot();
+
+  assert_eq!(after_root.read_count, after_open.read_count);
+  assert_eq!(after_root.read_bytes, after_open.read_bytes);
+  assert!(after_subdir.read_count > after_root.read_count);
+  assert_eq!(after_cached.read_count, after_subdir.read_count);
+  assert_eq!(after_cached.read_bytes, after_subdir.read_bytes);
 }

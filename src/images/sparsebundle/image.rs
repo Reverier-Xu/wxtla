@@ -1,17 +1,46 @@
 //! Read-only sparsebundle image surface.
 
-use std::sync::Arc;
+use std::{
+  collections::{HashMap, VecDeque},
+  sync::{Arc, Mutex},
+};
 
 use super::{DESCRIPTOR, parser::parse_info_plist};
 use crate::{
   DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, RelatedPathBuf,
-  RelatedSourcePurpose, RelatedSourceRequest, Result, SourceHints, images::Image,
+  RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SourceHints,
+  images::Image,
 };
+
+const BAND_CACHE_CAPACITY: usize = 64;
 
 pub struct SparseBundleImage {
   band_size: u64,
   media_size: u64,
-  band_sources: Arc<[Option<DataSourceHandle>]>,
+  bands: SparseBundleBands,
+}
+
+enum SparseBundleBands {
+  Eager(HashMap<u64, SparseBundleBand>),
+  Lazy(SparseBundleLazyBands),
+}
+
+#[derive(Clone)]
+struct SparseBundleBand {
+  source: DataSourceHandle,
+  size: u64,
+}
+
+struct SparseBundleLazyBands {
+  resolver: Arc<dyn RelatedSourceResolver>,
+  bands_root: RelatedPathBuf,
+  cache: Mutex<SparseBundleBandCacheState>,
+}
+
+#[derive(Default)]
+struct SparseBundleBandCacheState {
+  order: VecDeque<u64>,
+  bands: HashMap<u64, Option<SparseBundleBand>>,
 }
 
 impl SparseBundleImage {
@@ -22,11 +51,6 @@ impl SparseBundleImage {
   }
 
   pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
-    let resolver = hints.resolver().ok_or_else(|| {
-      Error::InvalidSourceReference(
-        "sparsebundle images require a related-source resolver".to_string(),
-      )
-    })?;
     let source_identity = hints.source_identity().ok_or_else(|| {
       Error::InvalidSourceReference(
         "sparsebundle images require a source identity hint".to_string(),
@@ -39,32 +63,50 @@ impl SparseBundleImage {
         "sparsebundle source identity must have a lexical parent path".to_string(),
       )
     })?;
-    let mut band_sources = Vec::with_capacity(
-      usize::try_from(band_count)
-        .map_err(|_| Error::InvalidRange("sparsebundle band count is too large".to_string()))?,
-    );
-    for band_index in 0..band_count {
-      let band_name = format!("bands/{band_index:x}");
-      let relative = RelatedPathBuf::from_relative_path(&band_name)?;
-      let band_path = parent.join(&relative);
-      let band = resolver.resolve(&RelatedSourceRequest::new(
-        RelatedSourcePurpose::Band,
-        band_path,
-      ))?;
-      if let Some(band_source) = &band
-        && band_source.size()? > parsed.band_size
-      {
-        return Err(Error::InvalidFormat(
-          "sparsebundle band file exceeds the declared band size".to_string(),
-        ));
+    let bands = if let Some(resolver) = hints.shared_resolver() {
+      SparseBundleBands::Lazy(SparseBundleLazyBands {
+        resolver,
+        bands_root: parent.join(&RelatedPathBuf::from_relative_path("bands")?),
+        cache: Mutex::new(SparseBundleBandCacheState::default()),
+      })
+    } else {
+      let resolver = hints.resolver().ok_or_else(|| {
+        Error::InvalidSourceReference(
+          "sparsebundle images require a related-source resolver".to_string(),
+        )
+      })?;
+      let mut band_sources = HashMap::new();
+      for band_index in 0..band_count {
+        let band_name = format!("bands/{band_index:x}");
+        let relative = RelatedPathBuf::from_relative_path(&band_name)?;
+        let band_path = parent.join(&relative);
+        let band = resolver.resolve(&RelatedSourceRequest::new(
+          RelatedSourcePurpose::Band,
+          band_path,
+        ))?;
+        if let Some(band_source) = band {
+          let size = band_source.size()?;
+          if size > parsed.band_size {
+            return Err(Error::InvalidFormat(
+              "sparsebundle band file exceeds the declared band size".to_string(),
+            ));
+          }
+          band_sources.insert(
+            band_index,
+            SparseBundleBand {
+              source: band_source,
+              size,
+            },
+          );
+        }
       }
-      band_sources.push(band);
-    }
+      SparseBundleBands::Eager(band_sources)
+    };
 
     Ok(Self {
       band_size: parsed.band_size,
       media_size: parsed.media_size,
-      band_sources: Arc::from(band_sources),
+      bands,
     })
   }
 
@@ -72,17 +114,67 @@ impl SparseBundleImage {
     self.band_size
   }
 
-  fn band_source(&self, band_index: u64) -> Result<Option<DataSourceHandle>> {
-    Ok(
-      self
-        .band_sources
-        .get(
-          usize::try_from(band_index)
-            .map_err(|_| Error::InvalidRange("sparsebundle band index is too large".to_string()))?,
-        )
-        .cloned()
-        .flatten(),
-    )
+  fn band_source(&self, band_index: u64) -> Result<Option<SparseBundleBand>> {
+    match &self.bands {
+      SparseBundleBands::Eager(bands) => Ok(bands.get(&band_index).cloned()),
+      SparseBundleBands::Lazy(bands) => bands.get_or_resolve(band_index, self.band_size),
+    }
+  }
+}
+
+impl SparseBundleLazyBands {
+  fn get_or_resolve(&self, band_index: u64, band_size: u64) -> Result<Option<SparseBundleBand>> {
+    if let Some(cached) = self
+      .cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .bands
+      .get(&band_index)
+      .cloned()
+    {
+      return Ok(cached);
+    }
+
+    let resolved = self.resolve_band(band_index, band_size)?;
+
+    let mut state = self
+      .cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = state.bands.get(&band_index).cloned() {
+      return Ok(cached);
+    }
+    if state.order.len() >= BAND_CACHE_CAPACITY
+      && let Some(evicted) = state.order.pop_front()
+    {
+      state.bands.remove(&evicted);
+    }
+    state.order.push_back(band_index);
+    state.bands.insert(band_index, resolved.clone());
+
+    Ok(resolved)
+  }
+
+  fn resolve_band(&self, band_index: u64, band_size: u64) -> Result<Option<SparseBundleBand>> {
+    let relative = RelatedPathBuf::from_relative_path(&format!("{band_index:x}"))?;
+    let band_path = self.bands_root.join(&relative);
+    let band = self.resolver.resolve(&RelatedSourceRequest::new(
+      RelatedSourcePurpose::Band,
+      band_path,
+    ))?;
+
+    band
+      .map(|source| {
+        let size = source.size()?;
+        if size > band_size {
+          return Err(Error::InvalidFormat(
+            "sparsebundle band file exceeds the declared band size".to_string(),
+          ));
+        }
+
+        Ok(SparseBundleBand { source, size })
+      })
+      .transpose()
   }
 }
 
@@ -111,15 +203,16 @@ impl DataSource for SparseBundleImage {
       .map_err(|_| Error::InvalidRange("sparsebundle read chunk is too large".to_string()))?;
 
       match self.band_source(band_index)? {
-        Some(band_source) => {
-          let band_size = band_source.size()?;
-          if within_band >= band_size {
+        Some(band) => {
+          if within_band >= band.size {
             buf[copied..copied + available].fill(0);
           } else {
-            let readable = usize::try_from(band_size - within_band)
+            let readable = usize::try_from(band.size - within_band)
               .map_err(|_| Error::InvalidRange("sparsebundle band tail is too large".to_string()))?
               .min(available);
-            band_source.read_exact_at(within_band, &mut buf[copied..copied + readable])?;
+            band
+              .source
+              .read_exact_at(within_band, &mut buf[copied..copied + readable])?;
             if readable < available {
               buf[copied + readable..copied + available].fill(0);
             }
@@ -171,7 +264,14 @@ impl Image for SparseBundleImage {
 
 #[cfg(test)]
 mod tests {
-  use std::{collections::HashMap, path::Path, sync::Arc};
+  use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{
+      Arc,
+      atomic::{AtomicUsize, Ordering},
+    },
+  };
 
   use super::*;
   use crate::{RelatedSourceResolver, SourceIdentity};
@@ -201,8 +301,20 @@ mod tests {
     files: HashMap<String, DataSourceHandle>,
   }
 
+  struct CountingResolver {
+    files: HashMap<String, DataSourceHandle>,
+    calls: AtomicUsize,
+  }
+
   impl RelatedSourceResolver for Resolver {
     fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+      Ok(self.files.get(&request.path.to_string()).cloned())
+    }
+  }
+
+  impl RelatedSourceResolver for CountingResolver {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+      self.calls.fetch_add(1, Ordering::Relaxed);
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
@@ -303,6 +415,45 @@ mod tests {
     let mut expected = vec![0xA5; 1024];
     expected.extend_from_slice(&vec![0; 1024]);
     assert_eq!(image.read_all().unwrap(), expected);
+  }
+
+  #[test]
+  fn shared_resolver_defers_and_caches_band_resolution() {
+    let resolver = Arc::new(CountingResolver {
+      files: HashMap::from([(
+        "bundle/bands/0".to_string(),
+        Arc::new(MemDataSource {
+          data: vec![0xA5; 1024],
+        }) as DataSourceHandle,
+      )]),
+      calls: AtomicUsize::new(0),
+    });
+    let shared_resolver: Arc<dyn RelatedSourceResolver> = resolver.clone();
+    let identity = SourceIdentity::from_relative_path("bundle/Info.plist").unwrap();
+    let image = SparseBundleImage::open_with_hints(
+      sparsebundle_info_plist(1024, 2048),
+      SourceHints::new()
+        .with_shared_resolver(&shared_resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+    let mut buf = [0u8; 128];
+
+    assert_eq!(resolver.calls.load(Ordering::Relaxed), 0);
+
+    image.read_exact_at(128, &mut buf).unwrap();
+    assert_eq!(resolver.calls.load(Ordering::Relaxed), 1);
+    assert_eq!(buf, [0xA5; 128]);
+
+    image.read_exact_at(512, &mut buf).unwrap();
+    assert_eq!(resolver.calls.load(Ordering::Relaxed), 1);
+
+    image.read_exact_at(1408, &mut buf).unwrap();
+    assert_eq!(resolver.calls.load(Ordering::Relaxed), 2);
+    assert_eq!(buf, [0u8; 128]);
+
+    image.read_exact_at(1664, &mut buf).unwrap();
+    assert_eq!(resolver.calls.load(Ordering::Relaxed), 2);
   }
 
   #[test]

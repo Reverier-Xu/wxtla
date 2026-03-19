@@ -2,7 +2,7 @@
 
 use std::{
   collections::{HashMap, HashSet},
-  sync::Arc,
+  sync::{Arc, Mutex},
 };
 
 use super::{
@@ -22,16 +22,27 @@ const ATTR_LONG_NAME: u8 = 0x0F;
 const ATTR_DIRECTORY: u8 = 0x10;
 const ATTR_VOLUME_LABEL: u8 = 0x08;
 
+type FatNodeMap = HashMap<u64, Arc<FatNode>>;
+type FatChildrenMap = HashMap<u64, Arc<[DirectoryEntry]>>;
+
 pub struct FatFileSystem {
+  source: DataSourceHandle,
+  boot_sector: FatBootSector,
+  fat_table: FatTable,
   volume_label: Option<String>,
-  nodes: HashMap<u64, FatNode>,
-  children: HashMap<u64, Vec<DirectoryEntry>>,
+  state: Mutex<FatState>,
+  file_sources: Mutex<HashMap<u64, DataSourceHandle>>,
 }
 
 struct FatNode {
   record: FileSystemNodeRecord,
-  data_source: Option<DataSourceHandle>,
   details: FatNodeDetails,
+}
+
+struct FatState {
+  nodes: FatNodeMap,
+  children: FatChildrenMap,
+  next_node_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,16 +56,6 @@ pub struct FatNodeDetails {
   pub modified_time: u16,
   pub modified_date: u16,
   pub start_cluster: u32,
-}
-
-struct FatBuilder {
-  source: DataSourceHandle,
-  boot_sector: FatBootSector,
-  fat_table: FatTable,
-  volume_label: Option<String>,
-  nodes: HashMap<u64, FatNode>,
-  children: HashMap<u64, Vec<DirectoryEntry>>,
-  next_node_id: u64,
 }
 
 #[derive(Clone)]
@@ -98,7 +99,8 @@ enum FatClusterStatus {
 
 struct FatChainDataSource {
   source: DataSourceHandle,
-  cluster_offsets: Arc<[u64]>,
+  boot_sector: FatBootSector,
+  clusters: Arc<[u32]>,
   cluster_size: usize,
   size: u64,
 }
@@ -116,25 +118,19 @@ impl FatFileSystem {
       fat_type: boot_sector.fat_type,
       bytes: Arc::from(source.read_bytes_at(fat_offset, fat_size)?),
     };
-    let mut builder = FatBuilder {
-      source,
-      boot_sector,
-      fat_table,
-      volume_label: None,
+    let mut state = FatState {
       nodes: HashMap::new(),
       children: HashMap::new(),
       next_node_id: ROOT_NODE_ID + 1,
     };
-
-    builder.nodes.insert(
+    state.nodes.insert(
       ROOT_NODE_ID,
-      FatNode {
+      Arc::new(FatNode {
         record: FileSystemNodeRecord::new(
           FileSystemNodeId::from_u64(ROOT_NODE_ID),
           FileSystemNodeKind::Directory,
           0,
         ),
-        data_source: None,
         details: FatNodeDetails {
           short_name: String::new(),
           attribute_flags: ATTR_DIRECTORY,
@@ -146,23 +142,31 @@ impl FatFileSystem {
           modified_date: 0,
           start_cluster: 0,
         },
-      },
+      }),
     );
-    let root_source = match builder.boot_sector.fat_type {
+    let root_source = match boot_sector.fat_type {
       FatType::Fat12 | FatType::Fat16 => DirectorySource::Fixed {
-        offset: builder.boot_sector.root_dir_offset()?,
-        size: builder.boot_sector.root_dir_size_bytes()?,
+        offset: boot_sector.root_dir_offset()?,
+        size: boot_sector.root_dir_size_bytes()?,
       },
-      FatType::Fat32 => DirectorySource::Chain(
-        builder.follow_cluster_chain(builder.boot_sector.root_cluster, None)?,
-      ),
+      FatType::Fat32 => DirectorySource::Chain(follow_cluster_chain(
+        &fat_table,
+        &boot_sector,
+        boot_sector.root_cluster,
+        None,
+      )?),
     };
-    builder.populate_directory(ROOT_NODE_ID, root_source)?;
+    let root_listing = read_directory(source.as_ref(), &boot_sector, root_source)?;
+    let volume_label = root_listing.volume_label;
+    insert_directory_entries(&mut state, ROOT_NODE_ID, root_listing.entries)?;
 
     Ok(Self {
-      volume_label: builder.volume_label,
-      nodes: builder.nodes,
-      children: builder.children,
+      source,
+      boot_sector,
+      fat_table,
+      volume_label,
+      state: Mutex::new(state),
+      file_sources: Mutex::new(HashMap::new()),
     })
   }
 
@@ -171,12 +175,65 @@ impl FatFileSystem {
   }
 
   pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<FatNodeDetails> {
+    Ok(self.lookup_node(node_id)?.details.clone())
+  }
+
+  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<Arc<FatNode>> {
     let node_id = decode_node_id(node_id)?;
     self
+      .state
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
       .nodes
       .get(&node_id)
-      .map(|node| node.details.clone())
+      .cloned()
       .ok_or_else(|| Error::NotFound(format!("fat node {node_id} was not found")))
+  }
+
+  fn directory_children(&self, directory_id: u64, node: &FatNode) -> Result<Arc<[DirectoryEntry]>> {
+    if let Some(children) = self
+      .state
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .children
+      .get(&directory_id)
+      .cloned()
+    {
+      return Ok(children);
+    }
+
+    let source = if directory_id == ROOT_NODE_ID {
+      match self.boot_sector.fat_type {
+        FatType::Fat12 | FatType::Fat16 => DirectorySource::Fixed {
+          offset: self.boot_sector.root_dir_offset()?,
+          size: self.boot_sector.root_dir_size_bytes()?,
+        },
+        FatType::Fat32 => DirectorySource::Chain(follow_cluster_chain(
+          &self.fat_table,
+          &self.boot_sector,
+          self.boot_sector.root_cluster,
+          None,
+        )?),
+      }
+    } else {
+      DirectorySource::Chain(follow_cluster_chain(
+        &self.fat_table,
+        &self.boot_sector,
+        node.details.start_cluster,
+        None,
+      )?)
+    };
+    let listing = read_directory(self.source.as_ref(), &self.boot_sector, source)?;
+
+    let mut state = self
+      .state
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(children) = state.children.get(&directory_id).cloned() {
+      return Ok(children);
+    }
+
+    insert_directory_entries(&mut state, directory_id, listing.entries)
   }
 }
 
@@ -190,202 +247,221 @@ impl FileSystem for FatFileSystem {
   }
 
   fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
-    let node_id = decode_node_id(node_id)?;
-    self
-      .nodes
-      .get(&node_id)
-      .map(|node| node.record.clone())
-      .ok_or_else(|| Error::NotFound(format!("fat node {node_id} was not found")))
+    self.lookup_node(node_id).map(|node| node.record.clone())
   }
 
   fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
     let node_id = decode_node_id(directory_id)?;
-    let node = self
-      .nodes
-      .get(&node_id)
-      .ok_or_else(|| Error::NotFound(format!("fat node {node_id} was not found")))?;
+    let node = self.lookup_node(directory_id)?;
     if node.record.kind != FileSystemNodeKind::Directory {
       return Err(Error::NotFound(format!(
         "fat node {node_id} is not a directory"
       )));
     }
-    Ok(self.children.get(&node_id).cloned().unwrap_or_default())
+    Ok(self.directory_children(node_id, &node)?.to_vec())
   }
 
   fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
     let node_id = decode_node_id(file_id)?;
-    let node = self
-      .nodes
-      .get(&node_id)
-      .ok_or_else(|| Error::NotFound(format!("fat node {node_id} was not found")))?;
-    node
-      .data_source
-      .clone()
-      .ok_or_else(|| Error::NotFound(format!("fat node {node_id} is not a readable file")))
-  }
-}
-
-impl FatBuilder {
-  fn populate_directory(&mut self, directory_id: u64, source: DirectorySource) -> Result<()> {
-    let listing = self.read_directory(source)?;
-    if directory_id == ROOT_NODE_ID && self.volume_label.is_none() {
-      self.volume_label = listing.volume_label;
-    }
-    let mut children = Vec::with_capacity(listing.entries.len());
-
-    for entry in listing.entries {
-      let node_id = self.next_node_id;
-      self.next_node_id = self
-        .next_node_id
-        .checked_add(1)
-        .ok_or_else(|| Error::InvalidRange("fat node id overflow".to_string()))?;
-      let (data_source, size) = if entry.kind == FileSystemNodeKind::Directory {
-        (None, 0)
-      } else if entry.size == 0 {
-        (
-          Some(
-            Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as DataSourceHandle,
-          ),
-          0,
-        )
-      } else {
-        let chain = self.follow_cluster_chain(entry.start_cluster, Some(entry.size))?;
-        let cluster_offsets = chain
-          .iter()
-          .map(|cluster| self.boot_sector.cluster_offset(*cluster))
-          .collect::<Result<Vec<_>>>()?;
-        let data_source = Arc::new(FatChainDataSource {
-          source: self.source.clone(),
-          cluster_offsets: Arc::from(cluster_offsets.into_boxed_slice()),
-          cluster_size: usize::try_from(self.boot_sector.cluster_size()?)
-            .map_err(|_| Error::InvalidRange("fat cluster size is too large".to_string()))?,
-          size: entry.size,
-        }) as DataSourceHandle;
-        (Some(data_source), entry.size)
-      };
-
-      self.nodes.insert(
-        node_id,
-        FatNode {
-          record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(node_id), entry.kind, size),
-          data_source,
-          details: FatNodeDetails {
-            short_name: entry.short_name,
-            attribute_flags: entry.attribute_flags,
-            created_time: entry.created_time,
-            created_date: entry.created_date,
-            created_centiseconds: entry.created_centiseconds,
-            accessed_date: entry.accessed_date,
-            modified_time: entry.modified_time,
-            modified_date: entry.modified_date,
-            start_cluster: entry.start_cluster,
-          },
-        },
-      );
-      children.push(DirectoryEntry::new(
-        entry.name.clone(),
-        FileSystemNodeId::from_u64(node_id),
-        entry.kind,
-      ));
-
-      if entry.kind == FileSystemNodeKind::Directory {
-        let chain = self.follow_cluster_chain(entry.start_cluster, None)?;
-        self.populate_directory(node_id, DirectorySource::Chain(chain))?;
-      }
-    }
-
-    children.sort_by(|left, right| left.name.cmp(&right.name));
-    self.children.insert(directory_id, children);
-    Ok(())
-  }
-
-  fn read_directory(&self, source: DirectorySource) -> Result<FatDirectoryListing> {
-    let bytes = match source {
-      DirectorySource::Fixed { offset, size } => self.source.read_bytes_at(offset, size)?,
-      DirectorySource::Chain(chain) => self.read_cluster_chain_bytes(&chain)?,
-    };
-
-    parse_directory_entries(&bytes)
-  }
-
-  fn read_cluster_chain_bytes(&self, chain: &[u32]) -> Result<Vec<u8>> {
-    let cluster_size = usize::try_from(self.boot_sector.cluster_size()?)
-      .map_err(|_| Error::InvalidRange("fat cluster size is too large".to_string()))?;
-    let mut bytes = Vec::with_capacity(cluster_size.saturating_mul(chain.len()));
-    for cluster in chain {
-      bytes.extend_from_slice(
-        &self
-          .source
-          .read_bytes_at(self.boot_sector.cluster_offset(*cluster)?, cluster_size)?,
-      );
-    }
-    Ok(bytes)
-  }
-
-  fn follow_cluster_chain(&self, start_cluster: u32, size_hint: Option<u64>) -> Result<Vec<u32>> {
-    if let Some(size_hint) = size_hint
-      && size_hint == 0
-    {
-      return Ok(Vec::new());
-    }
-    if start_cluster < 2 {
-      return Err(Error::InvalidFormat(format!(
-        "fat cluster chains must start at cluster 2 or later, got {start_cluster}"
+    let node = self.lookup_node(file_id)?;
+    if node.record.kind != FileSystemNodeKind::File {
+      return Err(Error::NotFound(format!(
+        "fat node {node_id} is not a readable file"
       )));
     }
 
-    let cluster_size = self.boot_sector.cluster_size()?;
-    let mut chain = Vec::new();
-    let mut visited = HashSet::new();
-    let mut cluster = start_cluster;
-    let required_clusters = size_hint.map(|size| size.div_ceil(cluster_size));
+    if let Some(cached) = self
+      .file_sources
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(&node_id)
+      .cloned()
+    {
+      return Ok(cached);
+    }
 
-    loop {
-      if !visited.insert(cluster) {
-        return Err(Error::InvalidFormat(format!(
-          "fat cluster chain loops back to cluster {cluster}"
-        )));
+    let built = build_file_data_source(
+      self.source.clone(),
+      &self.boot_sector,
+      &self.fat_table,
+      node.details.start_cluster,
+      node.record.size,
+    )?;
+
+    let mut file_sources = self
+      .file_sources
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = file_sources.get(&node_id).cloned() {
+      return Ok(cached);
+    }
+    file_sources.insert(node_id, built.clone());
+
+    Ok(built)
+  }
+}
+
+fn follow_cluster_chain(
+  fat_table: &FatTable, boot_sector: &FatBootSector, start_cluster: u32, size_hint: Option<u64>,
+) -> Result<Vec<u32>> {
+  if let Some(size_hint) = size_hint
+    && size_hint == 0
+  {
+    return Ok(Vec::new());
+  }
+  if start_cluster < 2 {
+    return Err(Error::InvalidFormat(format!(
+      "fat cluster chains must start at cluster 2 or later, got {start_cluster}"
+    )));
+  }
+
+  let cluster_size = boot_sector.cluster_size()?;
+  let mut chain = Vec::new();
+  let mut visited = HashSet::new();
+  let mut cluster = start_cluster;
+  let required_clusters = size_hint.map(|size| size.div_ceil(cluster_size));
+
+  loop {
+    if !visited.insert(cluster) {
+      return Err(Error::InvalidFormat(format!(
+        "fat cluster chain loops back to cluster {cluster}"
+      )));
+    }
+    chain.push(cluster);
+
+    if required_clusters.is_some_and(|required| chain.len() as u64 >= required) {
+      break;
+    }
+
+    match fat_table.cluster_status(cluster)? {
+      FatClusterStatus::Next(next_cluster) => {
+        cluster = next_cluster;
       }
-      chain.push(cluster);
-
-      if required_clusters.is_some_and(|required| chain.len() as u64 >= required) {
+      FatClusterStatus::EndOfChain => {
         break;
       }
-
-      match self.fat_table.cluster_status(cluster)? {
-        FatClusterStatus::Next(next_cluster) => {
-          cluster = next_cluster;
-        }
-        FatClusterStatus::EndOfChain => {
-          break;
-        }
-        FatClusterStatus::Free => {
-          return Err(Error::InvalidFormat(format!(
-            "fat cluster chain unexpectedly ends at free cluster {cluster}"
-          )));
-        }
-        FatClusterStatus::Bad => {
-          return Err(Error::InvalidFormat(format!(
-            "fat cluster chain reaches bad cluster {cluster}"
-          )));
-        }
+      FatClusterStatus::Free => {
+        return Err(Error::InvalidFormat(format!(
+          "fat cluster chain unexpectedly ends at free cluster {cluster}"
+        )));
+      }
+      FatClusterStatus::Bad => {
+        return Err(Error::InvalidFormat(format!(
+          "fat cluster chain reaches bad cluster {cluster}"
+        )));
       }
     }
-
-    if let Some(size_hint) = size_hint {
-      let covered = u64::try_from(chain.len())
-        .unwrap_or(u64::MAX)
-        .checked_mul(cluster_size)
-        .ok_or_else(|| Error::InvalidRange("fat cluster coverage overflow".to_string()))?;
-      if covered < size_hint {
-        return Err(Error::InvalidFormat(
-          "fat cluster chain is shorter than the recorded file size".to_string(),
-        ));
-      }
-    }
-
-    Ok(chain)
   }
+
+  if let Some(size_hint) = size_hint {
+    let covered = u64::try_from(chain.len())
+      .unwrap_or(u64::MAX)
+      .checked_mul(cluster_size)
+      .ok_or_else(|| Error::InvalidRange("fat cluster coverage overflow".to_string()))?;
+    if covered < size_hint {
+      return Err(Error::InvalidFormat(
+        "fat cluster chain is shorter than the recorded file size".to_string(),
+      ));
+    }
+  }
+
+  Ok(chain)
+}
+
+fn insert_directory_entries(
+  state: &mut FatState, directory_id: u64, entries: Vec<FatDirectoryEntryRecord>,
+) -> Result<Arc<[DirectoryEntry]>> {
+  let mut children = Vec::with_capacity(entries.len());
+
+  for entry in entries {
+    let node_id = state.next_node_id;
+    state.next_node_id = state
+      .next_node_id
+      .checked_add(1)
+      .ok_or_else(|| Error::InvalidRange("fat node id overflow".to_string()))?;
+    let size = if entry.kind == FileSystemNodeKind::Directory {
+      0
+    } else {
+      entry.size
+    };
+
+    state.nodes.insert(
+      node_id,
+      Arc::new(FatNode {
+        record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(node_id), entry.kind, size),
+        details: FatNodeDetails {
+          short_name: entry.short_name,
+          attribute_flags: entry.attribute_flags,
+          created_time: entry.created_time,
+          created_date: entry.created_date,
+          created_centiseconds: entry.created_centiseconds,
+          accessed_date: entry.accessed_date,
+          modified_time: entry.modified_time,
+          modified_date: entry.modified_date,
+          start_cluster: entry.start_cluster,
+        },
+      }),
+    );
+    children.push(DirectoryEntry::new(
+      entry.name,
+      FileSystemNodeId::from_u64(node_id),
+      entry.kind,
+    ));
+  }
+
+  children.sort_by(|left, right| left.name.cmp(&right.name));
+  let children = Arc::<[DirectoryEntry]>::from(children.into_boxed_slice());
+  state.children.insert(directory_id, children.clone());
+
+  Ok(children)
+}
+
+fn read_directory(
+  source: &dyn DataSource, boot_sector: &FatBootSector, directory_source: DirectorySource,
+) -> Result<FatDirectoryListing> {
+  let bytes = match directory_source {
+    DirectorySource::Fixed { offset, size } => source.read_bytes_at(offset, size)?,
+    DirectorySource::Chain(chain) => read_cluster_chain_bytes(source, boot_sector, &chain)?,
+  };
+
+  parse_directory_entries(&bytes)
+}
+
+fn read_cluster_chain_bytes(
+  source: &dyn DataSource, boot_sector: &FatBootSector, chain: &[u32],
+) -> Result<Vec<u8>> {
+  let cluster_size = usize::try_from(boot_sector.cluster_size()?)
+    .map_err(|_| Error::InvalidRange("fat cluster size is too large".to_string()))?;
+  let mut bytes = Vec::with_capacity(cluster_size.saturating_mul(chain.len()));
+  for cluster in chain {
+    bytes.extend_from_slice(
+      &source.read_bytes_at(boot_sector.cluster_offset(*cluster)?, cluster_size)?,
+    );
+  }
+
+  Ok(bytes)
+}
+
+fn build_file_data_source(
+  source: DataSourceHandle, boot_sector: &FatBootSector, fat_table: &FatTable, start_cluster: u32,
+  size: u64,
+) -> Result<DataSourceHandle> {
+  if size == 0 {
+    return Ok(
+      Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as DataSourceHandle,
+    );
+  }
+
+  let chain = follow_cluster_chain(fat_table, boot_sector, start_cluster, Some(size))?;
+
+  Ok(Arc::new(FatChainDataSource {
+    source,
+    boot_sector: *boot_sector,
+    clusters: Arc::from(chain.into_boxed_slice()),
+    cluster_size: usize::try_from(boot_sector.cluster_size()?)
+      .map_err(|_| Error::InvalidRange("fat cluster size is too large".to_string()))?,
+    size,
+  }) as DataSourceHandle)
 }
 
 impl FatTable {
@@ -467,11 +543,12 @@ impl DataSource for FatChainDataSource {
         .map_err(|_| Error::InvalidRange("fat cluster index is too large".to_string()))?;
       let cluster_offset = usize::try_from(absolute % self.cluster_size as u64)
         .map_err(|_| Error::InvalidRange("fat cluster offset is too large".to_string()))?;
-      let physical_offset = *self.cluster_offsets.get(cluster_index).ok_or_else(|| {
+      let cluster = *self.clusters.get(cluster_index).ok_or_else(|| {
         Error::InvalidFormat(
           "fat file cluster chain does not cover the requested offset".to_string(),
         )
       })?;
+      let physical_offset = self.boot_sector.cluster_offset(cluster)?;
       let chunk = (self.cluster_size - cluster_offset).min(limit - written);
       self.source.read_exact_at(
         physical_offset
@@ -687,7 +764,7 @@ fn le_u32(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-  use std::path::Path;
+  use std::{path::Path, sync::Arc};
 
   use super::*;
 
@@ -762,5 +839,62 @@ mod tests {
 
     assert_eq!(listing.volume_label.as_deref(), Some("TESTVOLUME"));
     assert!(listing.entries.iter().any(|entry| entry.name == "testdir1"));
+  }
+
+  #[test]
+  fn lazily_builds_and_caches_file_sources() {
+    let source: DataSourceHandle = Arc::new(
+      crate::FileDataSource::open(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+          .join("formats")
+          .join("fat")
+          .join("fat12.raw"),
+      )
+      .unwrap(),
+    );
+    let file_system = FatFileSystem::open(source).unwrap();
+    let root_id = file_system.root_node_id();
+
+    assert!(
+      file_system
+        .file_sources
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty()
+    );
+
+    let testdir = file_system
+      .read_dir(&root_id)
+      .unwrap()
+      .into_iter()
+      .find(|entry| entry.name == "testdir1")
+      .unwrap();
+    let testfile = file_system
+      .read_dir(&testdir.node_id)
+      .unwrap()
+      .into_iter()
+      .find(|entry| entry.name == "testfile1")
+      .unwrap();
+
+    let first = file_system.open_file(&testfile.node_id).unwrap();
+    assert_eq!(
+      file_system
+        .file_sources
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len(),
+      1
+    );
+
+    let second = file_system.open_file(&testfile.node_id).unwrap();
+    assert_eq!(
+      file_system
+        .file_sources
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len(),
+      1
+    );
+    assert!(Arc::ptr_eq(&first, &second));
   }
 }

@@ -31,5 +31,4 @@ pub(super) const ERROR2_FOOTER_SIZE: usize = 4;
 pub(super) const TABLE_HEADER_SIZE: usize = 24;
 pub(super) const TABLE_FOOTER_SIZE: usize = 4;
 
-pub(super) const MAX_SECTION_DATA_SIZE: usize = 16 * 1024 * 1024;
 pub(super) const DEFAULT_CHUNK_CACHE_CAPACITY: usize = 64;

@@ -8,7 +8,7 @@ use crate::{Error, Result};
 #[derive(Debug, Clone)]
 enum Node {
   Object(BTreeMap<String, Node>),
-  Number(i64),
+  Number(u64),
   String(String),
   Array(Vec<Node>),
 }
@@ -17,7 +17,7 @@ enum Node {
 enum Token {
   Ident(String),
   String(String),
-  Number(i64),
+  Number(u64),
   Eq,
   LBrace,
   RBrace,
@@ -50,7 +50,7 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
     .ok_or_else(|| Error::InvalidFormat("empty LVM metadata".to_string()))?;
   let vg = as_object(&vg_node)?;
 
-  let extent_size_sectors = get_number(vg, "extent_size")? as u64;
+  let extent_size_sectors = get_number(vg, "extent_size")?;
   let extent_size_bytes = extent_size_sectors
     .checked_mul(512)
     .ok_or_else(|| Error::InvalidRange("LVM extent size overflow".to_string()))?;
@@ -58,12 +58,12 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
   let mut physical_volumes = Vec::new();
   if let Some(pv_section) = vg.get("physical_volumes") {
     let pvs = as_object(pv_section)?;
+    physical_volumes.reserve(pvs.len());
     for (pv_name, pv_node) in pvs {
       let pv_object = as_object(pv_node)?;
       let id = get_optional_string(pv_object, "id");
-      let pe_start_bytes = get_optional_number(pv_object, "pe_start")
-        .map(|value| value as u64)
-        .and_then(|value| value.checked_mul(512));
+      let pe_start_bytes =
+        get_optional_number(pv_object, "pe_start").and_then(|value| value.checked_mul(512));
       physical_volumes.push(MetadataPhysicalVolume {
         name: pv_name.clone(),
         id,
@@ -77,34 +77,31 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
     .get("logical_volumes")
     .ok_or_else(|| Error::InvalidFormat("missing logical_volumes section".to_string()))?;
   let lvs = as_object(lv_section)?;
+  logical_volumes.reserve(lvs.len());
   for (lv_name, lv_node) in lvs {
     let lv_object = as_object(lv_node)?;
     let id = get_optional_string(lv_object, "id");
 
-    let mut segments = Vec::new();
+    let mut segments = Vec::with_capacity(lv_object.len());
     for (segment_name, segment_node) in lv_object {
       if !segment_name.starts_with("segment") || segment_name == "segment_count" {
         continue;
       }
       let segment_object = as_object(segment_node)?;
-      let start_extent = get_number(segment_object, "start_extent")? as u64;
-      let extent_count = get_number(segment_object, "extent_count")? as u64;
+      let start_extent = get_number(segment_object, "start_extent")?;
+      let extent_count = get_number(segment_object, "extent_count")?;
       let stripes = parse_segment_stripes(segment_object)?;
-      segments.push((
-        segment_name.clone(),
-        MetadataSegment {
-          start_extent,
-          extent_count,
-          stripes,
-        },
-      ));
+      segments.push(MetadataSegment {
+        start_extent,
+        extent_count,
+        stripes,
+      });
     }
 
-    segments.sort_by(|left, right| left.0.cmp(&right.0));
     logical_volumes.push(MetadataLogicalVolume {
       name: lv_name.clone(),
       id,
-      segments: segments.into_iter().map(|(_, segment)| segment).collect(),
+      segments,
     });
   }
 
@@ -127,10 +124,10 @@ fn parse_segment_stripes(segment: &BTreeMap<String, Node>) -> Result<Vec<Metadat
     ));
   }
 
-  let mut result = Vec::new();
+  let mut result = Vec::with_capacity(values.len() / 2);
   for pair in values.chunks(2) {
     let pv_name = as_string(&pair[0])?.to_string();
-    let start_extent = as_number(&pair[1])? as u64;
+    let start_extent = as_number(&pair[1])?;
     result.push(MetadataStripe {
       pv_name,
       start_extent,
@@ -217,7 +214,12 @@ fn tokenize(text: &str) -> Result<Vec<Token>> {
         tokens.push(Token::String(output));
       }
       _ => {
-        if current.is_ascii_digit() || current == b'-' {
+        if current == b'-' {
+          return Err(Error::InvalidFormat(
+            "negative numbers are not supported in LVM metadata".to_string(),
+          ));
+        }
+        if current.is_ascii_digit() {
           let start = index;
           index += 1;
           while index < bytes.len() && bytes[index].is_ascii_digit() {
@@ -227,7 +229,7 @@ fn tokenize(text: &str) -> Result<Vec<Token>> {
             Error::InvalidFormat("invalid numeric token in LVM metadata".to_string())
           })?;
           let value = text
-            .parse::<i64>()
+            .parse::<u64>()
             .map_err(|_| Error::InvalidFormat("invalid number in LVM metadata".to_string()))?;
           tokens.push(Token::Number(value));
         } else {
@@ -427,7 +429,7 @@ fn as_string(node: &Node) -> Result<&str> {
   }
 }
 
-fn as_number(node: &Node) -> Result<i64> {
+fn as_number(node: &Node) -> Result<u64> {
   match node {
     Node::Number(value) => Ok(*value),
     _ => Err(Error::InvalidFormat(
@@ -436,7 +438,7 @@ fn as_number(node: &Node) -> Result<i64> {
   }
 }
 
-fn get_number(map: &BTreeMap<String, Node>, key: &str) -> Result<i64> {
+fn get_number(map: &BTreeMap<String, Node>, key: &str) -> Result<u64> {
   let value = map
     .get(key)
     .ok_or_else(|| Error::InvalidFormat(format!("missing key in LVM metadata: {key}")))?;
@@ -450,7 +452,7 @@ fn get_optional_string(map: &BTreeMap<String, Node>, key: &str) -> Option<String
   })
 }
 
-fn get_optional_number(map: &BTreeMap<String, Node>, key: &str) -> Option<i64> {
+fn get_optional_number(map: &BTreeMap<String, Node>, key: &str) -> Option<u64> {
   map.get(key).and_then(|value| match value {
     Node::Number(value) => Some(*value),
     _ => None,

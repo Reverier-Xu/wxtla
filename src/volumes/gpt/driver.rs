@@ -59,6 +59,12 @@ mod tests {
     data: Vec<u8>,
   }
 
+  struct GuardedReadSource {
+    data: Vec<u8>,
+    forbidden_start: usize,
+    forbidden_end: usize,
+  }
+
   impl MemDataSource {
     fn from_fixture(relative_path: &str) -> Self {
       let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -86,12 +92,44 @@ mod tests {
     }
   }
 
+  impl DataSource for GuardedReadSource {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+      let offset = offset as usize;
+      let end = offset.saturating_add(buf.len());
+      if offset < self.forbidden_end && self.forbidden_start < end {
+        return Err(Error::InvalidFormat(
+          "unexpected read of guarded GPT entry array".to_string(),
+        ));
+      }
+      if offset >= self.data.len() {
+        return Ok(0);
+      }
+      let read = buf.len().min(self.data.len() - offset);
+      buf[..read].copy_from_slice(&self.data[offset..offset + read]);
+      Ok(read)
+    }
+
+    fn size(&self) -> Result<u64> {
+      Ok(self.data.len() as u64)
+    }
+  }
+
   fn sample_source(relative_path: &str) -> DataSourceHandle {
     Arc::new(MemDataSource::from_fixture(relative_path))
   }
 
   fn synthetic_source(bytes: Vec<u8>) -> DataSourceHandle {
     Arc::new(MemDataSource { data: bytes })
+  }
+
+  fn guarded_source(
+    bytes: Vec<u8>, forbidden_start: usize, forbidden_end: usize,
+  ) -> DataSourceHandle {
+    Arc::new(GuardedReadSource {
+      data: bytes,
+      forbidden_start,
+      forbidden_end,
+    })
   }
 
   fn write_protective_mbr(disk: &mut [u8], protective_sectors: u32) {
@@ -317,6 +355,77 @@ mod tests {
     assert!(system.primary_header().is_none());
     assert!(system.backup_header().is_some());
     assert_eq!(system.partitions().len(), 1);
+  }
+
+  #[test]
+  fn avoids_reading_backup_entry_array_when_primary_is_valid() {
+    let disk = synthetic_gpt(512);
+    let backup_entries_offset = disk.len() - 1024;
+    let backup_header_offset = disk.len() - 512;
+
+    let system = GptDriver::open(guarded_source(
+      disk,
+      backup_entries_offset,
+      backup_header_offset,
+    ))
+    .unwrap();
+
+    assert_eq!(system.active_header_location(), GptHeaderLocation::Primary);
+    assert_eq!(system.partitions().len(), 1);
+  }
+
+  #[test]
+  fn rejects_overlapping_partitions_even_when_entries_are_out_of_order() {
+    let mut disk = synthetic_gpt(512);
+    let primary_entries_offset = 2 * 512;
+    let backup_entries_offset = disk.len() - 1024;
+    let total_blocks = disk.len() / 512;
+    let backup_header_offset = disk.len() - 512;
+    write_entry(
+      &mut disk,
+      primary_entries_offset + 128,
+      MICROSOFT_BASIC_DATA.to_le_bytes(),
+      [2; 16],
+      35,
+      45,
+      "overlap",
+    );
+    let second_entry = disk[primary_entries_offset + 128..primary_entries_offset + 256].to_vec();
+    disk[backup_entries_offset + 128..backup_entries_offset + 256].copy_from_slice(&second_entry);
+    let entry_crc32 = integrity::crc32(&disk[primary_entries_offset..primary_entries_offset + 256]);
+    let backup_entries_lba = ((disk.len() / 512) - 2) as u64;
+    write_header(
+      &mut disk,
+      TestHeaderSpec {
+        offset: 512,
+        current_lba: 1,
+        backup_lba: (total_blocks - 1) as u64,
+        entry_array_start_lba: 2,
+        first_usable_lba: 34,
+        last_usable_lba: backup_entries_lba - 1,
+        entry_count: 2,
+        entry_array_crc32: entry_crc32,
+        disk_guid: TEST_DISK_GUID,
+      },
+    );
+    write_header(
+      &mut disk,
+      TestHeaderSpec {
+        offset: backup_header_offset,
+        current_lba: (total_blocks - 1) as u64,
+        backup_lba: 1,
+        entry_array_start_lba: backup_entries_lba,
+        first_usable_lba: 34,
+        last_usable_lba: backup_entries_lba - 1,
+        entry_count: 2,
+        entry_array_crc32: entry_crc32,
+        disk_guid: TEST_DISK_GUID,
+      },
+    );
+
+    let result = GptDriver::open(synthetic_source(disk));
+
+    assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
 
   #[test]

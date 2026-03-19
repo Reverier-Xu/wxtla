@@ -1,8 +1,8 @@
 //! Read-only ext2/ext3/ext4 filesystem surface.
 
 use std::{
-  collections::{HashMap, HashSet},
-  sync::Arc,
+  collections::HashMap,
+  sync::{Arc, Mutex},
 };
 
 use super::{
@@ -20,6 +20,9 @@ use crate::{
 
 const ROOT_INODE: u32 = 2;
 
+type ExtNodeCache = Mutex<HashMap<u64, Arc<ExtNode>>>;
+type ExtChildrenCache = Mutex<HashMap<u64, Arc<[DirectoryEntry]>>>;
+
 const MODE_TYPE_MASK: u16 = 0xF000;
 const MODE_FIFO: u16 = 0x1000;
 const MODE_CHAR_DEVICE: u16 = 0x2000;
@@ -32,8 +35,9 @@ const MODE_SOCKET: u16 = 0xC000;
 pub struct ExtFileSystem {
   source: DataSourceHandle,
   superblock: ExtSuperblock,
-  nodes: HashMap<u64, ExtNode>,
-  children: HashMap<u64, Vec<DirectoryEntry>>,
+  groups: Arc<[ExtGroupDescriptor]>,
+  nodes: ExtNodeCache,
+  children: ExtChildrenCache,
 }
 
 #[derive(Clone)]
@@ -74,15 +78,6 @@ struct ExtInode {
   block_data: [u8; 60],
 }
 
-struct ExtBuilder {
-  source: DataSourceHandle,
-  superblock: ExtSuperblock,
-  groups: Arc<[ExtGroupDescriptor]>,
-  nodes: HashMap<u64, ExtNode>,
-  children: HashMap<u64, Vec<DirectoryEntry>>,
-  visited_directories: HashSet<u32>,
-}
-
 #[derive(Clone)]
 struct ExtByteRun {
   logical_offset: u64,
@@ -94,6 +89,19 @@ struct ExtBlockDataSource {
   source: DataSourceHandle,
   runs: Arc<[ExtByteRun]>,
   size: u64,
+}
+
+impl ExtBlockDataSource {
+  fn run_for_offset(&self, offset: u64) -> Option<&ExtByteRun> {
+    let index = self
+      .runs
+      .partition_point(|run| run.logical_offset <= offset)
+      .checked_sub(1)?;
+    let run = self.runs.get(index)?;
+    let run_end = run.logical_offset.checked_add(run.length)?;
+
+    (offset < run_end).then_some(run)
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -111,28 +119,27 @@ impl ExtFileSystem {
     let superblock = ExtSuperblock::read(source.as_ref())?;
     let groups: Arc<[ExtGroupDescriptor]> =
       Arc::from(read_group_descriptors(source.as_ref(), &superblock)?.into_boxed_slice());
-    let mut builder = ExtBuilder {
-      source: source.clone(),
-      superblock,
-      groups: groups.clone(),
-      nodes: HashMap::new(),
-      children: HashMap::new(),
-      visited_directories: HashSet::new(),
-    };
-
-    builder.ensure_node(ROOT_INODE)?;
-    builder.populate_directory(ROOT_INODE)?;
-
-    Ok(Self {
+    let file_system = Self {
       source,
       superblock,
-      nodes: builder.nodes,
-      children: builder.children,
-    })
+      groups,
+      nodes: Mutex::new(HashMap::new()),
+      children: Mutex::new(HashMap::new()),
+    };
+    let root_id = FileSystemNodeId::from_u64(u64::from(ROOT_INODE));
+    let root = file_system.lookup_node(&root_id)?;
+    if root.record.kind != FileSystemNodeKind::Directory {
+      return Err(Error::InvalidFormat(
+        "ext root inode is not a directory".to_string(),
+      ));
+    }
+
+    Ok(file_system)
   }
 
   pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<ExtNodeDetails> {
-    let inode = &self.lookup_node(node_id)?.inode;
+    let node = self.lookup_node(node_id)?;
+    let inode = &node.inode;
 
     Ok(ExtNodeDetails {
       mode: inode.mode,
@@ -161,7 +168,8 @@ impl ExtFileSystem {
   pub fn extended_attributes(
     &self, node_id: &FileSystemNodeId,
   ) -> Result<Vec<ExtExtendedAttribute>> {
-    let inode = &self.lookup_node(node_id)?.inode;
+    let node = self.lookup_node(node_id)?;
+    let inode = &node.inode;
     let mut attributes =
       parse_inode_extended_attributes(inode.raw_bytes.as_ref(), inode.extended_inode_size)?;
     if inode.file_acl_block != 0 {
@@ -172,12 +180,91 @@ impl ExtFileSystem {
     Ok(attributes)
   }
 
-  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<&ExtNode> {
+  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<Arc<ExtNode>> {
     let inode = decode_node_id(node_id)?;
     self
-      .nodes
-      .get(&inode)
+      .load_node(inode)?
       .ok_or_else(|| Error::NotFound(format!("ext inode {inode} was not found")))
+  }
+
+  fn load_node(&self, inode: u64) -> Result<Option<Arc<ExtNode>>> {
+    if let Some(node) = self
+      .nodes
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(&inode)
+      .cloned()
+    {
+      return Ok(Some(node));
+    }
+
+    let inode_number = u32::try_from(inode)
+      .map_err(|_| Error::InvalidRange("ext inode number is too large".to_string()))?;
+    let inode = read_inode(
+      self.source.as_ref(),
+      &self.superblock,
+      &self.groups,
+      inode_number,
+    )?;
+    let node = Arc::new(ExtNode {
+      record: FileSystemNodeRecord::new(
+        FileSystemNodeId::from_u64(u64::from(inode_number)),
+        kind_from_mode(inode.mode),
+        inode.size,
+      ),
+      inode,
+    });
+
+    let mut nodes = self
+      .nodes
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = nodes.get(&u64::from(inode_number)).cloned() {
+      return Ok(Some(cached));
+    }
+    nodes.insert(u64::from(inode_number), node.clone());
+
+    Ok(Some(node))
+  }
+
+  fn directory_children(
+    &self, inode_number: u64, inode: &ExtInode,
+  ) -> Result<Arc<[DirectoryEntry]>> {
+    if let Some(children) = self
+      .children
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(&inode_number)
+      .cloned()
+    {
+      return Ok(children);
+    }
+
+    let entries = parse_directory_entries(&self.build_data_source(inode)?.read_all()?)?;
+    let mut children = Vec::with_capacity(entries.len());
+    for entry in entries {
+      let child = self
+        .load_node(u64::from(entry.inode))?
+        .ok_or_else(|| Error::NotFound(format!("ext inode {} was not found", entry.inode)))?;
+      children.push(DirectoryEntry::new(
+        entry.name,
+        child.record.id.clone(),
+        child.record.kind,
+      ));
+    }
+    children.sort_by(|left, right| left.name.cmp(&right.name));
+    let children = Arc::<[DirectoryEntry]>::from(children.into_boxed_slice());
+
+    let mut cached = self
+      .children
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = cached.get(&inode_number).cloned() {
+      return Ok(existing);
+    }
+    cached.insert(inode_number, children.clone());
+
+    Ok(children)
   }
 
   fn build_data_source(&self, inode: &ExtInode) -> Result<DataSourceHandle> {
@@ -365,7 +452,7 @@ impl FileSystem for ExtFileSystem {
       )));
     }
 
-    Ok(self.children.get(&inode).cloned().unwrap_or_default())
+    Ok(self.directory_children(inode, &node.inode)?.to_vec())
   }
 
   fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
@@ -377,82 +464,6 @@ impl FileSystem for ExtFileSystem {
       )));
     }
     self.build_data_source(&node.inode)
-  }
-}
-
-impl ExtBuilder {
-  fn ensure_node(&mut self, inode_number: u32) -> Result<()> {
-    let key = u64::from(inode_number);
-    if self.nodes.contains_key(&key) {
-      return Ok(());
-    }
-
-    let inode = read_inode(
-      self.source.as_ref(),
-      &self.superblock,
-      &self.groups,
-      inode_number,
-    )?;
-    self.nodes.insert(
-      key,
-      ExtNode {
-        record: FileSystemNodeRecord::new(
-          FileSystemNodeId::from_u64(key),
-          kind_from_mode(inode.mode),
-          inode.size,
-        ),
-        inode,
-      },
-    );
-    Ok(())
-  }
-
-  fn populate_directory(&mut self, inode_number: u32) -> Result<()> {
-    if !self.visited_directories.insert(inode_number) {
-      return Ok(());
-    }
-    self.ensure_node(inode_number)?;
-    let inode = self
-      .nodes
-      .get(&u64::from(inode_number))
-      .ok_or_else(|| Error::NotFound(format!("ext inode {inode_number} was not found")))?
-      .inode
-      .clone();
-    if kind_from_mode(inode.mode) != FileSystemNodeKind::Directory {
-      return Err(Error::InvalidFormat(format!(
-        "ext inode {inode_number} is not a directory"
-      )));
-    }
-
-    let data_source = ExtFileSystem {
-      source: self.source.clone(),
-      superblock: self.superblock,
-      nodes: HashMap::new(),
-      children: HashMap::new(),
-    }
-    .build_data_source(&inode)?;
-    let entries = parse_directory_entries(&data_source.read_all()?)?;
-    let mut children = Vec::new();
-
-    for entry in entries {
-      self.ensure_node(entry.inode)?;
-      let child = self
-        .nodes
-        .get(&u64::from(entry.inode))
-        .ok_or_else(|| Error::NotFound(format!("ext inode {} was not found", entry.inode)))?;
-      children.push(DirectoryEntry::new(
-        entry.name.clone(),
-        child.record.id.clone(),
-        child.record.kind,
-      ));
-      if child.record.kind == FileSystemNodeKind::Directory {
-        self.populate_directory(entry.inode)?;
-      }
-    }
-
-    children.sort_by(|left, right| left.name.cmp(&right.name));
-    self.children.insert(u64::from(inode_number), children);
-    Ok(())
   }
 }
 
@@ -470,15 +481,9 @@ impl DataSource for ExtBlockDataSource {
       let absolute_offset = offset
         .checked_add(written as u64)
         .ok_or_else(|| Error::InvalidRange("ext file read overflow".to_string()))?;
-      let run = self
-        .runs
-        .iter()
-        .find(|run| {
-          absolute_offset >= run.logical_offset && absolute_offset < run.logical_offset + run.length
-        })
-        .ok_or_else(|| {
-          Error::InvalidFormat("ext block map does not cover the requested offset".to_string())
-        })?;
+      let run = self.run_for_offset(absolute_offset).ok_or_else(|| {
+        Error::InvalidFormat("ext block map does not cover the requested offset".to_string())
+      })?;
       let run_offset = absolute_offset - run.logical_offset;
       let chunk = usize::try_from(run.length - run_offset)
         .unwrap_or(usize::MAX)
@@ -730,6 +735,7 @@ fn le_u16_or_zero(bytes: &[u8], offset: usize) -> u16 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::BytesDataSource;
 
   #[test]
   fn classifies_inode_modes() {
@@ -739,5 +745,37 @@ mod tests {
     );
     assert_eq!(kind_from_mode(MODE_SYMLINK), FileSystemNodeKind::Symlink);
     assert_eq!(kind_from_mode(MODE_REGULAR), FileSystemNodeKind::File);
+  }
+
+  #[test]
+  fn ext_block_data_source_handles_fragmented_random_reads() {
+    let mut backing = vec![0u8; 16 * 1024];
+    backing[4096..8192].fill(0x77);
+    backing[12 * 1024..16 * 1024].fill(0x88);
+    let source = ExtBlockDataSource {
+      source: Arc::new(BytesDataSource::new(backing)),
+      runs: Arc::from(
+        vec![
+          ExtByteRun {
+            logical_offset: 0,
+            physical_offset: Some(4096),
+            length: 4096,
+          },
+          ExtByteRun {
+            logical_offset: 4096,
+            physical_offset: Some(12 * 1024),
+            length: 4096,
+          },
+        ]
+        .into_boxed_slice(),
+      ),
+      size: 8192,
+    };
+    let mut buf = [0u8; 1024];
+
+    let read = source.read_at(5120, &mut buf).unwrap();
+
+    assert_eq!(read, buf.len());
+    assert!(buf.iter().all(|byte| *byte == 0x88));
   }
 }

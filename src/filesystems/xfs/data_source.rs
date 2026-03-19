@@ -10,10 +10,14 @@ pub(crate) struct XfsExtentDataSource {
 
 impl XfsExtentDataSource {
   fn find_extent(&self, block_index: u64) -> Option<&XfsExtent> {
-    self.extents.iter().find(|extent| {
-      block_index >= extent.logical_block
-        && block_index < extent.logical_block + extent.number_of_blocks
-    })
+    let index = self
+      .extents
+      .partition_point(|extent| extent.logical_block <= block_index)
+      .checked_sub(1)?;
+    let extent = self.extents.get(index)?;
+    let extent_end = extent.logical_block.checked_add(extent.number_of_blocks)?;
+
+    (block_index < extent_end).then_some(extent)
   }
 }
 
@@ -62,5 +66,45 @@ impl DataSource for XfsExtentDataSource {
 
   fn capabilities(&self) -> DataSourceCapabilities {
     self.source.capabilities()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+
+  use super::*;
+  use crate::BytesDataSource;
+
+  #[test]
+  fn xfs_extent_data_source_handles_fragmented_random_reads() {
+    let mut backing = vec![0u8; 16 * 1024];
+    backing[4096..8192].fill(0x55);
+    backing[12 * 1024..16 * 1024].fill(0x66);
+    let source = XfsExtentDataSource {
+      source: Arc::new(BytesDataSource::new(backing)),
+      block_size: 4096,
+      file_size: 8192,
+      extents: vec![
+        XfsExtent {
+          logical_block: 0,
+          physical_block: 1,
+          number_of_blocks: 1,
+          is_sparse: false,
+        },
+        XfsExtent {
+          logical_block: 1,
+          physical_block: 3,
+          number_of_blocks: 1,
+          is_sparse: false,
+        },
+      ],
+    };
+    let mut buf = [0u8; 1024];
+
+    let read = source.read_at(5120, &mut buf).unwrap();
+
+    assert_eq!(read, buf.len());
+    assert!(buf.iter().all(|byte| *byte == 0x66));
   }
 }

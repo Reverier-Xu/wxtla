@@ -1,8 +1,5 @@
 use super::{
-  DESCRIPTOR,
-  model::{build_logical_volume_info, resolve_pv_pe_start},
-  parser::parse_lvm_image,
-  system::LvmVolumeSystem,
+  DESCRIPTOR, model::resolve_pv_pe_start, parser::parse_lvm_image, system::LvmVolumeSystem,
 };
 use crate::{
   DataSourceHandle, Result, SourceHints,
@@ -27,24 +24,27 @@ impl LvmDriver {
     let parsed = parse_lvm_image(source.as_ref())?;
     let current_pv_pe_start =
       resolve_pv_pe_start(&parsed.metadata.physical_volumes, &parsed.current_pv_name);
-
-    let mut logical_volumes = Vec::new();
-    for logical_volume in parsed.metadata.logical_volumes {
-      logical_volumes.push(build_logical_volume_info(
-        &parsed.label,
-        parsed.metadata.extent_size_bytes,
-        &parsed.current_pv_name,
-        current_pv_pe_start,
-        logical_volume,
-      )?);
-    }
-
-    Ok(LvmVolumeSystem::new(
-      source,
-      parsed.metadata.vg_name,
-      parsed.metadata.extent_size_bytes,
+    let super::model::LvmParsedImage {
+      label,
+      metadata,
+      current_pv_name,
+    } = parsed;
+    let super::model::ParsedMetadata {
+      vg_name,
+      extent_size_bytes,
       logical_volumes,
-    ))
+      ..
+    } = metadata;
+
+    LvmVolumeSystem::new(
+      source,
+      label,
+      current_pv_name,
+      current_pv_pe_start,
+      vg_name,
+      extent_size_bytes,
+      logical_volumes,
+    )
   }
 }
 
@@ -208,6 +208,64 @@ vg0 {
       LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
     assert_eq!(system.volumes().len(), 1);
     assert_eq!(system.volumes()[0].name.as_deref(), Some("lv0"));
+  }
+
+  #[test]
+  fn lvm_metadata_accepts_large_unsigned_numbers_beyond_i64() {
+    let image = build_lvm_image_with_raw_metadata(
+      r#"
+contents = "Text Format Volume Group"
+version = 1
+creation_time = 9223372036854775808
+
+vg0 {
+  id = "vgid"
+  seqno = 1
+  extent_size = 8
+  physical_volumes {
+    pv0 {
+      id = "aaaaaa-aaaa-aaaa-aaaa-aaaa-aaaa-aaaaaa"
+      pe_count = 9223372036854775808
+    }
+  }
+  logical_volumes {
+    lv0 {
+      id = "lvid"
+      segment_count = 1
+      segment1 {
+        start_extent = 0
+        extent_count = 1
+        type = striped
+        stripe_count = 1
+        stripes = [ "pv0", 0 ]
+      }
+    }
+  }
+}
+"#,
+    );
+
+    let system =
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+
+    assert_eq!(system.volumes().len(), 1);
+    assert_eq!(system.volumes()[0].name.as_deref(), Some("lv0"));
+  }
+
+  #[test]
+  fn lvm_caches_opened_volume_sources_and_builds_info_lazily() {
+    let image = build_lvm_image(
+      vec![("segment1", 0, 1, "pv0", 0), ("segment2", 1, 1, "pv0", 1)],
+      &[(0x10000, b"ABCD"), (0x11000, b"WXYZ")],
+    );
+    let system =
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+
+    let first = system.open_volume(0).unwrap();
+    let second = system.open_volume(0).unwrap();
+
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(system.logical_volumes_info()[0].chunks.len(), 2);
   }
 
   fn build_lvm_image(

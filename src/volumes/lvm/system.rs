@@ -1,8 +1,15 @@
-use std::{cmp::min, sync::Arc};
+use std::{
+  cmp::min,
+  collections::HashMap,
+  sync::{Arc, Mutex, OnceLock},
+};
 
 use super::{
   DESCRIPTOR,
-  model::{LvmChunk, LvmLogicalVolumeInfo},
+  model::{
+    LvmChunk, LvmLogicalVolumeInfo, MetadataLogicalVolume, PhysicalVolumeLabel,
+    build_logical_volume_info, logical_volume_size,
+  },
 };
 use crate::{
   DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result,
@@ -11,37 +18,50 @@ use crate::{
 
 pub struct LvmVolumeSystem {
   source: DataSourceHandle,
+  label: PhysicalVolumeLabel,
+  current_pv_name: String,
+  current_pv_pe_start: Option<u64>,
   extent_size_bytes: u64,
   vg_name: String,
-  logical_volumes: Vec<LvmLogicalVolumeInfo>,
+  logical_volumes: Vec<MetadataLogicalVolume>,
+  logical_volume_infos: OnceLock<Vec<LvmLogicalVolumeInfo>>,
+  volume_sources: Mutex<HashMap<usize, DataSourceHandle>>,
   volumes: Vec<VolumeRecord>,
 }
 
 impl LvmVolumeSystem {
-  pub fn new(
-    source: DataSourceHandle, vg_name: String, extent_size_bytes: u64,
-    logical_volumes: Vec<LvmLogicalVolumeInfo>,
-  ) -> Self {
-    let volumes = logical_volumes
-      .iter()
-      .enumerate()
-      .map(|(index, logical_volume)| {
-        VolumeRecord::new(
-          index,
-          VolumeSpan::new(0, logical_volume.size),
-          VolumeRole::Logical,
-        )
-        .with_name(logical_volume.name.clone())
-      })
-      .collect();
+  pub(super) fn new(
+    source: DataSourceHandle, label: PhysicalVolumeLabel, current_pv_name: String,
+    current_pv_pe_start: Option<u64>, vg_name: String, extent_size_bytes: u64,
+    logical_volumes: Vec<MetadataLogicalVolume>,
+  ) -> Result<Self> {
+    let mut volumes = Vec::with_capacity(logical_volumes.len());
+    for (index, logical_volume) in logical_volumes.iter().enumerate() {
+      let size = logical_volume_size(
+        &label,
+        extent_size_bytes,
+        &current_pv_name,
+        current_pv_pe_start,
+        logical_volume,
+      )?;
+      volumes.push(
+        VolumeRecord::new(index, VolumeSpan::new(0, size), VolumeRole::Logical)
+          .with_name(logical_volume.name.clone()),
+      );
+    }
 
-    Self {
+    Ok(Self {
       source,
+      label,
+      current_pv_name,
+      current_pv_pe_start,
       extent_size_bytes,
       vg_name,
       logical_volumes,
+      logical_volume_infos: OnceLock::new(),
+      volume_sources: Mutex::new(HashMap::new()),
       volumes,
-    }
+    })
   }
 
   pub fn vg_name(&self) -> &str {
@@ -49,7 +69,22 @@ impl LvmVolumeSystem {
   }
 
   pub fn logical_volumes_info(&self) -> &[LvmLogicalVolumeInfo] {
-    &self.logical_volumes
+    self.logical_volume_infos.get_or_init(|| {
+      self
+        .logical_volumes
+        .iter()
+        .map(|logical_volume| {
+          build_logical_volume_info(
+            &self.label,
+            self.extent_size_bytes,
+            &self.current_pv_name,
+            self.current_pv_pe_start,
+            logical_volume,
+          )
+          .expect("validated when the LVM volume system was created")
+        })
+        .collect()
+    })
   }
 }
 
@@ -67,14 +102,50 @@ impl VolumeSystem for LvmVolumeSystem {
   }
 
   fn open_volume(&self, index: usize) -> Result<DataSourceHandle> {
+    if let Some(cached) = self
+      .volume_sources
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(&index)
+      .cloned()
+    {
+      return Ok(cached);
+    }
+
     let logical_volume = self.logical_volumes.get(index).ok_or_else(|| {
       Error::NotFound(format!("lvm logical volume index {index} is out of bounds"))
     })?;
-    Ok(Arc::new(LvmLogicalVolumeSource {
+    let (chunks, size) = if let Some(infos) = self.logical_volume_infos.get() {
+      let info = infos.get(index).ok_or_else(|| {
+        Error::NotFound(format!("lvm logical volume index {index} is out of bounds"))
+      })?;
+      (info.chunks.clone(), info.size)
+    } else {
+      let info = build_logical_volume_info(
+        &self.label,
+        self.extent_size_bytes,
+        &self.current_pv_name,
+        self.current_pv_pe_start,
+        logical_volume,
+      )?;
+      (info.chunks, info.size)
+    };
+    let built = Arc::new(LvmLogicalVolumeSource {
       source: self.source.clone(),
-      chunks: logical_volume.chunks.clone(),
-      size: logical_volume.size,
-    }) as DataSourceHandle)
+      chunks,
+      size,
+    }) as DataSourceHandle;
+
+    let mut cached = self
+      .volume_sources
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = cached.get(&index).cloned() {
+      return Ok(existing);
+    }
+    cached.insert(index, built.clone());
+
+    Ok(built)
   }
 }
 
@@ -82,6 +153,30 @@ struct LvmLogicalVolumeSource {
   source: DataSourceHandle,
   chunks: Vec<LvmChunk>,
   size: u64,
+}
+
+impl LvmLogicalVolumeSource {
+  fn chunk_index_for_offset(&self, offset: u64) -> Option<usize> {
+    let index = self
+      .chunks
+      .partition_point(|chunk| chunk.logical_offset <= offset)
+      .checked_sub(1)?;
+    let chunk = self.chunks.get(index)?;
+    let chunk_end = chunk.logical_offset.checked_add(chunk.size)?;
+
+    (offset < chunk_end).then_some(index)
+  }
+
+  fn next_chunk_start(&self, offset: u64) -> u64 {
+    self
+      .chunks
+      .get(
+        self
+          .chunks
+          .partition_point(|chunk| chunk.logical_offset <= offset),
+      )
+      .map_or(self.size, |chunk| chunk.logical_offset)
+  }
 }
 
 impl DataSource for LvmLogicalVolumeSource {
@@ -94,16 +189,8 @@ impl DataSource for LvmLogicalVolumeSource {
     let mut out_offset = 0usize;
     let mut current = offset;
     while total > 0 {
-      let Some(chunk_index) = self.chunks.iter().position(|chunk| {
-        current >= chunk.logical_offset && current < chunk.logical_offset + chunk.size
-      }) else {
-        let next_start = self
-          .chunks
-          .iter()
-          .filter(|chunk| chunk.logical_offset > current)
-          .map(|chunk| chunk.logical_offset)
-          .min()
-          .unwrap_or(self.size);
+      let Some(chunk_index) = self.chunk_index_for_offset(current) else {
+        let next_start = self.next_chunk_start(current);
         let span = min(total as u64, next_start.saturating_sub(current)) as usize;
         buf[out_offset..out_offset + span].fill(0);
         out_offset += span;
@@ -141,5 +228,68 @@ impl DataSource for LvmLogicalVolumeSource {
 
   fn telemetry_name(&self) -> &'static str {
     "volume.lvm.logical"
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+
+  use super::*;
+  use crate::BytesDataSource;
+
+  #[test]
+  fn chunk_lookup_handles_sparse_gaps_with_binary_search() {
+    let source = LvmLogicalVolumeSource {
+      source: Arc::new(BytesDataSource::new(vec![0u8; 32])),
+      chunks: vec![
+        LvmChunk {
+          logical_offset: 0,
+          size: 4,
+          physical_offset: Some(0),
+        },
+        LvmChunk {
+          logical_offset: 8,
+          size: 4,
+          physical_offset: Some(8),
+        },
+      ],
+      size: 12,
+    };
+
+    assert_eq!(source.chunk_index_for_offset(0), Some(0));
+    assert_eq!(source.chunk_index_for_offset(3), Some(0));
+    assert_eq!(source.chunk_index_for_offset(4), None);
+    assert_eq!(source.next_chunk_start(4), 8);
+    assert_eq!(source.chunk_index_for_offset(9), Some(1));
+  }
+
+  #[test]
+  fn reads_fragmented_logical_volumes_across_sparse_gaps() {
+    let mut bytes = vec![0u8; 32];
+    bytes[0..4].copy_from_slice(b"ABCD");
+    bytes[8..12].copy_from_slice(b"WXYZ");
+    let source = LvmLogicalVolumeSource {
+      source: Arc::new(BytesDataSource::new(bytes)),
+      chunks: vec![
+        LvmChunk {
+          logical_offset: 0,
+          size: 4,
+          physical_offset: Some(0),
+        },
+        LvmChunk {
+          logical_offset: 8,
+          size: 4,
+          physical_offset: Some(8),
+        },
+      ],
+      size: 12,
+    };
+    let mut out = [0u8; 8];
+
+    let read = source.read_at(2, &mut out).unwrap();
+
+    assert_eq!(read, out.len());
+    assert_eq!(&out, b"CD\0\0\0\0WX");
   }
 }

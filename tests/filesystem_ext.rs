@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use support::{FileDataSource, fixture_path};
 use wxtla::{
-  DataSourceHandle,
+  DataSourceHandle, DataSourceReadStats, ObservedDataSource,
   filesystems::{DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, ext::ExtDriver},
 };
 
@@ -16,6 +16,18 @@ fn open_fixture_file_system(
 ) -> wxtla::Result<wxtla::filesystems::ext::ExtFileSystem> {
   let source: DataSourceHandle = Arc::new(FileDataSource::open(fixture_path(relative_path))?);
   ExtDriver::open(source)
+}
+
+fn open_observed_fixture_file_system(
+  relative_path: &str,
+) -> wxtla::Result<(wxtla::filesystems::ext::ExtFileSystem, DataSourceReadStats)> {
+  let observed = Arc::new(ObservedDataSource::new(Arc::new(FileDataSource::open(
+    fixture_path(relative_path),
+  )?)));
+  let stats = observed.stats();
+  let source: DataSourceHandle = observed;
+
+  Ok((ExtDriver::open(source)?, stats))
 }
 
 fn child_named(
@@ -235,6 +247,31 @@ fn ext_fixtures_expose_extended_attributes() {
       "fixture: {relative_path}"
     );
   }
+}
+
+#[test]
+fn ext_open_defers_directory_scans_until_requested() {
+  let (file_system, stats) = open_observed_fixture_file_system("ext/ext4.raw").unwrap();
+  let after_open = stats.snapshot();
+  let root_id = file_system.root_node_id();
+
+  let root_entries = file_system.read_dir(&root_id).unwrap();
+  let after_root = stats.snapshot();
+  let testdir_entry = root_entries
+    .into_iter()
+    .find(|entry| entry.name == "testdir1")
+    .unwrap();
+
+  file_system.read_dir(&testdir_entry.node_id).unwrap();
+  let after_subdir = stats.snapshot();
+
+  file_system.read_dir(&testdir_entry.node_id).unwrap();
+  let after_cached = stats.snapshot();
+
+  assert!(after_root.read_count > after_open.read_count);
+  assert!(after_subdir.read_count > after_root.read_count);
+  assert_eq!(after_cached.read_count, after_subdir.read_count);
+  assert_eq!(after_cached.read_bytes, after_subdir.read_bytes);
 }
 
 #[test]

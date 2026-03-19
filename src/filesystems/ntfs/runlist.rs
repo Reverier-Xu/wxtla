@@ -105,10 +105,14 @@ impl NtfsNonResidentDataSource {
   }
 
   fn run_for_offset(&self, offset: u64) -> Option<&NtfsDataRun> {
-    self
+    let index = self
       .runs
-      .iter()
-      .find(|run| offset >= run.logical_offset && offset < run.logical_offset + run.length)
+      .partition_point(|run| run.logical_offset <= offset)
+      .checked_sub(1)?;
+    let run = self.runs.get(index)?;
+    let run_end = run.logical_offset.checked_add(run.length)?;
+
+    (offset < run_end).then_some(run)
   }
 }
 
@@ -256,5 +260,38 @@ mod tests {
     assert_eq!(read, 8192);
     assert!(buf[..4096].iter().all(|byte| *byte == 0x41));
     assert!(buf[4096..].iter().all(|byte| *byte == 0));
+  }
+
+  #[test]
+  fn nonresident_data_source_handles_fragmented_random_reads() {
+    let mut backing = vec![0u8; 16 * 1024];
+    backing[4096..8192].fill(0x11);
+    backing[12 * 1024..16 * 1024].fill(0x22);
+    let source = NtfsNonResidentDataSource::new(
+      Arc::new(BytesDataSource::new(backing)),
+      Arc::from(
+        vec![
+          NtfsDataRun {
+            logical_offset: 0,
+            physical_offset: Some(4096),
+            length: 4096,
+          },
+          NtfsDataRun {
+            logical_offset: 4096,
+            physical_offset: Some(12 * 1024),
+            length: 4096,
+          },
+        ]
+        .into_boxed_slice(),
+      ),
+      8192,
+      8192,
+    );
+    let mut buf = [0u8; 2048];
+
+    let read = source.read_at(5120, &mut buf).unwrap();
+
+    assert_eq!(read, buf.len());
+    assert!(buf.iter().all(|byte| *byte == 0x22));
   }
 }

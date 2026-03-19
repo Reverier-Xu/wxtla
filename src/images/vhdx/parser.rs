@@ -1,6 +1,6 @@
 //! Parsing of VHDX metadata tables and BAT state.
 
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 use super::{
   constants,
@@ -12,10 +12,16 @@ use crate::{DataSource, DataSourceHandle, Error, Result};
 pub(super) struct ParsedVhdx {
   pub image_header: VhdxImageHeader,
   pub metadata: VhdxMetadata,
-  pub block_allocation_table: Arc<[u64]>,
+  pub block_allocation_table: VhdxBatLayout,
   pub payload_block_count: u64,
   pub entries_per_chunk: u64,
   pub sector_bitmap_size: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct VhdxBatLayout {
+  pub file_offset: u64,
+  pub entry_count: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,8 +78,14 @@ pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedVhdx> {
     sector_bitmap_size,
     entry_count: compute_bat_entry_count(&metadata, payload_block_count, entries_per_chunk)?,
   };
-  let block_allocation_table =
-    read_bat(source.as_ref(), bat_region, &metadata, source_size, &layout)?;
+  let block_allocation_table = read_bat_layout(bat_region, &layout)?;
+  validate_bat_entries(
+    source.as_ref(),
+    &block_allocation_table,
+    &metadata,
+    source_size,
+    &layout,
+  )?;
 
   Ok(ParsedVhdx {
     image_header,
@@ -282,10 +294,7 @@ fn compute_bat_entry_count(
     .map_err(|_| Error::InvalidRange("vhdx BAT entry count is too large".to_string()))
 }
 
-fn read_bat(
-  source: &dyn DataSource, bat_region: &VhdxRegionTableEntry, metadata: &VhdxMetadata,
-  source_size: u64, layout: &BatLayout,
-) -> Result<Arc<[u64]>> {
+fn read_bat_layout(bat_region: &VhdxRegionTableEntry, layout: &BatLayout) -> Result<VhdxBatLayout> {
   let table_bytes = layout
     .entry_count
     .checked_mul(8)
@@ -296,32 +305,23 @@ fn read_bat(
     ));
   }
 
-  let raw = source.read_bytes_at(bat_region.file_offset, table_bytes)?;
-  let entries = raw
-    .chunks_exact(8)
-    .map(|chunk| {
-      Ok(u64::from_le_bytes([
-        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-      ]))
-    })
-    .collect::<Result<Vec<_>>>()?;
-  validate_bat_entries(&entries, metadata, source_size, layout)?;
-
-  Ok(Arc::from(entries))
+  Ok(VhdxBatLayout {
+    file_offset: bat_region.file_offset,
+    entry_count: layout.entry_count,
+  })
 }
 
 fn validate_bat_entries(
-  entries: &[u64], metadata: &VhdxMetadata, source_size: u64, layout: &BatLayout,
+  source: &dyn DataSource, bat: &VhdxBatLayout, metadata: &VhdxMetadata, source_size: u64,
+  layout: &BatLayout,
 ) -> Result<()> {
   let mut chunks_with_partial_blocks = HashSet::new();
   for block_index in 0..layout.payload_block_count {
-    let entry = *entries
-      .get(payload_bat_index(
-        metadata.disk_type,
-        block_index,
-        layout.entries_per_chunk,
-      )?)
-      .ok_or_else(|| Error::InvalidFormat("vhdx BAT payload entry is missing".to_string()))?;
+    let entry = read_bat_entry(
+      source,
+      bat,
+      payload_bat_index(metadata.disk_type, block_index, layout.entries_per_chunk)?,
+    )?;
     let state = payload_block_state(entry)?;
     if matches!(metadata.disk_type, VhdxDiskType::Fixed)
       && !matches!(state, VhdxPayloadBlockState::FullyPresent)
@@ -379,12 +379,11 @@ fn validate_bat_entries(
     .payload_block_count
     .div_ceil(layout.entries_per_chunk);
   for chunk_index in 0..chunk_count {
-    let entry = *entries
-      .get(sector_bitmap_bat_index(
-        chunk_index,
-        layout.entries_per_chunk,
-      )?)
-      .ok_or_else(|| Error::InvalidFormat("vhdx BAT sector bitmap entry is missing".to_string()))?;
+    let entry = read_bat_entry(
+      source,
+      bat,
+      sector_bitmap_bat_index(chunk_index, layout.entries_per_chunk)?,
+    )?;
     let state = sector_bitmap_state(entry)?;
     if chunks_with_partial_blocks.contains(&chunk_index) && state != VhdxSectorBitmapState::Present
     {
@@ -416,4 +415,27 @@ fn validate_bat_entries(
   }
 
   Ok(())
+}
+
+pub(super) fn read_bat_entry(
+  source: &dyn DataSource, bat: &VhdxBatLayout, index: usize,
+) -> Result<u64> {
+  if index >= bat.entry_count {
+    return Err(Error::InvalidFormat(format!(
+      "vhdx BAT entry {index} is out of bounds"
+    )));
+  }
+  let entry_offset = bat
+    .file_offset
+    .checked_add(
+      u64::try_from(index)
+        .map_err(|_| Error::InvalidRange("vhdx BAT entry index is too large".to_string()))?
+        .checked_mul(8)
+        .ok_or_else(|| Error::InvalidRange("vhdx BAT entry offset overflow".to_string()))?,
+    )
+    .ok_or_else(|| Error::InvalidRange("vhdx BAT entry offset overflow".to_string()))?;
+  let mut data = [0u8; 8];
+  source.read_exact_at(entry_offset, &mut data)?;
+
+  Ok(u64::from_le_bytes(data))
 }

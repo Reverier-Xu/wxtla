@@ -1,5 +1,7 @@
 //! Common probe traits and helpers for format detection.
 
+use std::sync::Arc;
+
 use super::{
   DataSource, DataSourceHandle, ProbeCachedDataSource, RelatedPathBuf, RelatedSourcePurpose,
   RelatedSourceRequest, RelatedSourceResolver, Result, SourceIdentity,
@@ -146,6 +148,7 @@ impl ProbeReport {
 #[derive(Clone, Copy, Default)]
 pub struct SourceHints<'a> {
   resolver: Option<&'a dyn RelatedSourceResolver>,
+  shared_resolver: Option<&'a Arc<dyn RelatedSourceResolver>>,
   source_identity: Option<&'a SourceIdentity>,
 }
 
@@ -157,12 +160,20 @@ impl<'a> SourceHints<'a> {
 
   /// Access the related-source resolver when one is available.
   pub fn resolver(self) -> Option<&'a dyn RelatedSourceResolver> {
-    self.resolver
+    self
+      .shared_resolver
+      .map(|resolver| resolver.as_ref())
+      .or(self.resolver)
+  }
+
+  /// Clone the shared related-source resolver when one is available.
+  pub fn shared_resolver(self) -> Option<Arc<dyn RelatedSourceResolver>> {
+    self.shared_resolver.cloned()
   }
 
   /// Return `true` when a related-source resolver is available.
   pub fn has_resolver(self) -> bool {
-    self.resolver.is_some()
+    self.resolver.is_some() || self.shared_resolver.is_some()
   }
 
   /// Access the source identity hint when one is available.
@@ -178,6 +189,14 @@ impl<'a> SourceHints<'a> {
   /// Attach a related-source resolver.
   pub fn with_resolver(mut self, resolver: &'a dyn RelatedSourceResolver) -> Self {
     self.resolver = Some(resolver);
+    self.shared_resolver = None;
+    self
+  }
+
+  /// Attach a cloneable related-source resolver handle.
+  pub fn with_shared_resolver(mut self, resolver: &'a Arc<dyn RelatedSourceResolver>) -> Self {
+    self.resolver = None;
+    self.shared_resolver = Some(resolver);
     self
   }
 
@@ -234,12 +253,12 @@ impl<'a> ProbeContext<'a> {
 
   /// Access the resolver for related sources when one is available.
   pub fn resolver(&self) -> Option<&'a dyn RelatedSourceResolver> {
-    self.options.resolver
+    self.options.resolver()
   }
 
   /// Return `true` when a related-source resolver is available.
   pub fn has_resolver(&self) -> bool {
-    self.options.resolver.is_some()
+    self.options.has_resolver()
   }
 
   /// Access the source identity hint when one is available.

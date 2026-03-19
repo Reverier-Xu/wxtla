@@ -609,6 +609,7 @@ pub(crate) fn parse_data_run(bytes: &[u8]) -> Result<RefsDataRun> {
   })
 }
 
+#[cfg(test)]
 pub(crate) fn build_object_key(object_identifier: u64) -> [u8; 16] {
   let mut key = [0u8; 16];
   key[8..16].copy_from_slice(&object_identifier.to_le_bytes());

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use support::{FileDataSource, fixture_path};
 use wxtla::{
-  DataSourceHandle,
+  DataSourceHandle, DataSourceReadStats, ObservedDataSource,
   filesystems::{DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, hfs::HfsDriver},
 };
 
@@ -13,6 +13,18 @@ fn open_fixture_file_system(
 ) -> wxtla::Result<wxtla::filesystems::hfs::HfsFileSystem> {
   let source: DataSourceHandle = Arc::new(FileDataSource::open(fixture_path(relative_path))?);
   HfsDriver::open(source)
+}
+
+fn open_observed_fixture_file_system(
+  relative_path: &str,
+) -> wxtla::Result<(wxtla::filesystems::hfs::HfsFileSystem, DataSourceReadStats)> {
+  let observed = Arc::new(ObservedDataSource::new(Arc::new(FileDataSource::open(
+    fixture_path(relative_path),
+  )?)));
+  let stats = observed.stats();
+  let source: DataSourceHandle = observed;
+
+  Ok((HfsDriver::open(source)?, stats))
 }
 
 fn child_named(
@@ -202,4 +214,45 @@ fn hfsplus_fixture_exposes_unicode_names_symlink_targets_and_forks() {
   assert!(xattr2.iter().any(|attribute| {
     attribute.name == "myxattr2" && attribute.value.as_ref() == b"My 2nd extended attribute"
   }));
+}
+
+#[test]
+fn hfsplus_open_defers_catalog_and_xattr_scans_until_requested() {
+  let (file_system, stats) = open_observed_fixture_file_system("hfs/hfsplus.raw").unwrap();
+  let after_open = stats.snapshot();
+  let root_id = file_system.root_node_id();
+
+  let root_entries = file_system.read_dir(&root_id).unwrap();
+  let after_root = stats.snapshot();
+  let testdir_entry = root_entries
+    .iter()
+    .find(|entry| entry.name == "testdir1")
+    .unwrap()
+    .clone();
+
+  file_system.read_dir(&testdir_entry.node_id).unwrap();
+  let after_cached_catalog = stats.snapshot();
+
+  let xattr1_entry = file_system
+    .read_dir(&testdir_entry.node_id)
+    .unwrap()
+    .into_iter()
+    .find(|entry| entry.name == "xattr1")
+    .unwrap();
+  file_system
+    .extended_attributes(&xattr1_entry.node_id)
+    .unwrap();
+  let after_xattr = stats.snapshot();
+
+  file_system
+    .extended_attributes(&xattr1_entry.node_id)
+    .unwrap();
+  let after_cached_xattr = stats.snapshot();
+
+  assert!(after_root.read_count > after_open.read_count);
+  assert_eq!(after_cached_catalog.read_count, after_root.read_count);
+  assert_eq!(after_cached_catalog.read_bytes, after_root.read_bytes);
+  assert!(after_xattr.read_count > after_cached_catalog.read_count);
+  assert_eq!(after_cached_xattr.read_count, after_xattr.read_count);
+  assert_eq!(after_cached_xattr.read_bytes, after_xattr.read_bytes);
 }

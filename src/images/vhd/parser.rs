@@ -1,7 +1,5 @@
 //! Parsing of VHD fixed and dynamic metadata.
 
-use std::sync::Arc;
-
 use super::{
   dynamic_header::VhdDynamicHeader,
   footer::{VhdDiskType, VhdFooter},
@@ -11,8 +9,14 @@ use crate::{DataSource, DataSourceHandle, Error, Result};
 pub struct ParsedVhd {
   pub footer: VhdFooter,
   pub dynamic_header: Option<VhdDynamicHeader>,
-  pub block_allocation_table: Arc<[u32]>,
+  pub block_allocation_table: VhdBatLayout,
   pub parent_locator_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VhdBatLayout {
+  pub file_offset: u64,
+  pub entry_count: u32,
 }
 
 pub fn parse(source: DataSourceHandle) -> Result<ParsedVhd> {
@@ -21,7 +25,7 @@ pub fn parse(source: DataSourceHandle) -> Result<ParsedVhd> {
     VhdDiskType::Fixed => Ok(ParsedVhd {
       footer,
       dynamic_header: None,
-      block_allocation_table: Arc::from(Vec::<u32>::new()),
+      block_allocation_table: VhdBatLayout::default(),
       parent_locator_paths: Vec::new(),
     }),
     VhdDiskType::Dynamic | VhdDiskType::Differential => {
@@ -78,17 +82,27 @@ fn decode_utf16_le_string(data: &[u8]) -> Result<String> {
     .map_err(|_| Error::InvalidFormat("vhd parent locator string is not valid UTF-16".to_string()))
 }
 
-fn read_bat(source: &dyn DataSource, header: &VhdDynamicHeader) -> Result<Arc<[u32]>> {
+fn read_bat(source: &dyn DataSource, header: &VhdDynamicHeader) -> Result<VhdBatLayout> {
   let entry_count = usize::try_from(header.block_count)
     .map_err(|_| Error::InvalidRange("vhd BAT entry count is too large".to_string()))?;
   let table_bytes = entry_count
     .checked_mul(4)
     .ok_or_else(|| Error::InvalidRange("vhd BAT size overflow".to_string()))?;
-  let raw = source.read_bytes_at(header.block_allocation_table_offset, table_bytes)?;
-  let entries = raw
-    .chunks_exact(4)
-    .map(|chunk| Ok(u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])))
-    .collect::<Result<Vec<_>>>()?;
+  let table_end =
+    header
+      .block_allocation_table_offset
+      .checked_add(u64::try_from(table_bytes).map_err(|_| {
+        Error::InvalidRange("vhd BAT size does not fit in a file offset".to_string())
+      })?)
+      .ok_or_else(|| Error::InvalidRange("vhd BAT end overflow".to_string()))?;
+  if table_end > source.size()? {
+    return Err(Error::InvalidFormat(
+      "vhd BAT exceeds the source size".to_string(),
+    ));
+  }
 
-  Ok(Arc::from(entries))
+  Ok(VhdBatLayout {
+    file_offset: header.block_allocation_table_offset,
+    entry_count: header.block_count,
+  })
 }

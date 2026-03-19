@@ -77,22 +77,27 @@ fn validate_partitions(
     }
   }
 
-  for left_index in 0..partitions.len() {
-    for right_index in (left_index + 1)..partitions.len() {
-      let left = &partitions[left_index].record.span;
-      let right = &partitions[right_index].record.span;
-      let left_end = left
-        .end_offset()
-        .ok_or_else(|| Error::InvalidRange("left gpt partition end overflow".to_string()))?;
-      let right_end = right
-        .end_offset()
-        .ok_or_else(|| Error::InvalidRange("right gpt partition end overflow".to_string()))?;
-      if left.byte_offset < right_end && right.byte_offset < left_end {
-        return Err(Error::InvalidFormat(format!(
-          "gpt partitions {} and {} overlap",
-          partitions[left_index].record.index, partitions[right_index].record.index
-        )));
-      }
+  let mut spans = partitions
+    .iter()
+    .map(|partition| {
+      Ok((
+        partition.record.index,
+        partition.record.span.byte_offset,
+        partition
+          .record
+          .span
+          .end_offset()
+          .ok_or_else(|| Error::InvalidRange("gpt partition end offset overflow".to_string()))?,
+      ))
+    })
+    .collect::<Result<Vec<_>>>()?;
+  spans.sort_unstable_by_key(|(_, start, _)| *start);
+  for pair in spans.windows(2) {
+    if pair[1].1 < pair[0].2 {
+      return Err(Error::InvalidFormat(format!(
+        "gpt partitions {} and {} overlap",
+        pair[0].0, pair[1].0
+      )));
     }
   }
 

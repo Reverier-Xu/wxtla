@@ -194,7 +194,11 @@ fn read_metadata_area(source: &dyn DataSource, area: AreaDescriptor) -> Result<V
 }
 
 fn read_metadata_text(source: &dyn DataSource, location: RawLocation) -> Result<ParsedMetadata> {
-  let mut data = vec![0u8; location.size as usize];
+  let mut data = vec![
+    0u8;
+    usize::try_from(location.size)
+      .map_err(|_| unsupported("LVM metadata area is too large to read"))?
+  ];
   read_fully_at(source, location.offset, &mut data)?;
 
   if location.checksum != 0 {
