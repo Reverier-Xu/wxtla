@@ -30,6 +30,7 @@ Completed since the initial scan:
 - HFS+ xattrs now merge extent-overflow records with fork-backed attribute data in `src/filesystems/hfs/filesystem.rs`
 - QCOW corrupt-flag images now open in best-effort read-only mode instead of being rejected up front in `src/images/qcow/parser.rs`
 - LVM2 striped segments now map logical reads across multiple stripe legs in `src/volumes/lvm/model.rs`
+- VMDK descriptor parsing now tolerates `NOACCESS ZERO` extents as synthetic zero regions in `src/images/vmdk/image.rs`
 
 ### High priority
 
@@ -50,7 +51,7 @@ These items reduce coverage on real-world data, but usually after the top-level 
 | Filesystem | ext2/ext3/ext4 | External xattr blocks are still assumed to have a single backing block | `src/filesystems/ext/xattr.rs` | Some larger or less common ext metadata layouts can still be rejected | Extend external xattr loading across multi-block layouts once fixture coverage exists |
 | Filesystem | ReFS | Full ReFS v3 filesystem layouts are still only partially covered despite the new core metadata parser support | `src/filesystems/refs/parser.rs`, `src/filesystems/refs/filesystem.rs` | Some newer ReFS volumes can still fail once object or allocator layouts diverge from the covered fixtures | Extend real-volume coverage for v3 object trees, allocator/container metadata, and any remaining multi-block layouts |
 | Volume | BitLocker | Metadata and payload parsing are constrained to currently known versions and encodings | `src/volumes/bitlocker/metadata.rs`, `src/volumes/bitlocker/system.rs` | Some BitLocker volumes may fail to unlock | Add variant coverage incrementally, starting with metadata/header compatibility before new key payload types |
-| Image | VMDK | Some descriptor extent types/access modes are rejected; sparse compression methods above `1` are rejected | `src/images/vmdk/image.rs`, `src/images/vmdk/header.rs` | Some VMware images remain unreadable | Expand descriptor coverage first, then add extra sparse-compression support if fixtures justify it |
+| Image | VMDK | Some descriptor extent types/access modes are still rejected, and sparse compression methods above `1` are rejected | `src/images/vmdk/image.rs`, `src/images/vmdk/header.rs` | Some VMware images remain unreadable | Expand descriptor coverage first, then add extra sparse-compression support if fixtures justify it |
 | Image | UDIF / DMG | Unsupported `blkx` block types and strict trailer/block-table version gates remain | `src/images/udif/block_map.rs`, `src/images/udif/trailer.rs` | Less-common DMG layouts fail despite valid outer signatures | Add block-type coverage one family at a time with small fixture slices |
 
 ### Low priority

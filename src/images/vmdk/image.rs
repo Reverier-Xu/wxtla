@@ -185,10 +185,10 @@ impl VmdkImage {
     let mut image_is_sparse = false;
 
     for extent in &descriptor.extents {
-      if matches!(
-        extent.access_mode,
-        VmdkExtentAccessMode::Unknown | VmdkExtentAccessMode::NoAccess
-      ) {
+      if matches!(extent.access_mode, VmdkExtentAccessMode::Unknown)
+        || matches!(extent.access_mode, VmdkExtentAccessMode::NoAccess)
+          && extent.extent_type != VmdkExtentType::Zero
+      {
         return Err(Error::InvalidFormat(
           "unsupported vmdk extent access mode".to_string(),
         ));
@@ -1524,6 +1524,49 @@ RW 1 FLAT "part2.bin" 0
 
     assert_eq!(image.read_all().unwrap(), expected);
     assert!(image.is_sparse());
+  }
+
+  #[test]
+  fn reads_noaccess_zero_extents_as_zeroes() {
+    let descriptor = Arc::new(MemDataSource {
+      data: br#"# Disk DescriptorFile
+version=1
+CID=89abcdef
+parentCID=ffffffff
+createType="twoGbMaxExtentFlat"
+RW 1 FLAT "part1.bin" 0
+NOACCESS 1 ZERO
+RW 1 FLAT "part2.bin" 0
+"#
+      .to_vec(),
+    }) as DataSourceHandle;
+    let part1 = Arc::new(MemDataSource {
+      data: vec![b'A'; 512],
+    }) as DataSourceHandle;
+    let part2 = Arc::new(MemDataSource {
+      data: vec![b'B'; 512],
+    }) as DataSourceHandle;
+    let resolver = Resolver {
+      files: HashMap::from([
+        ("vmdk/part1.bin".to_string(), part1),
+        ("vmdk/part2.bin".to_string(), part2),
+      ]),
+    };
+    let identity = SourceIdentity::from_relative_path("vmdk/multi-flat.vmdk").unwrap();
+
+    let image = VmdkImage::open_with_hints(
+      descriptor,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    let mut expected = vec![b'A'; 512];
+    expected.extend_from_slice(&vec![0; 512]);
+    expected.extend_from_slice(&vec![b'B'; 512]);
+
+    assert_eq!(image.read_all().unwrap(), expected);
   }
 
   #[test]
