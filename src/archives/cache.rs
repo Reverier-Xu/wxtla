@@ -116,7 +116,7 @@ fn cache_root() -> Result<PathBuf> {
   ))
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn available_cache_space(path: &Path) -> Result<u64> {
   use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
@@ -129,10 +129,62 @@ fn available_cache_space(path: &Path) -> Result<u64> {
     return Err(Error::Io(std::io::Error::last_os_error()));
   }
   let stats = unsafe { stats.assume_init() };
-  Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+  let available_blocks = stats.f_bavail;
+  let fragment_size = stats.f_frsize;
+  Ok(available_blocks.saturating_mul(fragment_size))
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "macos")]
+fn available_cache_space(path: &Path) -> Result<u64> {
+  use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+  let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+    Error::InvalidSourceReference("archive cache path contains interior null bytes".to_string())
+  })?;
+  let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+  let result = unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) };
+  if result != 0 {
+    return Err(Error::Io(std::io::Error::last_os_error()));
+  }
+  let stats = unsafe { stats.assume_init() };
+  let available_blocks = u64::from(stats.f_bavail);
+  let fragment_size = u64::from(stats.f_frsize);
+  Ok(available_blocks.saturating_mul(fragment_size))
+}
+
+#[cfg(windows)]
+fn available_cache_space(path: &Path) -> Result<u64> {
+  use std::{os::windows::ffi::OsStrExt, ptr};
+
+  #[link(name = "Kernel32")]
+  unsafe extern "system" {
+    fn GetDiskFreeSpaceExW(
+      directory_name: *const u16, free_bytes_available: *mut u64, total_number_of_bytes: *mut u64,
+      total_number_of_free_bytes: *mut u64,
+    ) -> i32;
+  }
+
+  let wide_path = path
+    .as_os_str()
+    .encode_wide()
+    .chain(std::iter::once(0))
+    .collect::<Vec<_>>();
+  let mut free_bytes = 0u64;
+  let result = unsafe {
+    GetDiskFreeSpaceExW(
+      wide_path.as_ptr(),
+      &mut free_bytes,
+      ptr::null_mut(),
+      ptr::null_mut(),
+    )
+  };
+  if result == 0 {
+    return Err(Error::Io(std::io::Error::last_os_error()));
+  }
+  Ok(free_bytes)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn available_cache_space(_path: &Path) -> Result<u64> {
   Err(Error::InvalidSourceReference(
     "archive cache free-space checks are not implemented on this host".to_string(),

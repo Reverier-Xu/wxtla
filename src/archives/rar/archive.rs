@@ -72,7 +72,10 @@ impl RarArchive {
         Ok(archive)
       }
       Err(Error::InvalidSourceReference(message))
-        if message.contains("encrypted headers") || message.contains("Wrong password") =>
+        if message.contains("encrypted headers")
+          || message.contains("Wrong password")
+          || message.contains("Can not open encrypted archive")
+          || message.contains("Break signaled") =>
       {
         Ok(Self {
           entries: vec![RarEntry {

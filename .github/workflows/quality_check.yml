@@ -20,16 +20,10 @@ jobs:
         include:
           - os: ubuntu-latest
             timeout_minutes: 45
-            run_fmt: true
-            run_clippy: true
           - os: macos-latest
             timeout_minutes: 60
-            run_fmt: false
-            run_clippy: false
           - os: windows-latest
             timeout_minutes: 60
-            run_fmt: false
-            run_clippy: false
 
     steps:
       - name: checkout
@@ -87,11 +81,9 @@ jobs:
         run: cargo +nightly check --workspace --all-targets --all-features --locked
 
       - name: cargo fmt
-        if: matrix.run_fmt
         run: cargo +nightly fmt --all -- --check
 
       - name: cargo clippy
-        if: matrix.run_clippy
         run: cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
