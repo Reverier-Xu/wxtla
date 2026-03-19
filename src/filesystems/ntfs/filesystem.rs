@@ -12,6 +12,7 @@ use super::{
     NtfsDataAttribute, NtfsDataAttributeValue, NtfsFileRecord, NtfsNonResidentAttribute,
     parse_file_record,
   },
+  reparse::NtfsReparsePointInfo,
   runlist::{NtfsDataRun, NtfsNonResidentDataSource, parse_runlist},
 };
 use crate::{
@@ -36,6 +37,7 @@ struct NtfsNode {
   record: FileSystemNodeRecord,
   data_source: Option<DataSourceHandle>,
   data_attributes: Arc<[NtfsDataAttribute]>,
+  reparse_point: Option<NtfsReparsePointInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +75,7 @@ impl NtfsFileSystem {
     }
 
     let record_count = mft_stream_size / file_record_size;
-    let mut nodes = HashMap::new();
+    let mut parsed_records = HashMap::new();
 
     for record_number in 0..record_count {
       let record_bytes = read_file_record(
@@ -86,17 +88,21 @@ impl NtfsFileSystem {
       let Some(record) = parse_file_record(&record_bytes, record_number)? else {
         continue;
       };
+      parsed_records.insert(record_number, record);
+    }
+
+    let mut nodes = HashMap::new();
+    for record_number in 0..record_count {
+      let Some(record) = parsed_records.get(&record_number) else {
+        continue;
+      };
       if record.base_record_number.is_some() {
         continue;
       }
+      let record = resolve_attribute_list_record(record_number, record, &parsed_records)?;
       let Some(name) = record.preferred_name().cloned() else {
         continue;
       };
-      if record.has_attribute_list {
-        return Err(Error::InvalidFormat(format!(
-          "ntfs attribute lists are not supported for record {record_number}"
-        )));
-      }
 
       let parent_id = if record_number == ROOT_FILE_RECORD_NUMBER {
         None
@@ -116,6 +122,7 @@ impl NtfsFileSystem {
           record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(record_number), kind, size),
           data_source,
           data_attributes: Arc::from(record.data_attributes),
+          reparse_point: record.reparse_point,
         },
       );
     }
@@ -189,6 +196,20 @@ impl NtfsFileSystem {
     build_stream_data_source(self.source.clone(), &self.boot_sector, &attributes)
   }
 
+  pub fn reparse_point(&self, node_id: &FileSystemNodeId) -> Result<Option<NtfsReparsePointInfo>> {
+    Ok(self.lookup_node(node_id)?.reparse_point.clone())
+  }
+
+  pub fn symlink_target(&self, node_id: &FileSystemNodeId) -> Result<Option<String>> {
+    Ok(
+      self
+        .lookup_node(node_id)?
+        .reparse_point
+        .as_ref()
+        .and_then(NtfsReparsePointInfo::preferred_target),
+    )
+  }
+
   fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<&NtfsNode> {
     let record_number = decode_node_id(node_id)?;
     self
@@ -250,6 +271,47 @@ fn grouped_stream_attributes(
       .push(attribute.clone());
   }
   streams
+}
+
+fn resolve_attribute_list_record(
+  record_number: u64, record: &NtfsFileRecord, records: &HashMap<u64, NtfsFileRecord>,
+) -> Result<NtfsFileRecord> {
+  if record.attribute_list_entries.is_empty() {
+    return Ok(record.clone());
+  }
+
+  let mut resolved = record.clone();
+  let mut referenced_records = BTreeMap::<u64, ()>::new();
+  for entry in &record.attribute_list_entries {
+    if entry.base_file_record != record_number {
+      referenced_records.insert(entry.base_file_record, ());
+    }
+  }
+
+  for referenced_record in referenced_records.keys() {
+    let extension = records.get(referenced_record).ok_or_else(|| {
+      Error::InvalidFormat(format!(
+        "ntfs attribute list references missing file record {referenced_record}"
+      ))
+    })?;
+
+    for file_name in &extension.file_names {
+      if !resolved.file_names.contains(file_name) {
+        resolved.file_names.push(file_name.clone());
+      }
+    }
+    for data_attribute in &extension.data_attributes {
+      if !resolved.data_attributes.contains(data_attribute) {
+        resolved.data_attributes.push(data_attribute.clone());
+      }
+    }
+    if resolved.reparse_point.is_none() && extension.reparse_point.is_some() {
+      resolved.reparse_point = extension.reparse_point.clone();
+      resolved.has_reparse_point = true;
+    }
+  }
+
+  Ok(resolved)
 }
 
 fn classify_node(
@@ -397,4 +459,64 @@ fn decode_node_id(node_id: &FileSystemNodeId) -> Result<u64> {
   let mut raw = [0u8; 8];
   raw.copy_from_slice(bytes);
   Ok(u64::from_le_bytes(raw))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{collections::HashMap, sync::Arc};
+
+  use super::*;
+  use crate::filesystems::ntfs::NtfsAttributeListEntry;
+
+  fn resident_data_attribute(data: &[u8], attribute_id: u16) -> NtfsDataAttribute {
+    NtfsDataAttribute {
+      attribute_id,
+      name: None,
+      data_flags: 0,
+      value: NtfsDataAttributeValue::Resident(Arc::from(data)),
+    }
+  }
+
+  #[test]
+  fn resolves_attribute_list_extension_records() {
+    let base_record = NtfsFileRecord {
+      flags: 0x0001,
+      base_record_number: None,
+      file_names: vec![],
+      data_attributes: vec![resident_data_attribute(b"base", 1)],
+      attribute_list_entries: vec![NtfsAttributeListEntry {
+        attribute_type: 0x80,
+        entry_length: 40,
+        starting_vcn: 0,
+        base_file_record: 42,
+        base_file_sequence: 1,
+        attribute_id: 7,
+        name: None,
+      }],
+      reparse_point: None,
+      has_attribute_list: true,
+      has_reparse_point: false,
+    };
+    let extension_record = NtfsFileRecord {
+      flags: 0x0001,
+      base_record_number: Some(5),
+      file_names: vec![super::super::record::NtfsFileNameAttribute {
+        attribute_id: 2,
+        parent_record_number: 5,
+        name: "merged.txt".to_string(),
+        namespace: 1,
+      }],
+      data_attributes: vec![resident_data_attribute(b"extension", 7)],
+      attribute_list_entries: vec![],
+      reparse_point: None,
+      has_attribute_list: false,
+      has_reparse_point: false,
+    };
+    let records = HashMap::from([(42u64, extension_record)]);
+
+    let resolved = resolve_attribute_list_record(5, &base_record, &records).unwrap();
+
+    assert_eq!(resolved.file_names[0].name, "merged.txt");
+    assert_eq!(resolved.data_attributes.len(), 2);
+  }
 }

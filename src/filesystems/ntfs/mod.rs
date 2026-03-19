@@ -5,12 +5,14 @@ mod boot_sector;
 mod driver;
 mod filesystem;
 mod record;
+mod reparse;
 mod runlist;
 
 pub use attribute_list::{NtfsAttributeListEntry, parse_attribute_list};
 pub use boot_sector::NtfsBootSector;
 pub use driver::NtfsDriver;
 pub use filesystem::{NtfsDataStreamInfo, NtfsFileSystem};
+pub use reparse::NtfsReparsePointInfo;
 
 use self::boot_sector::BOOT_SECTOR_SIZE;
 use crate::{

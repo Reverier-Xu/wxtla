@@ -2,6 +2,10 @@
 
 use std::sync::Arc;
 
+use super::{
+  attribute_list::{NtfsAttributeListEntry, parse_attribute_list},
+  reparse::{NtfsReparsePointInfo, parse_reparse_point},
+};
 use crate::{Error, Result};
 
 const FILE_RECORD_SIGNATURE: &[u8; 4] = b"FILE";
@@ -16,14 +20,15 @@ const ATTRIBUTE_TYPE_END: u32 = 0xFFFF_FFFF;
 
 const ATTRIBUTE_FLAG_ENCRYPTED: u16 = 0x4000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NtfsFileNameAttribute {
+  pub attribute_id: u16,
   pub parent_record_number: u64,
   pub name: String,
   pub namespace: u8,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NtfsNonResidentAttribute {
   pub first_vcn: u64,
   pub last_vcn: u64,
@@ -32,14 +37,15 @@ pub(crate) struct NtfsNonResidentAttribute {
   pub runlist: Arc<[u8]>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NtfsDataAttributeValue {
   Resident(Arc<[u8]>),
   NonResident(NtfsNonResidentAttribute),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NtfsDataAttribute {
+  pub attribute_id: u16,
   pub name: Option<String>,
   pub data_flags: u16,
   pub value: NtfsDataAttributeValue,
@@ -51,6 +57,8 @@ pub(crate) struct NtfsFileRecord {
   pub base_record_number: Option<u64>,
   pub file_names: Vec<NtfsFileNameAttribute>,
   pub data_attributes: Vec<NtfsDataAttribute>,
+  pub attribute_list_entries: Vec<NtfsAttributeListEntry>,
+  pub reparse_point: Option<NtfsReparsePointInfo>,
   pub has_attribute_list: bool,
   pub has_reparse_point: bool,
 }
@@ -107,6 +115,8 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
 
   let mut file_names = Vec::new();
   let mut data_attributes = Vec::new();
+  let mut attribute_list_entries = Vec::new();
+  let mut reparse_point = None;
   let mut has_attribute_list = false;
   let mut has_reparse_point = false;
   let mut cursor = attributes_offset;
@@ -142,6 +152,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
     let name_length = usize::from(attribute[9]);
     let name_offset = usize::from(le_u16(&attribute[10..12]));
     let data_flags = le_u16(&attribute[12..14]);
+    let attribute_id = le_u16(&attribute[14..16]);
     let attribute_name = if name_length == 0 {
       None
     } else {
@@ -155,6 +166,15 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
 
     match attribute_type {
       ATTRIBUTE_TYPE_ATTRIBUTE_LIST => {
+        if non_resident {
+          return Err(Error::InvalidFormat(format!(
+            "ntfs file record {record_number} stores $ATTRIBUTE_LIST as non-resident"
+          )));
+        }
+        attribute_list_entries.extend(parse_attribute_list(resident_attribute_data(
+          attribute,
+          "ntfs $ATTRIBUTE_LIST",
+        )?)?);
         has_attribute_list = true;
       }
       ATTRIBUTE_TYPE_FILE_NAME => {
@@ -163,7 +183,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
             "ntfs file record {record_number} stores $FILE_NAME as non-resident"
           )));
         }
-        file_names.push(parse_file_name_attribute(attribute)?);
+        file_names.push(parse_file_name_attribute(attribute, attribute_id)?);
       }
       ATTRIBUTE_TYPE_DATA => {
         if data_flags & ATTRIBUTE_FLAG_ENCRYPTED != 0 {
@@ -174,10 +194,20 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
         data_attributes.push(parse_data_attribute(
           attribute,
           attribute_name,
+          attribute_id,
           record_number,
         )?);
       }
       ATTRIBUTE_TYPE_REPARSE_POINT => {
+        if non_resident {
+          return Err(Error::InvalidFormat(format!(
+            "ntfs file record {record_number} stores $REPARSE_POINT as non-resident"
+          )));
+        }
+        reparse_point = Some(parse_reparse_point(resident_attribute_data(
+          attribute,
+          "ntfs $REPARSE_POINT",
+        )?)?);
         has_reparse_point = true;
       }
       _ => {}
@@ -191,6 +221,8 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
     base_record_number,
     file_names,
     data_attributes,
+    attribute_list_entries,
+    reparse_point,
     has_attribute_list,
     has_reparse_point,
   }))
@@ -252,7 +284,7 @@ fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
   Ok(fixed)
 }
 
-fn parse_file_name_attribute(attribute: &[u8]) -> Result<NtfsFileNameAttribute> {
+fn parse_file_name_attribute(attribute: &[u8], attribute_id: u16) -> Result<NtfsFileNameAttribute> {
   let data = resident_attribute_data(attribute, "ntfs $FILE_NAME")?;
   if data.len() < 66 {
     return Err(Error::InvalidFormat(
@@ -263,6 +295,7 @@ fn parse_file_name_attribute(attribute: &[u8]) -> Result<NtfsFileNameAttribute> 
   let name_length = usize::from(data[64]);
   let namespace = data[65];
   Ok(NtfsFileNameAttribute {
+    attribute_id,
     parent_record_number: decode_file_reference(&data[0..8])?,
     name: read_utf16le(data, 66, name_length, "ntfs $FILE_NAME string")?,
     namespace,
@@ -270,7 +303,7 @@ fn parse_file_name_attribute(attribute: &[u8]) -> Result<NtfsFileNameAttribute> 
 }
 
 fn parse_data_attribute(
-  attribute: &[u8], name: Option<String>, record_number: u64,
+  attribute: &[u8], name: Option<String>, attribute_id: u16, record_number: u64,
 ) -> Result<NtfsDataAttribute> {
   let data_flags = le_u16(&attribute[12..14]);
   let value = if attribute[8] == 0 {
@@ -311,6 +344,7 @@ fn parse_data_attribute(
   };
 
   Ok(NtfsDataAttribute {
+    attribute_id,
     name,
     data_flags,
     value,
