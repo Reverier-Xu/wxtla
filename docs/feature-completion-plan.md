@@ -28,6 +28,7 @@ Completed since the initial scan:
 - ReFS parsers now accept core format-version 3 metadata fixtures, including multi-block references and v3 checkpoint trailers, in `src/filesystems/refs/parser.rs`
 - ext xattrs can now resolve external inode-backed values in `src/filesystems/ext/filesystem.rs` and `src/filesystems/ext/xattr.rs`
 - HFS+ xattrs now merge extent-overflow records with fork-backed attribute data in `src/filesystems/hfs/filesystem.rs`
+- QCOW corrupt-flag images now open in best-effort read-only mode instead of being rejected up front in `src/images/qcow/parser.rs`
 
 ### High priority
 
@@ -35,7 +36,7 @@ These items block common real-world images or prevent entire formats from openin
 
 | Area | Format | Missing feature | Evidence | Impact | Planned work |
 | --- | --- | --- | --- | --- | --- |
-| Image | QCOW | Encrypted images and images marked corrupt are rejected | `src/images/qcow/parser.rs` | Some qcow2 images can still fail before any child volume/filesystem is reachable | Decide whether corrupt images should stay rejected by default or gain an explicit best-effort read-only mode before tackling encryption |
+| Image | QCOW | Encrypted images are still rejected | `src/images/qcow/parser.rs` | Encrypted qcow2 images still cannot be opened at all | Add key-material / passphrase plumbing and then implement the qcow encryption variants deliberately instead of guessing at decryption semantics |
 
 ### Medium priority
 

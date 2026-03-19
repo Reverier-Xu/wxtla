@@ -80,11 +80,6 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
       "qcow default compression mode must use zlib".to_string(),
     ));
   }
-  if header.is_marked_corrupt() {
-    return Err(Error::InvalidFormat(
-      "qcow images marked corrupt are not supported".to_string(),
-    ));
-  }
   if header.uses_external_data_file() {
     if header.snapshot_count != 0 {
       return Err(Error::InvalidFormat(
@@ -274,6 +269,23 @@ mod tests {
       parsed.header.incompatible_features & super::super::constants::QCOW_INCOMPAT_DIRTY,
       super::super::constants::QCOW_INCOMPAT_DIRTY
     );
+  }
+
+  #[test]
+  fn accepts_corrupt_qcow_images_for_best_effort_read_only_parsing() {
+    let mut data = std::fs::read(
+      Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formats")
+        .join("qcow/ext2.qcow2"),
+    )
+    .unwrap();
+    let incompatible = u64::from_be_bytes(data[72..80].try_into().unwrap())
+      | super::super::constants::QCOW_INCOMPAT_CORRUPT;
+    data[72..80].copy_from_slice(&incompatible.to_be_bytes());
+
+    let parsed = parse(Arc::new(MemDataSource { data })).unwrap();
+
+    assert!(parsed.header.is_marked_corrupt());
   }
 
   #[test]
