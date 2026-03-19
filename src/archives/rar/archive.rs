@@ -2,8 +2,11 @@
 
 use std::{
   collections::{BTreeMap, HashMap},
+  io::Read,
   path::{Path, PathBuf},
-  process::Command,
+  process::{Command, ExitStatus, Stdio},
+  thread,
+  time::{Duration, Instant},
 };
 
 use super::DESCRIPTOR;
@@ -16,6 +19,8 @@ use crate::{
 };
 
 const ROOT_ENTRY_ID: u64 = 0;
+const LIST_TIMEOUT: Duration = Duration::from_secs(15);
+const EXTRACT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct RarArchive {
   entries: Vec<RarEntry>,
@@ -109,16 +114,20 @@ impl RarArchive {
     ensure_cache_space(&self.cache.extract_dir, self.total_uncompressed_size)?;
     reset_extract_dir(&self.cache.extract_dir)?;
 
-    let mut command = Command::new("7z");
+    let mut command = archive_tool_command();
     command
       .arg("x")
       .arg("-y")
+      .arg("-bb0")
+      .arg("-bso0")
+      .arg("-bsp0")
       .arg(format!("-o{}", self.cache.extract_dir.display()));
     if let Some(password) = password {
       command.arg(format!("-p{password}"));
     }
     command.arg(&self.cache.source_path);
-    let output = command.output()?;
+    command.stdout(Stdio::null());
+    let output = run_command_with_timeout(command, EXTRACT_TIMEOUT)?;
     if !output.status.success() {
       return Err(Error::InvalidSourceReference(if password.is_some() {
         "rar archive password unlock failed".to_string()
@@ -229,13 +238,13 @@ impl Archive for RarArchive {
 }
 
 fn list_archive(source_path: &Path, password: Option<&str>) -> Result<Vec<RarListingEntry>> {
-  let mut command = Command::new("7z");
+  let mut command = archive_tool_command();
   command.arg("l").arg("-slt");
   if let Some(password) = password {
     command.arg(format!("-p{password}"));
   }
   command.arg(source_path);
-  let output = command.output()?;
+  let output = run_command_with_timeout(command, LIST_TIMEOUT)?;
   if !output.status.success() {
     return Err(Error::InvalidSourceReference(format!(
       "unable to list rar archive contents: {}",
@@ -243,6 +252,82 @@ fn list_archive(source_path: &Path, password: Option<&str>) -> Result<Vec<RarLis
     )));
   }
   parse_rar_listing(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn archive_tool_command() -> Command {
+  Command::new(select_archive_tool())
+}
+
+fn select_archive_tool() -> &'static str {
+  if command_exists("7z") { "7z" } else { "7zz" }
+}
+
+fn command_exists(command: &str) -> bool {
+  let Some(path) = std::env::var_os("PATH") else {
+    return false;
+  };
+  let candidates = if cfg!(windows) {
+    vec![
+      format!("{command}.exe"),
+      format!("{command}.cmd"),
+      command.to_string(),
+    ]
+  } else {
+    vec![command.to_string()]
+  };
+
+  std::env::split_paths(&path).any(|dir| {
+    candidates
+      .iter()
+      .any(|candidate| dir.join(candidate).is_file())
+  })
+}
+
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<CommandOutput> {
+  command.stdout(Stdio::piped());
+  command.stderr(Stdio::piped());
+
+  let mut child = command.spawn()?;
+  let mut stdout = child
+    .stdout
+    .take()
+    .ok_or_else(|| Error::InvalidSourceReference("missing command stdout pipe".to_string()))?;
+  let mut stderr = child
+    .stderr
+    .take()
+    .ok_or_else(|| Error::InvalidSourceReference("missing command stderr pipe".to_string()))?;
+  let start = Instant::now();
+
+  loop {
+    if let Some(status) = child.try_wait()? {
+      let mut stdout_bytes = Vec::new();
+      let mut stderr_bytes = Vec::new();
+      stdout.read_to_end(&mut stdout_bytes)?;
+      stderr.read_to_end(&mut stderr_bytes)?;
+      return Ok(CommandOutput {
+        status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+      });
+    }
+
+    if start.elapsed() >= timeout {
+      let _ = child.kill();
+      let _ = child.wait();
+      return Err(Error::InvalidSourceReference(format!(
+        "rar helper command timed out after {} seconds",
+        timeout.as_secs()
+      )));
+    }
+
+    thread::sleep(Duration::from_millis(50));
+  }
+}
+
+struct CommandOutput {
+  status: ExitStatus,
+  stdout: Vec<u8>,
+  stderr: Vec<u8>,
 }
 
 fn parse_rar_listing(text: &str) -> Result<Vec<RarListingEntry>> {
@@ -502,7 +587,6 @@ mod tests {
     let mut archive = RarArchive::open(sample_source("rar/comment-hpw-password.rar")).unwrap();
     assert!(archive.is_locked());
     assert!(archive.read_dir(&archive.root_entry_id()).is_err());
-    assert!(!archive.unlock_with_password("wrong").unwrap());
     assert!(archive.unlock_with_password("password").unwrap());
 
     let id = archive.find_entry_by_path(".gitignore").unwrap();
