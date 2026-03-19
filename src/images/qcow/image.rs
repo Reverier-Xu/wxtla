@@ -47,6 +47,11 @@ enum ParsedL2Entry {
   Standard {
     cluster_offset: u64,
   },
+  Extended {
+    cluster_offset: u64,
+    allocation_bitmap: u32,
+    zero_bitmap: u32,
+  },
   Compressed {
     host_offset: u64,
     stored_size: usize,
@@ -238,7 +243,21 @@ impl QcowImage {
   }
 
   fn l2_entries_per_table(&self) -> Result<u64> {
-    self.header.l2_entry_count()
+    if self.header.uses_extended_l2() {
+      self
+        .cluster_size()?
+        .checked_div(16)
+        .ok_or_else(|| Error::InvalidRange("qcow extended l2 entry count overflow".to_string()))
+    } else {
+      self.header.l2_entry_count()
+    }
+  }
+
+  fn subcluster_size(&self) -> Result<u64> {
+    self
+      .cluster_size()?
+      .checked_div(32)
+      .ok_or_else(|| Error::InvalidRange("qcow subcluster size overflow".to_string()))
   }
 
   fn l1_offset_mask(&self) -> u64 {
@@ -314,6 +333,21 @@ impl QcowImage {
       Some(table) => table,
       None => return Ok(ParsedL2Entry::Sparse),
     };
+    if self.header.uses_extended_l2() {
+      let pair_index = usize::try_from(l2_index)
+        .map_err(|_| Error::InvalidRange("qcow l2 index conversion overflow".to_string()))?
+        .checked_mul(2)
+        .ok_or_else(|| Error::InvalidRange("qcow extended l2 index overflow".to_string()))?;
+      let descriptor = *l2_table
+        .get(pair_index)
+        .ok_or_else(|| Error::InvalidRange(format!("qcow l2 index {l2_index} is out of bounds")))?;
+      let bitmap = *l2_table
+        .get(pair_index + 1)
+        .ok_or_else(|| Error::InvalidRange(format!("qcow l2 index {l2_index} is out of bounds")))?;
+
+      return self.parse_extended_l2_entry(descriptor, bitmap);
+    }
+
     let raw = *l2_table
       .get(
         usize::try_from(l2_index)
@@ -400,6 +434,57 @@ impl QcowImage {
     Ok(ParsedL2Entry::Standard { cluster_offset })
   }
 
+  fn parse_extended_l2_entry(&self, descriptor: u64, bitmap: u64) -> Result<ParsedL2Entry> {
+    if descriptor == 0 && bitmap == 0 {
+      return Ok(ParsedL2Entry::Sparse);
+    }
+
+    let compressed = (descriptor & QCOW_OFLAG_COMPRESSED) != 0;
+    if compressed {
+      if bitmap != 0 {
+        return Err(Error::InvalidFormat(
+          "qcow extended compressed l2 entries must not carry a subcluster bitmap".to_string(),
+        ));
+      }
+
+      return self.parse_l2_entry(descriptor);
+    }
+    if (descriptor & 1) != 0 {
+      return Err(Error::InvalidFormat(
+        "qcow extended l2 descriptors must not set the legacy zero flag".to_string(),
+      ));
+    }
+
+    let cluster_offset = descriptor & self.l2_standard_offset_mask();
+    let allocation_bitmap = bitmap as u32;
+    let zero_bitmap = (bitmap >> 32) as u32;
+    if allocation_bitmap & zero_bitmap != 0 {
+      return Err(Error::InvalidFormat(
+        "qcow extended l2 subclusters cannot be both allocated and zero".to_string(),
+      ));
+    }
+    if cluster_offset == 0 && allocation_bitmap != 0 && !self.header.uses_external_data_file() {
+      return Err(Error::InvalidFormat(
+        "qcow extended allocated subclusters require a host cluster offset".to_string(),
+      ));
+    }
+    if allocation_bitmap == 0 && zero_bitmap == u32::MAX {
+      return Ok(ParsedL2Entry::Zero);
+    }
+    if allocation_bitmap == 0 && zero_bitmap == 0 {
+      return Ok(ParsedL2Entry::Sparse);
+    }
+    if allocation_bitmap == u32::MAX && zero_bitmap == 0 {
+      return Ok(ParsedL2Entry::Standard { cluster_offset });
+    }
+
+    Ok(ParsedL2Entry::Extended {
+      cluster_offset,
+      allocation_bitmap,
+      zero_bitmap,
+    })
+  }
+
   fn read_compressed_cluster(&self, host_offset: u64, stored_size: usize) -> Result<Arc<Vec<u8>>> {
     let compressed = self.source.read_bytes_at(host_offset, stored_size)?;
     let cluster_size = usize::try_from(self.cluster_size()?)
@@ -479,6 +564,41 @@ impl DataSource for QcowImage {
           let cluster = self.read_cluster(host_cluster_offset)?;
           buf[copied..copied + available]
             .copy_from_slice(&cluster[cluster_offset..cluster_offset + available]);
+        }
+        ParsedL2Entry::Extended {
+          cluster_offset: host_cluster_offset,
+          allocation_bitmap,
+          zero_bitmap,
+        } => {
+          let subcluster_size = self.subcluster_size()?;
+          let subcluster_index = usize::try_from(within_cluster / subcluster_size)
+            .map_err(|_| Error::InvalidRange("qcow subcluster index overflow".to_string()))?;
+          let within_subcluster = within_cluster % subcluster_size;
+          let subcluster_available = usize::try_from(
+            subcluster_size
+              .checked_sub(within_subcluster)
+              .ok_or_else(|| Error::InvalidRange("qcow subcluster range underflow".to_string()))?,
+          )
+          .map_err(|_| Error::InvalidRange("qcow subcluster size overflow".to_string()))?;
+          let available = available.min(subcluster_available);
+          let subcluster_bit = 1u32
+            .checked_shl(u32::try_from(subcluster_index).unwrap_or(u32::MAX))
+            .ok_or_else(|| Error::InvalidRange("qcow subcluster bit overflow".to_string()))?;
+
+          if (allocation_bitmap & subcluster_bit) != 0 {
+            let cluster = self.read_cluster(host_cluster_offset)?;
+            buf[copied..copied + available]
+              .copy_from_slice(&cluster[cluster_offset..cluster_offset + available]);
+          } else if (zero_bitmap & subcluster_bit) != 0 {
+            buf[copied..copied + available].fill(0);
+          } else if let Some(backing_image) = &self.backing_image {
+            backing_image.read_exact_at(absolute_offset, &mut buf[copied..copied + available])?;
+          } else {
+            buf[copied..copied + available].fill(0);
+          }
+
+          copied += available;
+          continue;
         }
         ParsedL2Entry::Compressed {
           host_offset,
@@ -725,6 +845,18 @@ mod tests {
   }
 
   #[test]
+  fn reads_extended_l2_subclusters_from_synthetic_qcow() {
+    let image = QcowImage::open(Arc::new(MemDataSource {
+      data: build_synthetic_qcow_extended_l2(),
+    }))
+    .unwrap();
+    let data = image.read_all().unwrap();
+
+    assert!(data[..512].iter().all(|byte| *byte == 0xAB));
+    assert!(data[512..].iter().all(|byte| *byte == 0));
+  }
+
+  #[test]
   fn reads_version_one_qcow_clusters() {
     let cluster = repeat_byte(0x42, 65_536);
     let image = QcowImage::open(Arc::new(MemDataSource {
@@ -931,6 +1063,45 @@ mod tests {
           .copy_from_slice(&compressed);
       }
     }
+
+    data
+  }
+
+  fn build_synthetic_qcow_extended_l2() -> Vec<u8> {
+    const CLUSTER_BITS: u32 = 14;
+    const CLUSTER_SIZE: usize = 1 << (CLUSTER_BITS as usize);
+    const VIRTUAL_SIZE: u64 = CLUSTER_SIZE as u64;
+    const SUBCLUSTER_SIZE: usize = CLUSTER_SIZE / 32;
+    const REFCOUNT_TABLE_OFFSET: u64 = 0x0000_4000;
+    const L1_OFFSET: u64 = 0x0000_8000;
+    const L2_OFFSET: u64 = 0x0000_C000;
+    const DATA_OFFSET: u64 = 0x0001_0000;
+    let mut data = vec![0u8; 0x0001_4000];
+
+    data[0..4].copy_from_slice(b"QFI\xfb");
+    data[4..8].copy_from_slice(&3u32.to_be_bytes());
+    data[20..24].copy_from_slice(&CLUSTER_BITS.to_be_bytes());
+    data[24..32].copy_from_slice(&VIRTUAL_SIZE.to_be_bytes());
+    data[32..36].copy_from_slice(&0u32.to_be_bytes());
+    data[36..40].copy_from_slice(&1u32.to_be_bytes());
+    data[40..48].copy_from_slice(&L1_OFFSET.to_be_bytes());
+    data[48..56].copy_from_slice(&REFCOUNT_TABLE_OFFSET.to_be_bytes());
+    data[56..60].copy_from_slice(&1u32.to_be_bytes());
+    data[60..64].copy_from_slice(&0u32.to_be_bytes());
+    data[64..72].copy_from_slice(&0u64.to_be_bytes());
+    data[72..80].copy_from_slice(&constants::QCOW_INCOMPAT_EXTL2.to_be_bytes());
+    data[80..88].copy_from_slice(&0u64.to_be_bytes());
+    data[88..96].copy_from_slice(&0u64.to_be_bytes());
+    data[96..100].copy_from_slice(&4u32.to_be_bytes());
+    data[100..104].copy_from_slice(&112u32.to_be_bytes());
+    data[104] = 0;
+
+    data[L1_OFFSET as usize..L1_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0000_C000u64).to_be_bytes());
+    data[L2_OFFSET as usize..L2_OFFSET as usize + 8]
+      .copy_from_slice(&(0x8000_0000_0001_0000u64).to_be_bytes());
+    data[L2_OFFSET as usize + 8..L2_OFFSET as usize + 16].copy_from_slice(&1u64.to_be_bytes());
+    data[DATA_OFFSET as usize..DATA_OFFSET as usize + SUBCLUSTER_SIZE].fill(0xAB);
 
     data
   }

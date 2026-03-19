@@ -23,6 +23,7 @@ Completed since the initial scan:
 - VHDX BAT-state compatibility now accepts the legacy v0.95 unmapped payload alias and rejects dynamic images that incorrectly allocate sector bitmap blocks in `src/images/vhdx/parser.rs`
 - VHDX active log replay now runs through a read-only in-memory overlay in `src/images/vhdx/log_replay.rs`
 - QCOW dirty images now open in read-only mode instead of being rejected up front in `src/images/qcow/parser.rs`
+- QCOW extended L2 entries now read through the subcluster-aware data path in `src/images/qcow/image.rs`
 
 ### High priority
 
@@ -30,7 +31,7 @@ These items block common real-world images or prevent entire formats from openin
 
 | Area | Format | Missing feature | Evidence | Impact | Planned work |
 | --- | --- | --- | --- | --- | --- |
-| Image | QCOW | Encrypted images, extended L2 entries, and images marked corrupt are rejected | `src/images/qcow/parser.rs` | Real qcow2 images can still fail before any child volume/filesystem is reachable | Split support into read-only safe subsets: extended L2 first, then corrupt-flag handling, then encryption policy |
+| Image | QCOW | Encrypted images and images marked corrupt are rejected | `src/images/qcow/parser.rs` | Some qcow2 images can still fail before any child volume/filesystem is reachable | Decide whether corrupt images should stay rejected by default or gain an explicit best-effort read-only mode before tackling encryption |
 
 ### Medium priority
 

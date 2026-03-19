@@ -60,9 +60,9 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
       "encrypted qcow images are not supported yet".to_string(),
     ));
   }
-  if header.uses_extended_l2() {
+  if header.uses_extended_l2() && header.cluster_bits < 14 {
     return Err(Error::InvalidFormat(
-      "qcow extended l2 entries are not supported yet".to_string(),
+      "qcow extended l2 entries require cluster sizes of at least 16384 bytes".to_string(),
     ));
   }
   if (header.incompatible_features & QCOW_INCOMPAT_COMPRESSION) != 0
@@ -151,10 +151,7 @@ fn read_l1_table(source: &dyn DataSource, header: &QcowHeader) -> Result<Arc<[u6
         validate_range(
           source.size()?,
           l2_offset,
-          header
-            .l2_entry_count()?
-            .checked_mul(8)
-            .ok_or_else(|| Error::InvalidRange("qcow l2 table size overflow".to_string()))?,
+          header.cluster_size()?,
           &format!("qcow l2 table {index}"),
         )?;
       }
