@@ -117,6 +117,25 @@ impl RarArchive {
     ensure_cache_space(&self.cache.extract_dir, self.total_uncompressed_size)?;
     reset_extract_dir(&self.cache.extract_dir)?;
 
+    if command_exists("unrar") {
+      let output = extract_with_unrar(&self.cache.source_path, &self.cache.extract_dir, password)?;
+      if !output.status.success() {
+        return Err(Error::InvalidSourceReference(if password.is_some() {
+          "rar archive password unlock failed".to_string()
+        } else {
+          format!(
+            "unable to extract rar archive into cache: {}{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+          )
+        }));
+      }
+
+      self.locked = false;
+      self.refresh_extracted_paths();
+      return Ok(());
+    }
+
     let mut command = archive_tool_command();
     command
       .arg("x")
@@ -255,6 +274,22 @@ fn list_archive(source_path: &Path, password: Option<&str>) -> Result<Vec<RarLis
     )));
   }
   parse_rar_listing(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn extract_with_unrar(
+  source_path: &Path, extract_dir: &Path, password: Option<&str>,
+) -> Result<CommandOutput> {
+  let mut command = Command::new("unrar");
+  command
+    .arg("x")
+    .arg("-o+")
+    .arg(format!("-op{}", extract_dir.display()))
+    .arg(match password {
+      Some(password) => format!("-p{password}"),
+      None => "-p-".to_string(),
+    })
+    .arg(source_path);
+  run_command_with_timeout(command, EXTRACT_TIMEOUT)
 }
 
 fn archive_tool_command() -> Command {
