@@ -145,6 +145,7 @@ pub(super) fn payload_block_state(entry: u64) -> Result<VhdxPayloadBlockState> {
     1 => Ok(VhdxPayloadBlockState::Undefined),
     2 => Ok(VhdxPayloadBlockState::Zero),
     3 => Ok(VhdxPayloadBlockState::Unmapped),
+    5 => Ok(VhdxPayloadBlockState::Unmapped),
     6 => Ok(VhdxPayloadBlockState::FullyPresent),
     7 => Ok(VhdxPayloadBlockState::PartiallyPresent),
     state => Err(Error::InvalidFormat(format!(
@@ -391,6 +392,13 @@ fn validate_bat_entries(
         "vhdx partially-present payload blocks require a sector bitmap".to_string(),
       ));
     }
+    if matches!(metadata.disk_type, VhdxDiskType::Dynamic)
+      && state == VhdxSectorBitmapState::Present
+    {
+      return Err(Error::InvalidFormat(
+        "dynamic vhdx images must not allocate sector bitmap blocks".to_string(),
+      ));
+    }
     if matches!(state, VhdxSectorBitmapState::Present) {
       let file_offset = bat_file_offset(entry)?;
       if file_offset < constants::VHDX_ALIGNMENT {
@@ -438,4 +446,64 @@ pub(super) fn read_bat_entry(
   source.read_exact_at(entry_offset, &mut data)?;
 
   Ok(u64::from_le_bytes(data))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+
+  use super::*;
+  use crate::BytesDataSource;
+
+  fn dynamic_metadata() -> VhdxMetadata {
+    VhdxMetadata {
+      disk_type: VhdxDiskType::Dynamic,
+      block_size: 1024 * 1024,
+      virtual_disk_size: 1024 * 1024,
+      logical_sector_size: 512,
+      physical_sector_size: 512,
+      virtual_disk_identifier: super::super::guid::VhdxGuid::NIL,
+      parent_locator: None,
+    }
+  }
+
+  #[test]
+  fn accepts_legacy_unmapped_payload_bat_state() {
+    assert_eq!(
+      payload_block_state(5).unwrap(),
+      VhdxPayloadBlockState::Unmapped
+    );
+  }
+
+  #[test]
+  fn rejects_dynamic_sector_bitmap_blocks() {
+    let metadata = dynamic_metadata();
+    let entries_per_chunk = compute_entries_per_chunk(&metadata).unwrap();
+    let sector_bitmap_size = compute_sector_bitmap_size(entries_per_chunk).unwrap();
+    let layout = BatLayout {
+      payload_block_count: 1,
+      entries_per_chunk,
+      sector_bitmap_size,
+      entry_count: compute_bat_entry_count(&metadata, 1, entries_per_chunk).unwrap(),
+    };
+    let sector_bitmap_index = sector_bitmap_bat_index(0, entries_per_chunk).unwrap();
+    let mut bytes = vec![0u8; 2 * 1024 * 1024];
+    bytes[sector_bitmap_index * 8..sector_bitmap_index * 8 + 8]
+      .copy_from_slice(&((1u64 << 20) | 6).to_le_bytes());
+    let source = Arc::new(BytesDataSource::new(bytes));
+    let bat = VhdxBatLayout {
+      file_offset: 0,
+      entry_count: layout.entry_count,
+    };
+
+    let error =
+      validate_bat_entries(source.as_ref(), &bat, &metadata, 2 * 1024 * 1024, &layout).unwrap_err();
+
+    assert!(matches!(error, Error::InvalidFormat(_)));
+    assert!(
+      error
+        .to_string()
+        .contains("dynamic vhdx images must not allocate sector bitmap blocks")
+    );
+  }
 }
