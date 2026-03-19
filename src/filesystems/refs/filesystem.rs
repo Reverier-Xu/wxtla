@@ -11,11 +11,11 @@ use super::{
   parser::{
     ATTRIBUTE_NON_RESIDENT_HEADER_SIZE, OBJECTS_TREE_INDEX, ROOT_DIRECTORY_OBJECT_ID,
     RefsAttribute, RefsAttributeValue, RefsBlockReference, RefsCheckpoint, RefsMinistoreNode,
-    RefsNodeRecord, RefsVolumeHeader, decode_utf16le_string, le_u32, le_u64,
-    parse_block_reference_v1, parse_checkpoint_metadata, parse_data_run,
-    parse_directory_entry_name, parse_directory_entry_type, parse_directory_values,
-    parse_file_values, parse_metadata_block_header_v1, parse_ministore_node_data,
-    parse_resident_attribute, parse_superblock_metadata,
+    RefsNodeRecord, RefsVolumeHeader, decode_utf16le_string, le_u32, le_u64, metadata_header_size,
+    parse_block_reference, parse_checkpoint_metadata, parse_data_run, parse_directory_entry_name,
+    parse_directory_entry_type, parse_directory_values, parse_file_values,
+    parse_metadata_block_header_v1, parse_ministore_node_data, parse_resident_attribute,
+    parse_superblock_metadata,
   },
 };
 use crate::{
@@ -318,7 +318,8 @@ fn read_directory_node(
         _ => {}
       }
     } else {
-      let block_reference = parse_block_reference_v1(&record.value_data)?;
+      let block_reference =
+        parse_block_reference(&record.value_data, context.volume_header.major_version)?;
       let sub_node = read_ministore_node_from_reference(
         context.source.clone(),
         &context.volume_header,
@@ -392,21 +393,27 @@ fn build_object_reference_index(
   let mut loader = |reference: &RefsBlockReference| {
     read_ministore_node_from_reference(source.clone(), volume_header, reference)
   };
-  build_object_reference_index_with(root, 0, &mut loader)
+  build_object_reference_index_with(root, volume_header.major_version, 0, &mut loader)
 }
 
 fn build_object_reference_index_with<F>(
-  node: &RefsMinistoreNode, depth: usize, load_subnode: &mut F,
+  node: &RefsMinistoreNode, major_version: u8, depth: usize, load_subnode: &mut F,
 ) -> Result<HashMap<u64, RefsBlockReference>>
 where
   F: FnMut(&RefsBlockReference) -> Result<RefsMinistoreNode>, {
   let mut object_references = HashMap::new();
-  collect_object_references_with(node, depth, load_subnode, &mut object_references)?;
+  collect_object_references_with(
+    node,
+    major_version,
+    depth,
+    load_subnode,
+    &mut object_references,
+  )?;
   Ok(object_references)
 }
 
 fn collect_object_references_with<F>(
-  node: &RefsMinistoreNode, depth: usize, load_subnode: &mut F,
+  node: &RefsMinistoreNode, major_version: u8, depth: usize, load_subnode: &mut F,
   object_references: &mut HashMap<u64, RefsBlockReference>,
 ) -> Result<()>
 where
@@ -419,7 +426,7 @@ where
   if node.node_type_flags & 0x01 == 0 {
     for record in &node.records {
       let object_identifier = parse_object_identifier(&record.key_data)?;
-      let reference = parse_block_reference_v1(&record.value_data)?;
+      let reference = parse_object_record_reference(&record.value_data, major_version)?;
       if object_references
         .insert(object_identifier, reference)
         .is_some()
@@ -433,9 +440,15 @@ where
   }
 
   for record in &node.records {
-    let reference = parse_block_reference_v1(&record.value_data)?;
+    let reference = parse_block_reference(&record.value_data, major_version)?;
     let sub_node = load_subnode(&reference)?;
-    collect_object_references_with(&sub_node, depth + 1, load_subnode, object_references)?;
+    collect_object_references_with(
+      &sub_node,
+      major_version,
+      depth + 1,
+      load_subnode,
+      object_references,
+    )?;
   }
 
   Ok(())
@@ -610,11 +623,11 @@ fn collect_leaf_records_from_source(
   let mut loader = |reference: &RefsBlockReference| {
     read_ministore_node_from_reference(context.source.clone(), &context.volume_header, reference)
   };
-  collect_leaf_records_with(node, 0, &mut loader)
+  collect_leaf_records_with(node, context.volume_header.major_version, 0, &mut loader)
 }
 
 fn collect_leaf_records_with<F>(
-  node: &RefsMinistoreNode, depth: usize, load_subnode: &mut F,
+  node: &RefsMinistoreNode, major_version: u8, depth: usize, load_subnode: &mut F,
 ) -> Result<Vec<RefsNodeRecord>>
 where
   F: FnMut(&RefsBlockReference) -> Result<RefsMinistoreNode>, {
@@ -629,10 +642,11 @@ where
 
   let mut records = Vec::new();
   for record in &node.records {
-    let reference = parse_block_reference_v1(&record.value_data)?;
+    let reference = parse_block_reference(&record.value_data, major_version)?;
     let sub_node = load_subnode(&reference)?;
     records.extend(collect_leaf_records_with(
       &sub_node,
+      major_version,
       depth + 1,
       load_subnode,
     )?);
@@ -643,27 +657,79 @@ where
 fn read_checkpoint(
   source: DataSourceHandle, volume_header: &RefsVolumeHeader, block_number: u64,
 ) -> Result<RefsCheckpoint> {
-  let offset = block_number
-    .checked_mul(u64::from(volume_header.metadata_block_size))
-    .ok_or_else(|| Error::InvalidRange("refs checkpoint offset overflow".to_string()))?;
-  let bytes = source.read_bytes_at(offset, volume_header.metadata_block_size as usize)?;
-  let _metadata = parse_metadata_block_header_v1(&bytes)?;
+  let bytes =
+    read_metadata_blocks_from_numbers(source.as_ref(), volume_header, &[block_number, 0, 0, 0])?;
   parse_checkpoint_metadata(&bytes, volume_header.major_version)
 }
 
 fn read_ministore_node_from_reference(
   source: DataSourceHandle, volume_header: &RefsVolumeHeader, reference: &RefsBlockReference,
 ) -> Result<RefsMinistoreNode> {
-  let offset = reference
-    .block_number
-    .checked_mul(u64::from(volume_header.metadata_block_size))
-    .ok_or_else(|| Error::InvalidRange("refs block offset overflow".to_string()))?;
-  let bytes = source.read_bytes_at(offset, volume_header.metadata_block_size as usize)?;
-  let _metadata = parse_metadata_block_header_v1(&bytes)?;
-  parse_ministore_node_data(
-    &bytes[super::parser::METADATA_BLOCK_HEADER_V1_SIZE..],
-    volume_header.major_version,
+  let bytes = read_metadata_blocks_from_reference(source.as_ref(), volume_header, reference)?;
+  let header_size = metadata_header_size(volume_header.major_version)?;
+  parse_ministore_node_data(&bytes[header_size..], volume_header.major_version)
+}
+
+fn parse_object_record_reference(bytes: &[u8], major_version: u8) -> Result<RefsBlockReference> {
+  let bytes = if major_version == 3 {
+    bytes
+      .get(32..)
+      .ok_or_else(|| Error::InvalidFormat("refs object record value is truncated".to_string()))?
+  } else {
+    bytes
+  };
+  parse_block_reference(bytes, major_version)
+}
+
+fn read_metadata_blocks_from_reference(
+  source: &dyn crate::DataSource, volume_header: &RefsVolumeHeader, reference: &RefsBlockReference,
+) -> Result<Vec<u8>> {
+  let present = reference.present_block_numbers().collect::<Vec<_>>();
+  read_metadata_blocks_from_slice(source, volume_header, &present)
+}
+
+fn read_metadata_blocks_from_numbers(
+  source: &dyn crate::DataSource, volume_header: &RefsVolumeHeader, block_numbers: &[u64; 4],
+) -> Result<Vec<u8>> {
+  read_metadata_blocks_from_slice(
+    source,
+    volume_header,
+    &block_numbers
+      .iter()
+      .copied()
+      .filter(|block_number| *block_number != 0)
+      .collect::<Vec<_>>(),
   )
+}
+
+fn read_metadata_blocks_from_slice(
+  source: &dyn crate::DataSource, volume_header: &RefsVolumeHeader, block_numbers: &[u64],
+) -> Result<Vec<u8>> {
+  let present = block_numbers.to_vec();
+  if present.is_empty() {
+    return Err(Error::InvalidFormat(
+      "refs metadata block reference does not contain any block numbers".to_string(),
+    ));
+  }
+
+  let block_size = usize::try_from(volume_header.metadata_block_size)
+    .map_err(|_| Error::InvalidRange("refs metadata block size is too large".to_string()))?;
+  let mut bytes = Vec::with_capacity(
+    block_size
+      .checked_mul(present.len())
+      .ok_or_else(|| Error::InvalidRange("refs metadata block range overflow".to_string()))?,
+  );
+  for block_number in present {
+    let offset = block_number
+      .checked_mul(u64::from(volume_header.metadata_block_size))
+      .ok_or_else(|| Error::InvalidRange("refs block offset overflow".to_string()))?;
+    bytes.extend_from_slice(&source.read_bytes_at(offset, block_size)?);
+  }
+
+  if volume_header.major_version == 1 {
+    let _metadata = parse_metadata_block_header_v1(&bytes)?;
+  }
+  Ok(bytes)
 }
 
 fn encode_node_id(identifier: &RefsIdentifier) -> FileSystemNodeId {
@@ -760,11 +826,11 @@ mod tests {
     let mut children = HashMap::from([(7u64, leaf)]);
     let mut loader = |reference: &RefsBlockReference| {
       children
-        .remove(&reference.block_number)
+        .remove(&reference.block_numbers[0])
         .ok_or_else(|| Error::NotFound("missing synthetic child node".to_string()))
     };
 
-    let records = collect_leaf_records_with(&branch, 0, &mut loader).unwrap();
+    let records = collect_leaf_records_with(&branch, 1, 0, &mut loader).unwrap();
 
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].key_data.as_ref(), &[1, 2, 3]);
@@ -869,14 +935,14 @@ mod tests {
     let mut children = HashMap::from([(11u64, leaf)]);
     let mut loader = |reference: &RefsBlockReference| {
       children
-        .remove(&reference.block_number)
+        .remove(&reference.block_numbers[0])
         .ok_or_else(|| Error::NotFound("missing synthetic child node".to_string()))
     };
 
-    let object_references = build_object_reference_index_with(&branch, 0, &mut loader).unwrap();
+    let object_references = build_object_reference_index_with(&branch, 1, 0, &mut loader).unwrap();
 
     assert_eq!(object_references.len(), 2);
-    assert_eq!(object_references.get(&0x600).unwrap().block_number, 7);
-    assert_eq!(object_references.get(&0x601).unwrap().block_number, 9);
+    assert_eq!(object_references.get(&0x600).unwrap().block_numbers[0], 7);
+    assert_eq!(object_references.get(&0x601).unwrap().block_numbers[0], 9);
   }
 }

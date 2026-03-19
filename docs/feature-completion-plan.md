@@ -25,6 +25,7 @@ Completed since the initial scan:
 - QCOW dirty images now open in read-only mode instead of being rejected up front in `src/images/qcow/parser.rs`
 - QCOW extended L2 entries now read through the subcluster-aware data path in `src/images/qcow/image.rs`
 - ReFS fragmented data streams now merge attribute runs instead of failing in `src/filesystems/refs/filesystem.rs`
+- ReFS parsers now accept core format-version 3 metadata fixtures, including multi-block references and v3 checkpoint trailers, in `src/filesystems/refs/parser.rs`
 
 ### High priority
 
@@ -44,7 +45,7 @@ These items reduce coverage on real-world data, but usually after the top-level 
 | Filesystem | NTFS | Encrypted NTFS `$DATA` (EFS) is unsupported | `src/filesystems/ntfs/record.rs` | Encrypted file contents remain unreadable even when the volume mounts | Decide whether to expose metadata-only fallback first or full decrypt support with external key material later |
 | Filesystem | HFS / HFS+ | HFS+ xattr extent overflow records are unsupported | `src/filesystems/hfs/filesystem.rs` | Large metadata streams can be lost | Add extent-overflow traversal for attribute records and cover with large-xattr fixtures |
 | Filesystem | ext2/ext3/ext4 | Xattrs stored in external inode references are unsupported; external xattr block count is assumed to be exactly `1` | `src/filesystems/ext/xattr.rs` | Some ACL/security/user metadata layouts are unreadable | Generalize xattr loading to external inode references and multi-block metadata |
-| Filesystem | ReFS | Parser is tightly constrained to specific major version, metadata version, checkpoint count, and cluster sizes | `src/filesystems/refs/parser.rs` | Valid ReFS variants are rejected early | Broaden version/layout acceptance behind fixture-backed guards |
+| Filesystem | ReFS | Full ReFS v3 filesystem layouts are still only partially covered despite the new core metadata parser support | `src/filesystems/refs/parser.rs`, `src/filesystems/refs/filesystem.rs` | Some newer ReFS volumes can still fail once object or allocator layouts diverge from the covered fixtures | Extend real-volume coverage for v3 object trees, allocator/container metadata, and any remaining multi-block layouts |
 | Volume | BitLocker | Metadata and payload parsing are constrained to currently known versions and encodings | `src/volumes/bitlocker/metadata.rs`, `src/volumes/bitlocker/system.rs` | Some BitLocker volumes may fail to unlock | Add variant coverage incrementally, starting with metadata/header compatibility before new key payload types |
 | Volume | LVM2 | Multi-stripe segments are unsupported | `src/volumes/lvm/model.rs` | Striped logical volumes cannot be mapped | Extend logical-to-physical mapping for striped segments and add synthetic PV/VG fixtures |
 | Image | VMDK | Some descriptor extent types/access modes are rejected; sparse compression methods above `1` are rejected | `src/images/vmdk/image.rs`, `src/images/vmdk/header.rs` | Some VMware images remain unreadable | Expand descriptor coverage first, then add extra sparse-compression support if fixtures justify it |

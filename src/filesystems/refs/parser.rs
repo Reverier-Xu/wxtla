@@ -6,10 +6,13 @@ use crate::{DataSource, Error, Result};
 
 pub(crate) const VOLUME_HEADER_SIZE: usize = 512;
 pub(crate) const METADATA_BLOCK_HEADER_V1_SIZE: usize = 48;
+pub(crate) const METADATA_BLOCK_HEADER_V3_SIZE: usize = 80;
 pub(crate) const SUPERBLOCK_SIZE: usize = 48;
 pub(crate) const CHECKPOINT_HEADER_SIZE: usize = 16;
 pub(crate) const CHECKPOINT_TRAILER_V1_SIZE: usize = 28;
+pub(crate) const CHECKPOINT_TRAILER_V3_SIZE: usize = 52;
 pub(crate) const BLOCK_REFERENCE_V1_SIZE: usize = 16;
+pub(crate) const BLOCK_REFERENCE_V3_MIN_SIZE: usize = 40;
 pub(crate) const TREE_HEADER_SIZE: usize = 36;
 pub(crate) const NODE_HEADER_SIZE: usize = 32;
 pub(crate) const NODE_RECORD_HEADER_SIZE: usize = 14;
@@ -78,7 +81,7 @@ impl RefsVolumeHeader {
 
     let major_version = header[40];
     let minor_version = header[41];
-    if major_version != 1 {
+    if !matches!(major_version, 1 | 3) {
       return Err(Error::InvalidFormat(format!(
         "unsupported refs major version: {major_version}.{minor_version}"
       )));
@@ -93,12 +96,25 @@ impl RefsVolumeHeader {
     Ok(Self {
       bytes_per_sector,
       cluster_block_size,
-      metadata_block_size: 16 * 1024,
+      metadata_block_size: if major_version == 1 {
+        16 * 1024
+      } else {
+        cluster_block_size
+      },
       volume_size,
       major_version,
       minor_version,
       volume_serial_number: le_u64(&header[56..64]),
-      container_size: le_u64(&header[64..72]),
+      container_size: if major_version == 3 {
+        let container_size = le_u64(&header[64..72]);
+        if container_size == 0 {
+          0x4000
+        } else {
+          container_size / u64::from(cluster_block_size)
+        }
+      } else {
+        le_u64(&header[64..72])
+      },
     })
   }
 }
@@ -119,10 +135,20 @@ pub(crate) struct RefsSuperblock {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RefsBlockReference {
-  pub block_number: u64,
+  pub block_numbers: [u64; 4],
   pub checksum_type: u8,
   pub checksum_data_offset: u8,
   pub checksum_data_size: u16,
+}
+
+impl RefsBlockReference {
+  pub(crate) fn present_block_numbers(&self) -> impl Iterator<Item = u64> + '_ {
+    self
+      .block_numbers
+      .iter()
+      .copied()
+      .filter(|block_number| *block_number != 0)
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,7 +302,8 @@ pub(crate) fn parse_superblock_metadata(bytes: &[u8], major_version: u8) -> Resu
 
 pub(crate) fn parse_checkpoint_metadata(bytes: &[u8], major_version: u8) -> Result<RefsCheckpoint> {
   let header_size = metadata_header_size(major_version)?;
-  if bytes.len() < header_size + CHECKPOINT_HEADER_SIZE + CHECKPOINT_TRAILER_V1_SIZE {
+  let checkpoint_trailer_size = checkpoint_trailer_size(major_version)?;
+  if bytes.len() < header_size + CHECKPOINT_HEADER_SIZE + checkpoint_trailer_size {
     return Err(Error::InvalidFormat(
       "refs checkpoint metadata is truncated".to_string(),
     ));
@@ -286,8 +313,10 @@ pub(crate) fn parse_checkpoint_metadata(bytes: &[u8], major_version: u8) -> Resu
   let self_reference_data_size = le_u32(&body[12..16]);
   let trailer_offset = CHECKPOINT_HEADER_SIZE;
   let sequence_number = le_u64(&body[trailer_offset..trailer_offset + 8]);
-  let number_of_offsets = le_u32(&body[trailer_offset + 24..trailer_offset + 28]) as usize;
-  let offsets_data_offset = trailer_offset + CHECKPOINT_TRAILER_V1_SIZE;
+  let number_of_offsets_offset = trailer_offset + if major_version == 1 { 24 } else { 48 };
+  let number_of_offsets =
+    le_u32(&body[number_of_offsets_offset..number_of_offsets_offset + 4]) as usize;
+  let offsets_data_offset = trailer_offset + checkpoint_trailer_size;
   let offsets_end = offsets_data_offset
     .checked_add(number_of_offsets * 4)
     .ok_or_else(|| Error::InvalidRange("refs checkpoint offsets overflow".to_string()))?;
@@ -321,7 +350,10 @@ pub(crate) fn parse_checkpoint_metadata(bytes: &[u8], major_version: u8) -> Resu
       self_reference_data_offset + header_size,
       "refs checkpoint block reference",
     )?;
-    block_references.push(parse_block_reference_v1(&body[block_reference_offset..])?);
+    block_references.push(parse_block_reference(
+      &body[block_reference_offset..],
+      major_version,
+    )?);
   }
 
   Ok(RefsCheckpoint {
@@ -330,17 +362,48 @@ pub(crate) fn parse_checkpoint_metadata(bytes: &[u8], major_version: u8) -> Resu
   })
 }
 
-pub(crate) fn parse_block_reference_v1(bytes: &[u8]) -> Result<RefsBlockReference> {
-  let bytes = bytes
-    .get(..BLOCK_REFERENCE_V1_SIZE)
-    .ok_or_else(|| Error::InvalidFormat("refs block reference is truncated".to_string()))?;
+pub(crate) fn parse_block_reference(bytes: &[u8], major_version: u8) -> Result<RefsBlockReference> {
+  match major_version {
+    1 => {
+      let bytes = bytes
+        .get(..BLOCK_REFERENCE_V1_SIZE)
+        .ok_or_else(|| Error::InvalidFormat("refs block reference is truncated".to_string()))?;
 
-  Ok(RefsBlockReference {
-    block_number: le_u64(&bytes[0..8]),
-    checksum_type: bytes[10],
-    checksum_data_offset: bytes[11],
-    checksum_data_size: le_u16(&bytes[12..14]),
-  })
+      Ok(RefsBlockReference {
+        block_numbers: [le_u64(&bytes[0..8]), 0, 0, 0],
+        checksum_type: bytes[10],
+        checksum_data_offset: bytes[11],
+        checksum_data_size: le_u16(&bytes[12..14]),
+      })
+    }
+    3 => {
+      let prefix = bytes
+        .get(..BLOCK_REFERENCE_V3_MIN_SIZE)
+        .ok_or_else(|| Error::InvalidFormat("refs block reference is truncated".to_string()))?;
+      let checksum_data_size = le_u16(&prefix[36..38]);
+      let total_size = BLOCK_REFERENCE_V3_MIN_SIZE
+        .checked_add(usize::from(checksum_data_size))
+        .ok_or_else(|| Error::InvalidRange("refs block reference size overflow".to_string()))?;
+      let bytes = bytes
+        .get(..total_size)
+        .ok_or_else(|| Error::InvalidFormat("refs block reference is truncated".to_string()))?;
+
+      Ok(RefsBlockReference {
+        block_numbers: [
+          le_u64(&bytes[0..8]),
+          le_u64(&bytes[8..16]),
+          le_u64(&bytes[16..24]),
+          le_u64(&bytes[24..32]),
+        ],
+        checksum_type: bytes[34],
+        checksum_data_offset: bytes[35],
+        checksum_data_size,
+      })
+    }
+    other => Err(Error::InvalidFormat(format!(
+      "unsupported refs metadata version: {other}"
+    ))),
+  }
 }
 
 pub(crate) fn parse_tree_header(bytes: &[u8]) -> Result<RefsTreeHeader> {
@@ -642,9 +705,20 @@ fn relative_metadata_offset(
   Ok(raw_offset as usize - header_size)
 }
 
-fn metadata_header_size(major_version: u8) -> Result<usize> {
+pub(crate) fn metadata_header_size(major_version: u8) -> Result<usize> {
   match major_version {
     1 => Ok(METADATA_BLOCK_HEADER_V1_SIZE),
+    3 => Ok(METADATA_BLOCK_HEADER_V3_SIZE),
+    other => Err(Error::InvalidFormat(format!(
+      "unsupported refs metadata version: {other}"
+    ))),
+  }
+}
+
+fn checkpoint_trailer_size(major_version: u8) -> Result<usize> {
+  match major_version {
+    1 => Ok(CHECKPOINT_TRAILER_V1_SIZE),
+    3 => Ok(CHECKPOINT_TRAILER_V3_SIZE),
     other => Err(Error::InvalidFormat(format!(
       "unsupported refs metadata version: {other}"
     ))),
@@ -684,6 +758,22 @@ mod tests {
       .join(relative)
   }
 
+  fn synthetic_volume_header(
+    major_version: u8, minor_version: u8, cluster_block_size: u32,
+  ) -> [u8; VOLUME_HEADER_SIZE] {
+    let mut header = [0u8; VOLUME_HEADER_SIZE];
+    header[3..11].copy_from_slice(b"ReFS\0\0\0\0");
+    header[16..20].copy_from_slice(b"FSRS");
+    header[20..22].copy_from_slice(&0x0200u16.to_le_bytes());
+    header[24..32].copy_from_slice(&2048u64.to_le_bytes());
+    header[32..36].copy_from_slice(&512u32.to_le_bytes());
+    header[36..40].copy_from_slice(&(cluster_block_size / 512).to_le_bytes());
+    header[40] = major_version;
+    header[41] = minor_version;
+    header[56..64].copy_from_slice(&1u64.to_le_bytes());
+    header
+  }
+
   #[test]
   fn parses_volume_header_fixture() {
     let bytes = std::fs::read(fixture_path("volume_header.1")).unwrap();
@@ -699,6 +789,17 @@ mod tests {
   }
 
   #[test]
+  fn parses_v3_volume_headers() {
+    let header = RefsVolumeHeader::from_bytes(&synthetic_volume_header(3, 1, 4096)).unwrap();
+
+    assert_eq!(header.cluster_block_size, 4096);
+    assert_eq!(header.metadata_block_size, 4096);
+    assert_eq!(header.major_version, 3);
+    assert_eq!(header.minor_version, 1);
+    assert_eq!(header.container_size, 0x4000);
+  }
+
+  #[test]
   fn parses_superblock_fixture() {
     let bytes = std::fs::read(fixture_path("superblock.1")).unwrap();
     let superblock = parse_superblock_metadata(&bytes, 1).unwrap();
@@ -708,14 +809,51 @@ mod tests {
   }
 
   #[test]
+  fn parses_v3_superblock_fixture() {
+    let bytes = std::fs::read(fixture_path("superblock.2")).unwrap();
+    let superblock = parse_superblock_metadata(&bytes, 3).unwrap();
+
+    assert_eq!(superblock.primary_checkpoint_block_number, 5112);
+    assert_eq!(superblock.secondary_checkpoint_block_number, 60_980);
+  }
+
+  #[test]
   fn parses_checkpoint_fixture() {
     let bytes = std::fs::read(fixture_path("checkpoint.1")).unwrap();
     let checkpoint = parse_checkpoint_metadata(&bytes, 1).unwrap();
 
     assert_eq!(checkpoint.sequence_number, 10);
     assert_eq!(checkpoint.block_references.len(), 6);
-    assert_eq!(checkpoint.block_references[0].block_number, 119);
-    assert_eq!(checkpoint.block_references[5].block_number, 122);
+    assert_eq!(checkpoint.block_references[0].block_numbers, [119, 0, 0, 0]);
+    assert_eq!(checkpoint.block_references[5].block_numbers, [122, 0, 0, 0]);
+  }
+
+  #[test]
+  fn parses_v3_checkpoint_fixture() {
+    let bytes = std::fs::read(fixture_path("checkpoint.2")).unwrap();
+    let checkpoint = parse_checkpoint_metadata(&bytes, 3).unwrap();
+
+    assert_eq!(checkpoint.sequence_number, 33);
+    assert_eq!(checkpoint.block_references.len(), 13);
+    assert_eq!(
+      checkpoint.block_references[0].block_numbers,
+      [78_770, 78_771, 78_772, 78_773]
+    );
+    assert_eq!(
+      checkpoint.block_references[12].block_numbers,
+      [88, 89, 90, 91]
+    );
+  }
+
+  #[test]
+  fn parses_v3_block_reference_fixture() {
+    let bytes = std::fs::read(fixture_path("block_descriptor.2")).unwrap();
+    let reference = parse_block_reference(&bytes, 3).unwrap();
+
+    assert_eq!(reference.block_numbers, [30, 0, 0, 0]);
+    assert_eq!(reference.checksum_type, 1);
+    assert_eq!(reference.checksum_data_offset, 8);
+    assert_eq!(reference.checksum_data_size, 4);
   }
 
   #[test]
