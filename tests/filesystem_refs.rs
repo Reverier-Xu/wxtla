@@ -111,6 +111,13 @@ fn refs_fixture_reads_regular_files() {
   );
 
   let not_deleted = child_named(&file_system, &root_id, "NotDeleted.txt").unwrap();
+  let streams = file_system.data_streams(&not_deleted.node_id).unwrap();
+  assert_eq!(streams.len(), 1);
+  assert_eq!(streams[0].name, None);
+  assert_eq!(
+    streams[0].size,
+    file_system.node(&not_deleted.node_id).unwrap().size
+  );
   assert_eq!(
     String::from_utf8(
       file_system

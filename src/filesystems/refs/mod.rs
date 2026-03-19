@@ -6,7 +6,7 @@ mod filesystem;
 mod parser;
 
 pub use driver::RefsDriver;
-pub use filesystem::{RefsFileSystem, RefsNodeDetails};
+pub use filesystem::{RefsDataStreamInfo, RefsFileSystem, RefsNodeDetails};
 pub use parser::RefsVolumeHeader;
 
 use crate::{

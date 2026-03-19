@@ -1,7 +1,7 @@
 //! Read-only ReFS v1 filesystem surface.
 
 use std::{
-  collections::{HashMap, HashSet},
+  collections::{BTreeMap, HashMap, HashSet},
   sync::Arc,
 };
 
@@ -9,12 +9,13 @@ use super::{
   DESCRIPTOR,
   data_source::RefsDataRunsDataSource,
   parser::{
-    OBJECTS_TREE_INDEX, ROOT_DIRECTORY_OBJECT_ID, RefsAttribute, RefsAttributeValue,
-    RefsBlockReference, RefsCheckpoint, RefsMinistoreNode, RefsNodeRecord, RefsVolumeHeader,
-    build_object_key, parse_block_reference_v1, parse_checkpoint_metadata,
+    ATTRIBUTE_NON_RESIDENT_HEADER_SIZE, OBJECTS_TREE_INDEX, ROOT_DIRECTORY_OBJECT_ID,
+    RefsAttribute, RefsAttributeValue, RefsBlockReference, RefsCheckpoint, RefsMinistoreNode,
+    RefsNodeRecord, RefsVolumeHeader, build_object_key, decode_utf16le_string, le_u32, le_u64,
+    parse_block_reference_v1, parse_checkpoint_metadata, parse_data_run,
     parse_directory_entry_name, parse_directory_entry_type, parse_directory_values,
-    parse_file_attributes, parse_file_values, parse_metadata_block_header_v1,
-    parse_ministore_node_data, parse_superblock_metadata,
+    parse_file_values, parse_metadata_block_header_v1, parse_ministore_node_data,
+    parse_resident_attribute, parse_superblock_metadata,
   },
 };
 use crate::{
@@ -39,10 +40,16 @@ pub struct RefsNodeDetails {
   pub access_time: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefsDataStreamInfo {
+  pub name: Option<String>,
+  pub size: u64,
+}
+
 struct RefsNode {
   record: FileSystemNodeRecord,
   details: RefsNodeDetails,
-  data_source: Option<DataSourceHandle>,
+  streams: BTreeMap<Option<String>, DataSourceHandle>,
 }
 
 pub struct RefsFileSystem {
@@ -93,9 +100,9 @@ impl RefsFileSystem {
       })?;
     let objects_root =
       read_ministore_node_from_reference(source.clone(), &volume_header, objects_reference)?;
-    if (objects_root.node_type_flags & 0x03) != 0x02 {
+    if (objects_root.node_type_flags & 0x02) == 0 {
       return Err(Error::InvalidFormat(
-        "refs objects tree root node must be a root leaf node".to_string(),
+        "refs objects tree root node must be a root node".to_string(),
       ));
     }
 
@@ -125,6 +132,39 @@ impl RefsFileSystem {
       .get(&identifier)
       .map(|node| node.details.clone())
       .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))
+  }
+
+  pub fn data_streams(&self, node_id: &FileSystemNodeId) -> Result<Vec<RefsDataStreamInfo>> {
+    let identifier = decode_node_id(node_id)?;
+    let node = self
+      .nodes
+      .get(&identifier)
+      .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))?;
+    node
+      .streams
+      .iter()
+      .map(|(name, source)| {
+        Ok(RefsDataStreamInfo {
+          name: name.clone(),
+          size: source.size()?,
+        })
+      })
+      .collect::<Result<Vec<_>>>()
+  }
+
+  pub fn open_data_stream(
+    &self, node_id: &FileSystemNodeId, name: Option<&str>,
+  ) -> Result<DataSourceHandle> {
+    let identifier = decode_node_id(node_id)?;
+    let node = self
+      .nodes
+      .get(&identifier)
+      .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))?;
+    node
+      .streams
+      .get(&name.map(str::to_string))
+      .cloned()
+      .ok_or_else(|| Error::NotFound("refs data stream was not found".to_string()))
   }
 }
 
@@ -163,15 +203,7 @@ impl FileSystem for RefsFileSystem {
   }
 
   fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
-    let identifier = decode_node_id(file_id)?;
-    let node = self
-      .nodes
-      .get(&identifier)
-      .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))?;
-    node
-      .data_source
-      .clone()
-      .ok_or_else(|| Error::NotFound("refs node does not expose file data".to_string()))
+    self.open_data_stream(file_id, None)
   }
 }
 
@@ -203,7 +235,7 @@ fn build_directory_tree(
         entry_modification_time: 0,
         access_time: 0,
       },
-      data_source: None,
+      streams: BTreeMap::new(),
     });
 
   let root = get_object_ministore_tree(context, object_identifier)?;
@@ -265,7 +297,7 @@ fn read_directory_node(
                 entry_modification_time: values.entry_modification_time,
                 access_time: values.access_time,
               },
-              data_source: None,
+              streams: BTreeMap::new(),
             },
           );
           directory_entries.push(DirectoryEntry::new(
@@ -307,43 +339,18 @@ fn read_directory_node(
 fn parse_file_entry(context: &RefsContext, record: &RefsNodeRecord) -> Result<RefsNode> {
   let file_node =
     parse_ministore_node_data(&record.value_data, context.volume_header.major_version)?;
-  if (file_node.node_type_flags & 0x03) != 0x02 {
+  if (file_node.node_type_flags & 0x02) == 0 {
     return Err(Error::InvalidFormat(
-      "refs file values node must be a root leaf node".to_string(),
+      "refs file values node must be a root node".to_string(),
     ));
   }
   let file_values = parse_file_values(&file_node.header_data)?;
-  let attributes = parse_file_attributes(&file_node)?;
-  let default_data = attributes.into_iter().find(|attribute| {
-    attribute.attribute_type == 0x80 && attribute.name.as_deref().is_none_or(str::is_empty)
-  });
+  let attributes = collect_file_attributes(context, &file_node)?;
+  let streams = build_stream_sources(context, &attributes)?;
 
   let identifier = RefsIdentifier {
     lower: file_values.identifier_lower,
     upper: file_values.identifier_upper,
-  };
-  let data_source = match default_data {
-    Some(RefsAttribute {
-      value: RefsAttributeValue::Resident(data),
-      ..
-    }) => Some(Arc::new(BytesDataSource::new(data)) as DataSourceHandle),
-    Some(RefsAttribute {
-      value:
-        RefsAttributeValue::NonResident {
-          data_size,
-          valid_data_size,
-          data_runs,
-          ..
-        },
-      ..
-    }) => Some(Arc::new(RefsDataRunsDataSource {
-      source: context.source.clone(),
-      metadata_block_size: u64::from(context.volume_header.metadata_block_size),
-      data_size,
-      valid_data_size,
-      data_runs: Arc::from(data_runs.into_boxed_slice()),
-    }) as DataSourceHandle),
-    None => None,
   };
 
   Ok(RefsNode {
@@ -359,7 +366,7 @@ fn parse_file_entry(context: &RefsContext, record: &RefsNodeRecord) -> Result<Re
       entry_modification_time: file_values.entry_modification_time,
       access_time: file_values.access_time,
     },
-    data_source,
+    streams,
   })
 }
 
@@ -367,9 +374,8 @@ fn get_object_ministore_tree(
   context: &RefsContext, object_identifier: u64,
 ) -> Result<RefsMinistoreNode> {
   let key = build_object_key(object_identifier);
-  let record = context
-    .objects_root
-    .records
+  let records = collect_leaf_records_from_source(context, &context.objects_root)?;
+  let record = records
     .iter()
     .find(|record| record.key_data.as_ref() == key)
     .ok_or_else(|| {
@@ -379,6 +385,156 @@ fn get_object_ministore_tree(
     })?;
   let reference = parse_block_reference_v1(&record.value_data)?;
   read_ministore_node_from_reference(context.source.clone(), &context.volume_header, &reference)
+}
+
+fn collect_file_attributes(
+  context: &RefsContext, node: &RefsMinistoreNode,
+) -> Result<Vec<RefsAttribute>> {
+  let records = collect_leaf_records_from_source(context, node)?;
+  if records.is_empty() {
+    return Err(Error::InvalidFormat(
+      "refs file values node does not contain attribute records".to_string(),
+    ));
+  }
+
+  records
+    .iter()
+    .map(|record| parse_attribute_record_with_context(context, record))
+    .collect()
+}
+
+fn parse_attribute_record_with_context(
+  context: &RefsContext, record: &RefsNodeRecord,
+) -> Result<RefsAttribute> {
+  if record.key_data.len() < 14 {
+    return Err(Error::InvalidFormat(
+      "refs attribute key data is truncated".to_string(),
+    ));
+  }
+
+  let attribute_type = le_u32(&record.key_data[8..12]);
+  let name = decode_utf16le_string(&record.key_data[12..])?;
+  let name = if name.is_empty() { None } else { Some(name) };
+  let value = if record.flags & 0x0008 != 0 {
+    parse_non_resident_attribute_with_context(context, &record.value_data)?
+  } else {
+    parse_resident_attribute(&record.value_data)?
+  };
+
+  Ok(RefsAttribute {
+    attribute_type,
+    name,
+    value,
+  })
+}
+
+fn parse_non_resident_attribute_with_context(
+  context: &RefsContext, bytes: &[u8],
+) -> Result<RefsAttributeValue> {
+  let node = parse_ministore_node_data(bytes, context.volume_header.major_version)?;
+  if (node.node_type_flags & 0x02) == 0 {
+    return Err(Error::InvalidFormat(
+      "refs non-resident attribute node must be a root node".to_string(),
+    ));
+  }
+  if node.header_data.len() != ATTRIBUTE_NON_RESIDENT_HEADER_SIZE {
+    return Err(Error::InvalidFormat(
+      "refs non-resident attribute header-data size is invalid".to_string(),
+    ));
+  }
+
+  let records = collect_leaf_records_from_source(context, &node)?;
+  let mut data_runs = Vec::with_capacity(records.len());
+  for record in records {
+    data_runs.push(parse_data_run(&record.value_data)?);
+  }
+
+  Ok(RefsAttributeValue::NonResident {
+    allocated_data_size: le_u64(&node.header_data[12..20]),
+    data_size: le_u64(&node.header_data[20..28]),
+    valid_data_size: le_u64(&node.header_data[28..36]),
+    data_runs,
+  })
+}
+
+fn build_stream_sources(
+  context: &RefsContext, attributes: &[RefsAttribute],
+) -> Result<BTreeMap<Option<String>, DataSourceHandle>> {
+  let mut grouped = BTreeMap::<Option<String>, Vec<RefsAttribute>>::new();
+  for attribute in attributes {
+    let key = match attribute.attribute_type {
+      0x80 => None,
+      0xB0 => attribute.name.clone(),
+      _ => continue,
+    };
+    grouped.entry(key).or_default().push(attribute.clone());
+  }
+
+  let mut streams = BTreeMap::new();
+  for (name, attributes) in grouped {
+    if attributes.len() != 1 {
+      return Err(Error::InvalidFormat(
+        "fragmented refs data streams are not supported yet".to_string(),
+      ));
+    }
+    let attribute = &attributes[0];
+    let source = match &attribute.value {
+      RefsAttributeValue::Resident(data) => {
+        Arc::new(BytesDataSource::new(data.clone())) as DataSourceHandle
+      }
+      RefsAttributeValue::NonResident {
+        data_size,
+        valid_data_size,
+        data_runs,
+        ..
+      } => Arc::new(RefsDataRunsDataSource {
+        source: context.source.clone(),
+        metadata_block_size: u64::from(context.volume_header.metadata_block_size),
+        data_size: *data_size,
+        valid_data_size: *valid_data_size,
+        data_runs: Arc::from(data_runs.clone().into_boxed_slice()),
+      }) as DataSourceHandle,
+    };
+    streams.insert(name, source);
+  }
+
+  Ok(streams)
+}
+
+fn collect_leaf_records_from_source(
+  context: &RefsContext, node: &RefsMinistoreNode,
+) -> Result<Vec<RefsNodeRecord>> {
+  let mut loader = |reference: &RefsBlockReference| {
+    read_ministore_node_from_reference(context.source.clone(), &context.volume_header, reference)
+  };
+  collect_leaf_records_with(node, 0, &mut loader)
+}
+
+fn collect_leaf_records_with<F>(
+  node: &RefsMinistoreNode, depth: usize, load_subnode: &mut F,
+) -> Result<Vec<RefsNodeRecord>>
+where
+  F: FnMut(&RefsBlockReference) -> Result<RefsMinistoreNode>, {
+  if depth > 256 {
+    return Err(Error::InvalidFormat(
+      "refs tree recursion depth exceeded".to_string(),
+    ));
+  }
+  if node.node_type_flags & 0x01 == 0 {
+    return Ok(node.records.clone());
+  }
+
+  let mut records = Vec::new();
+  for record in &node.records {
+    let reference = parse_block_reference_v1(&record.value_data)?;
+    let sub_node = load_subnode(&reference)?;
+    records.extend(collect_leaf_records_with(
+      &sub_node,
+      depth + 1,
+      load_subnode,
+    )?);
+  }
+  Ok(records)
 }
 
 fn read_checkpoint(
@@ -430,4 +586,111 @@ fn decode_node_id(node_id: &FileSystemNodeId) -> Result<RefsIdentifier> {
     lower: u64::from_le_bytes(lower),
     upper: u64::from_le_bytes(upper),
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{collections::HashMap, sync::Arc};
+
+  use super::*;
+  use crate::BytesDataSource;
+
+  fn sample_context() -> RefsContext {
+    RefsContext {
+      source: Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))),
+      volume_header: RefsVolumeHeader {
+        bytes_per_sector: 512,
+        cluster_block_size: 65_536,
+        metadata_block_size: 16 * 1024,
+        volume_size: 1024 * 1024,
+        major_version: 1,
+        minor_version: 2,
+        volume_serial_number: 1,
+        container_size: 0,
+      },
+      objects_root: RefsMinistoreNode {
+        header_data: Arc::<[u8]>::from(Vec::<u8>::new()),
+        node_type_flags: 0x02,
+        records: vec![],
+      },
+    }
+  }
+
+  fn record_with_reference(block_number: u64) -> RefsNodeRecord {
+    let mut value = Vec::new();
+    value.extend_from_slice(&block_number.to_le_bytes());
+    value.extend_from_slice(&0u16.to_le_bytes());
+    value.push(2);
+    value.push(8);
+    value.extend_from_slice(&8u16.to_le_bytes());
+    value.extend_from_slice(&0u16.to_le_bytes());
+    RefsNodeRecord {
+      size: 0,
+      flags: 0,
+      key_data: Arc::<[u8]>::from(Vec::<u8>::new()),
+      value_data: Arc::from(value.into_boxed_slice()),
+    }
+  }
+
+  #[test]
+  fn collects_leaf_records_from_branch_nodes() {
+    let leaf = RefsMinistoreNode {
+      header_data: Arc::<[u8]>::from(Vec::<u8>::new()),
+      node_type_flags: 0x02,
+      records: vec![RefsNodeRecord {
+        size: 0,
+        flags: 0,
+        key_data: Arc::from(vec![1, 2, 3].into_boxed_slice()),
+        value_data: Arc::from(vec![4, 5, 6].into_boxed_slice()),
+      }],
+    };
+    let branch = RefsMinistoreNode {
+      header_data: Arc::<[u8]>::from(Vec::<u8>::new()),
+      node_type_flags: 0x03,
+      records: vec![record_with_reference(7)],
+    };
+    let mut children = HashMap::from([(7u64, leaf)]);
+    let mut loader = |reference: &RefsBlockReference| {
+      children
+        .remove(&reference.block_number)
+        .ok_or_else(|| Error::NotFound("missing synthetic child node".to_string()))
+    };
+
+    let records = collect_leaf_records_with(&branch, 0, &mut loader).unwrap();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].key_data.as_ref(), &[1, 2, 3]);
+  }
+
+  #[test]
+  fn builds_named_data_stream_sources() {
+    let context = sample_context();
+    let streams = build_stream_sources(
+      &context,
+      &[
+        RefsAttribute {
+          attribute_type: 0x80,
+          name: None,
+          value: RefsAttributeValue::Resident(Arc::from(&b"default"[..])),
+        },
+        RefsAttribute {
+          attribute_type: 0xB0,
+          name: Some("secret".to_string()),
+          value: RefsAttributeValue::Resident(Arc::from(&b"named"[..])),
+        },
+      ],
+    )
+    .unwrap();
+
+    assert_eq!(streams.len(), 2);
+    assert_eq!(streams.get(&None).unwrap().read_all().unwrap(), b"default");
+    assert_eq!(
+      streams
+        .get(&Some("secret".to_string()))
+        .unwrap()
+        .read_all()
+        .unwrap(),
+      b"named"
+    );
+  }
 }

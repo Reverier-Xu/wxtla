@@ -567,44 +567,6 @@ pub(crate) fn parse_directory_entry_type(key_data: &[u8]) -> Result<u16> {
   Ok(le_u16(&key_data[2..4]))
 }
 
-pub(crate) fn parse_file_attributes(node: &RefsMinistoreNode) -> Result<Vec<RefsAttribute>> {
-  if (node.node_type_flags & 0x03) != 0x02 {
-    return Err(Error::InvalidFormat(
-      "refs file values node must be a root leaf node".to_string(),
-    ));
-  }
-  if node.header_data.len() != FILE_VALUES_SIZE {
-    return Err(Error::InvalidFormat(
-      "refs file values node header-data size is invalid".to_string(),
-    ));
-  }
-
-  node.records.iter().map(parse_attribute_record).collect()
-}
-
-pub(crate) fn parse_attribute_record(record: &RefsNodeRecord) -> Result<RefsAttribute> {
-  if record.key_data.len() < 14 {
-    return Err(Error::InvalidFormat(
-      "refs attribute key data is truncated".to_string(),
-    ));
-  }
-
-  let attribute_type = le_u32(&record.key_data[8..12]);
-  let name = decode_utf16le_string(&record.key_data[12..])?;
-  let name = if name.is_empty() { None } else { Some(name) };
-  let value = if record.flags & 0x0008 != 0 {
-    parse_non_resident_attribute(&record.value_data)?
-  } else {
-    parse_resident_attribute(&record.value_data)?
-  };
-
-  Ok(RefsAttribute {
-    attribute_type,
-    name,
-    value,
-  })
-}
-
 pub(crate) fn parse_resident_attribute(bytes: &[u8]) -> Result<RefsAttributeValue> {
   if bytes.len() < ATTRIBUTE_RESIDENT_HEADER_SIZE {
     return Err(Error::InvalidFormat(
@@ -633,33 +595,6 @@ pub(crate) fn parse_resident_attribute(bytes: &[u8]) -> Result<RefsAttributeValu
   Ok(RefsAttributeValue::Resident(Arc::from(
     &bytes[inline_data_offset..inline_data_end],
   )))
-}
-
-pub(crate) fn parse_non_resident_attribute(bytes: &[u8]) -> Result<RefsAttributeValue> {
-  let node = parse_ministore_node_data(bytes, 1)?;
-  if (node.node_type_flags & 0x03) != 0x02 {
-    return Err(Error::InvalidFormat(
-      "refs non-resident attribute node must be a root leaf node".to_string(),
-    ));
-  }
-  if node.header_data.len() != ATTRIBUTE_NON_RESIDENT_HEADER_SIZE {
-    return Err(Error::InvalidFormat(
-      "refs non-resident attribute header-data size is invalid".to_string(),
-    ));
-  }
-
-  let header = node.header_data.as_ref();
-  let mut data_runs = Vec::with_capacity(node.records.len());
-  for record in &node.records {
-    data_runs.push(parse_data_run(&record.value_data)?);
-  }
-
-  Ok(RefsAttributeValue::NonResident {
-    allocated_data_size: le_u64(&header[12..20]),
-    data_size: le_u64(&header[20..28]),
-    valid_data_size: le_u64(&header[28..36]),
-    data_runs,
-  })
 }
 
 pub(crate) fn parse_data_run(bytes: &[u8]) -> Result<RefsDataRun> {
