@@ -18,6 +18,7 @@ const ATTRIBUTE_TYPE_DATA: u32 = 0x0000_0080;
 const ATTRIBUTE_TYPE_REPARSE_POINT: u32 = 0x0000_00C0;
 const ATTRIBUTE_TYPE_END: u32 = 0xFFFF_FFFF;
 
+const ATTRIBUTE_FLAG_COMPRESSION_MASK: u16 = 0x00FF;
 const ATTRIBUTE_FLAG_ENCRYPTED: u16 = 0x4000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub(crate) struct NtfsFileNameAttribute {
 pub(crate) struct NtfsNonResidentAttribute {
   pub first_vcn: u64,
   pub last_vcn: u64,
+  pub compression_unit: u16,
   pub data_size: u64,
   pub valid_data_size: u64,
   pub runlist: Arc<[u8]>,
@@ -59,7 +61,6 @@ pub(crate) struct NtfsFileRecord {
   pub data_attributes: Vec<NtfsDataAttribute>,
   pub attribute_list_entries: Vec<NtfsAttributeListEntry>,
   pub reparse_point: Option<NtfsReparsePointInfo>,
-  pub has_attribute_list: bool,
   pub has_reparse_point: bool,
 }
 
@@ -117,7 +118,6 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
   let mut data_attributes = Vec::new();
   let mut attribute_list_entries = Vec::new();
   let mut reparse_point = None;
-  let mut has_attribute_list = false;
   let mut has_reparse_point = false;
   let mut cursor = attributes_offset;
   let used = &fixed[..used_size];
@@ -175,7 +175,6 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
           attribute,
           "ntfs $ATTRIBUTE_LIST",
         )?)?);
-        has_attribute_list = true;
       }
       ATTRIBUTE_TYPE_FILE_NAME => {
         if non_resident {
@@ -223,7 +222,6 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
     data_attributes,
     attribute_list_entries,
     reparse_point,
-    has_attribute_list,
     has_reparse_point,
   }))
 }
@@ -328,15 +326,17 @@ fn parse_data_attribute(
       )));
     }
     let compression_unit = le_u16(&attribute[34..36]);
-    if compression_unit != 0 || data_flags & 0x00FF != 0 {
+    let compression_method = data_flags & ATTRIBUTE_FLAG_COMPRESSION_MASK;
+    if compression_method > 1 {
       return Err(Error::InvalidFormat(format!(
-        "compressed ntfs data attributes are not supported in record {record_number}"
+        "unsupported ntfs compression method 0x{compression_method:04x} in record {record_number}"
       )));
     }
 
     NtfsDataAttributeValue::NonResident(NtfsNonResidentAttribute {
       first_vcn,
       last_vcn,
+      compression_unit,
       data_size: le_u64(&attribute[48..56]),
       valid_data_size: le_u64(&attribute[56..64]),
       runlist: Arc::from(&attribute[runlist_offset..]),
@@ -429,10 +429,40 @@ fn le_u64(bytes: &[u8]) -> u64 {
 mod tests {
   use super::*;
 
+  fn non_resident_data_attribute_bytes(data_flags: u16, compression_unit: u16) -> Vec<u8> {
+    let mut attribute = vec![0u8; 70];
+    attribute[8] = 1;
+    attribute[12..14].copy_from_slice(&data_flags.to_le_bytes());
+    attribute[14..16].copy_from_slice(&5u16.to_le_bytes());
+    attribute[24..32].copy_from_slice(&15u64.to_le_bytes());
+    attribute[32..34].copy_from_slice(&64u16.to_le_bytes());
+    attribute[34..36].copy_from_slice(&compression_unit.to_le_bytes());
+    attribute[48..56].copy_from_slice(&12u64.to_le_bytes());
+    attribute[56..64].copy_from_slice(&12u64.to_le_bytes());
+    attribute[64..70].copy_from_slice(&[0x11, 0x01, 0x01, 0x01, 0x0F, 0x00]);
+    attribute
+  }
+
   #[test]
   fn decodes_file_reference_record_number() {
     let reference = [0x34, 0x12, 0, 0, 0, 0, 0x78, 0x56];
 
     assert_eq!(decode_file_reference(&reference).unwrap(), 0x1234);
+  }
+
+  #[test]
+  fn parses_compressed_nonresident_data_attributes() {
+    let attribute = non_resident_data_attribute_bytes(0x0001, 0);
+
+    let parsed = parse_data_attribute(&attribute, None, 5, 50).unwrap();
+
+    let NtfsDataAttributeValue::NonResident(non_resident) = parsed.value else {
+      panic!("expected a non-resident attribute");
+    };
+    assert_eq!(non_resident.first_vcn, 0);
+    assert_eq!(non_resident.last_vcn, 15);
+    assert_eq!(non_resident.compression_unit, 0);
+    assert_eq!(non_resident.data_size, 12);
+    assert_eq!(non_resident.valid_data_size, 12);
   }
 }

@@ -13,7 +13,7 @@ use super::{
     parse_file_record,
   },
   reparse::NtfsReparsePointInfo,
-  runlist::{NtfsDataRun, NtfsNonResidentDataSource, parse_runlist},
+  runlist::{NtfsCompressedDataSource, NtfsDataRun, NtfsNonResidentDataSource, parse_runlist},
 };
 use crate::{
   BytesDataSource, DataSourceHandle, Error, Result, SourceHints,
@@ -23,6 +23,7 @@ use crate::{
 };
 
 const ROOT_FILE_RECORD_NUMBER: u64 = 5;
+const DEFAULT_NTFS_COMPRESSION_UNIT_CLUSTERS: u64 = 16;
 
 type NtfsChildrenIndex = Arc<HashMap<u64, Arc<[DirectoryEntry]>>>;
 
@@ -63,14 +64,19 @@ impl NtfsFileSystem {
     let mft_record = parse_file_record(&first_record, 0)?.ok_or_else(|| {
       Error::InvalidFormat("ntfs master file table record is not in use".to_string())
     })?;
-    if mft_record.has_attribute_list {
-      return Err(Error::InvalidFormat(
-        "ntfs master file table attribute lists are not supported".to_string(),
-      ));
-    }
-
-    let mft_stream =
+    let bootstrap_mft_stream =
       build_stream_data_source(source.clone(), &boot_sector, &mft_record.data_attributes)?;
+    let resolved_mft_record =
+      resolve_bootstrap_mft_record(bootstrap_mft_stream.clone(), file_record_size, &mft_record)?;
+    let mft_stream = if resolved_mft_record.attribute_list_entries.is_empty() {
+      bootstrap_mft_stream
+    } else {
+      build_stream_data_source(
+        source.clone(),
+        &boot_sector,
+        &resolved_mft_record.data_attributes,
+      )?
+    };
     let mft_stream_size = mft_stream.size()?;
     if mft_stream_size < file_record_size {
       return Err(Error::InvalidFormat(
@@ -341,6 +347,31 @@ fn grouped_stream_attributes(
   streams
 }
 
+fn resolve_bootstrap_mft_record(
+  bootstrap_mft_stream: DataSourceHandle, file_record_size: u64, record: &NtfsFileRecord,
+) -> Result<NtfsFileRecord> {
+  if record.attribute_list_entries.is_empty() {
+    return Ok(record.clone());
+  }
+
+  let record_count = bootstrap_mft_stream.size()? / file_record_size;
+  resolve_attribute_list_record(0, record, &mut |referenced_record| {
+    if referenced_record >= record_count {
+      return Ok(None);
+    }
+
+    let record_offset = referenced_record
+      .checked_mul(file_record_size)
+      .ok_or_else(|| Error::InvalidRange("ntfs MFT record offset overflow".to_string()))?;
+    let bytes = read_file_record(
+      bootstrap_mft_stream.as_ref(),
+      record_offset,
+      file_record_size,
+    )?;
+    parse_file_record(&bytes, referenced_record)
+  })
+}
+
 fn resolve_attribute_list_record<F>(
   record_number: u64, record: &NtfsFileRecord, load_record: &mut F,
 ) -> Result<NtfsFileRecord>
@@ -510,6 +541,12 @@ fn build_stream_data_source(
 
   let (stream_size, valid_size) =
     primary_non_resident_sizes(non_resident.iter().map(|(_, attribute)| attribute));
+  let compression_unit_size = compression_unit_size(
+    non_resident
+      .iter()
+      .map(|(data_flags, attribute)| (*data_flags, attribute)),
+    cluster_size,
+  )?;
   let mut expected_vcn = 0u64;
   let mut runs = Vec::<NtfsDataRun>::new();
 
@@ -532,11 +569,25 @@ fn build_stream_data_source(
     expected_vcn = next_vcn_after_attribute(&attribute)?;
   }
 
+  let runs = Arc::from(runs.into_boxed_slice());
+  let valid_size = valid_size.min(stream_size);
+
+  if let Some(compression_unit_size) = compression_unit_size {
+    return Ok(Arc::new(NtfsCompressedDataSource::new(
+      source,
+      runs,
+      stream_size,
+      valid_size,
+      cluster_size,
+      compression_unit_size,
+    )) as DataSourceHandle);
+  }
+
   Ok(Arc::new(NtfsNonResidentDataSource::new(
     source,
-    Arc::from(runs.into_boxed_slice()),
+    runs,
     stream_size,
-    valid_size.min(stream_size),
+    valid_size,
   )) as DataSourceHandle)
 }
 
@@ -560,6 +611,49 @@ fn next_vcn_after_attribute(attribute: &NtfsNonResidentAttribute) -> Result<u64>
     .last_vcn
     .checked_add(1)
     .ok_or_else(|| Error::InvalidRange("ntfs VCN range overflow".to_string()))
+}
+
+fn compression_unit_size<'a>(
+  attributes: impl IntoIterator<Item = (u16, &'a NtfsNonResidentAttribute)>, cluster_size: u64,
+) -> Result<Option<u64>> {
+  let mut compression_unit_clusters = None;
+
+  for (data_flags, attribute) in attributes {
+    let compression_method = data_flags & 0x00FF;
+    if compression_method == 0 {
+      continue;
+    }
+    if compression_method != 1 {
+      return Err(Error::InvalidFormat(format!(
+        "unsupported ntfs compression method 0x{compression_method:04x}"
+      )));
+    }
+
+    let unit_clusters = if attribute.compression_unit == 0 {
+      DEFAULT_NTFS_COMPRESSION_UNIT_CLUSTERS
+    } else {
+      1u64
+        .checked_shl(u32::from(attribute.compression_unit))
+        .ok_or_else(|| Error::InvalidRange("ntfs compression unit overflow".to_string()))?
+    };
+    if let Some(current) = compression_unit_clusters {
+      if current != unit_clusters {
+        return Err(Error::InvalidFormat(
+          "ntfs compressed attribute chains must use a consistent compression unit".to_string(),
+        ));
+      }
+    } else {
+      compression_unit_clusters = Some(unit_clusters);
+    }
+  }
+
+  compression_unit_clusters
+    .map(|unit_clusters| {
+      unit_clusters
+        .checked_mul(cluster_size)
+        .ok_or_else(|| Error::InvalidRange("ntfs compression unit size overflow".to_string()))
+    })
+    .transpose()
 }
 
 fn parse_attribute_runs(
@@ -602,6 +696,12 @@ mod tests {
   use super::*;
   use crate::filesystems::ntfs::NtfsAttributeListEntry;
 
+  #[derive(Clone, Copy, Default)]
+  struct NonResidentOptions {
+    data_flags: u16,
+    compression_unit: u16,
+  }
+
   fn resident_data_attribute(data: &[u8], attribute_id: u16) -> NtfsDataAttribute {
     NtfsDataAttribute {
       attribute_id,
@@ -615,13 +715,29 @@ mod tests {
     first_vcn: u64, last_vcn: u64, data_size: u64, valid_data_size: u64, runlist: &[u8],
     attribute_id: u16,
   ) -> NtfsDataAttribute {
+    non_resident_data_attribute_with_flags(
+      first_vcn,
+      last_vcn,
+      data_size,
+      valid_data_size,
+      runlist,
+      attribute_id,
+      NonResidentOptions::default(),
+    )
+  }
+
+  fn non_resident_data_attribute_with_flags(
+    first_vcn: u64, last_vcn: u64, data_size: u64, valid_data_size: u64, runlist: &[u8],
+    attribute_id: u16, options: NonResidentOptions,
+  ) -> NtfsDataAttribute {
     NtfsDataAttribute {
       attribute_id,
       name: None,
-      data_flags: 0,
+      data_flags: options.data_flags,
       value: NtfsDataAttributeValue::NonResident(NtfsNonResidentAttribute {
         first_vcn,
         last_vcn,
+        compression_unit: options.compression_unit,
         data_size,
         valid_data_size,
         runlist: Arc::from(runlist),
@@ -642,6 +758,48 @@ mod tests {
     }
   }
 
+  fn synthetic_non_resident_attribute_bytes(
+    first_vcn: u64, last_vcn: u64, data_size: u64, valid_data_size: u64, runlist: &[u8],
+    attribute_id: u16,
+  ) -> Vec<u8> {
+    let attribute_size = (64 + runlist.len()).next_multiple_of(8);
+    let mut attribute = vec![0u8; attribute_size];
+    attribute[0..4].copy_from_slice(&0x80u32.to_le_bytes());
+    attribute[4..8].copy_from_slice(&(u32::try_from(attribute_size).unwrap()).to_le_bytes());
+    attribute[8] = 1;
+    attribute[14..16].copy_from_slice(&attribute_id.to_le_bytes());
+    attribute[16..24].copy_from_slice(&first_vcn.to_le_bytes());
+    attribute[24..32].copy_from_slice(&last_vcn.to_le_bytes());
+    attribute[32..34].copy_from_slice(&64u16.to_le_bytes());
+    attribute[40..48].copy_from_slice(&data_size.to_le_bytes());
+    attribute[48..56].copy_from_slice(&data_size.to_le_bytes());
+    attribute[56..64].copy_from_slice(&valid_data_size.to_le_bytes());
+    attribute[64..64 + runlist.len()].copy_from_slice(runlist);
+    attribute
+  }
+
+  fn synthetic_file_record(attribute: &[u8]) -> Vec<u8> {
+    let mut record = vec![0u8; 512];
+    record[0..4].copy_from_slice(b"FILE");
+    record[4..6].copy_from_slice(&48u16.to_le_bytes());
+    record[6..8].copy_from_slice(&2u16.to_le_bytes());
+    record[16..18].copy_from_slice(&1u16.to_le_bytes());
+    record[20..22].copy_from_slice(&56u16.to_le_bytes());
+    record[22..24].copy_from_slice(&0x0001u16.to_le_bytes());
+    let used_size = 56 + attribute.len() + 4;
+    let record_size = u32::try_from(record.len()).unwrap();
+    record[24..28].copy_from_slice(&(u32::try_from(used_size).unwrap()).to_le_bytes());
+    record[28..32].copy_from_slice(&record_size.to_le_bytes());
+    record[40..42].copy_from_slice(&2u16.to_le_bytes());
+    record[48..50].copy_from_slice(&[0xAA, 0xBB]);
+    record[50..52].copy_from_slice(&[0x11, 0x22]);
+    record[56..56 + attribute.len()].copy_from_slice(attribute);
+    record[56 + attribute.len()..60 + attribute.len()]
+      .copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+    record[510..512].copy_from_slice(&[0xAA, 0xBB]);
+    record
+  }
+
   #[test]
   fn resolves_attribute_list_extension_records() {
     let base_record = NtfsFileRecord {
@@ -659,7 +817,6 @@ mod tests {
         name: None,
       }],
       reparse_point: None,
-      has_attribute_list: true,
       has_reparse_point: false,
     };
     let extension_record = NtfsFileRecord {
@@ -674,7 +831,6 @@ mod tests {
       data_attributes: vec![resident_data_attribute(b"extension", 7)],
       attribute_list_entries: vec![],
       reparse_point: None,
-      has_attribute_list: false,
       has_reparse_point: false,
     };
     let records = HashMap::from([(42u64, extension_record)]);
@@ -684,6 +840,55 @@ mod tests {
 
     assert_eq!(resolved.file_names[0].name, "merged.txt");
     assert_eq!(resolved.data_attributes.len(), 2);
+  }
+
+  #[test]
+  fn resolves_bootstrap_mft_attribute_list_records_from_partial_stream() {
+    let base_record = NtfsFileRecord {
+      flags: 0x0001,
+      base_record_number: None,
+      file_names: vec![],
+      data_attributes: vec![non_resident_data_attribute(
+        0,
+        0,
+        1024,
+        1024,
+        &[0x11, 0x01, 0x01, 0x00],
+        1,
+      )],
+      attribute_list_entries: vec![NtfsAttributeListEntry {
+        attribute_type: 0x80,
+        entry_length: 40,
+        starting_vcn: 1,
+        base_file_record: 1,
+        base_file_sequence: 1,
+        attribute_id: 7,
+        name: None,
+      }],
+      reparse_point: None,
+      has_reparse_point: false,
+    };
+    let extension_record = synthetic_file_record(&synthetic_non_resident_attribute_bytes(
+      1,
+      1,
+      0,
+      0,
+      &[0x11, 0x01, 0x02, 0x00],
+      7,
+    ));
+    let mut bootstrap_bytes = vec![0u8; 1024];
+    bootstrap_bytes[512..1024].copy_from_slice(&extension_record);
+    let bootstrap_stream = Arc::new(BytesDataSource::new(bootstrap_bytes)) as DataSourceHandle;
+
+    let resolved = resolve_bootstrap_mft_record(bootstrap_stream, 512, &base_record).unwrap();
+
+    assert_eq!(resolved.data_attributes.len(), 2);
+    assert!(resolved.data_attributes.iter().any(|attribute| {
+      matches!(
+        &attribute.value,
+        NtfsDataAttributeValue::NonResident(non_resident) if non_resident.first_vcn == 1
+      )
+    }));
   }
 
   #[test]
@@ -722,5 +927,28 @@ mod tests {
     assert_eq!(data.len(), 8192);
     assert!(data[..4096].iter().all(|byte| *byte == b'A'));
     assert!(data[4096..].iter().all(|byte| *byte == b'B'));
+  }
+
+  #[test]
+  fn build_stream_data_source_decompresses_lznt1_units() {
+    let mut backing = vec![0u8; 2 * 4096];
+    backing[4096..4104].copy_from_slice(&[0x05, 0xB0, 0x08, b'A', b'B', b'C', 0x06, 0x20]);
+    let source = Arc::new(BytesDataSource::new(backing)) as DataSourceHandle;
+    let attributes = [non_resident_data_attribute_with_flags(
+      0,
+      15,
+      12,
+      12,
+      &[0x11, 0x01, 0x01, 0x01, 0x0F, 0x00],
+      1,
+      NonResidentOptions {
+        data_flags: 0x0001,
+        compression_unit: 0,
+      },
+    )];
+
+    let stream = build_stream_data_source(source, &sample_boot_sector(), &attributes).unwrap();
+
+    assert_eq!(stream.read_all().unwrap(), b"ABCABCABCABC");
   }
 }

@@ -1,0 +1,86 @@
+# Feature Completion Plan
+
+This document tracks parser features that are still explicitly unsupported, narrowly rejected, or version-gated in the current `wxtla` codebase for filesystems, partition/volume layers, and image formats.
+
+Scope rules for this plan:
+
+- only `src/filesystems`, `src/volumes`, and `src/images`
+- focus on explicit unsupported/rejected paths and strict layout guards already documented in code
+- exclude archive formats and long-term format ideas that do not already have shipped parser code
+
+Implementation rule for every item below:
+
+1. obtain or synthesize a regression fixture for the missing layout
+2. add parser support or a more precise degraded-mode behavior
+3. add unit and integration coverage
+4. update the relevant format docs after the parser lands
+
+## Priority bands
+
+Completed since the initial scan:
+
+- NTFS `$MFT` attribute-list bootstrap support landed in `src/filesystems/ntfs/filesystem.rs`
+
+### High priority
+
+These items block common real-world images or prevent entire formats from opening when a known feature bit is present.
+
+| Area | Format | Missing feature | Evidence | Impact | Planned work |
+| --- | --- | --- | --- | --- | --- |
+| Image | QCOW | Encrypted images, extended L2 entries, dirty images, and images marked corrupt are rejected | `src/images/qcow/parser.rs` | Real qcow2 images can fail before any child volume/filesystem is reachable | Split support into read-only safe subsets: extended L2 first, then dirty/corrupt handling, then encryption policy |
+| Image | VHDX | Log replay is unsupported; unknown required regions and unsupported BAT states are rejected | `src/images/vhdx/parser.rs` | Unclean or vendor-extended VHDX images fail to open | Implement minimal log replay plus BAT-state coverage; add crash-recovery fixtures |
+
+### Medium priority
+
+These items reduce coverage on real-world data, but usually after the top-level format has already been recognized correctly.
+
+| Area | Format | Missing feature | Evidence | Impact | Planned work |
+| --- | --- | --- | --- | --- | --- |
+| Filesystem | NTFS | Fragmented resident `$DATA` attributes and mixed resident/non-resident stream chains are rejected | `src/filesystems/ntfs/filesystem.rs` | Edge-case files and ADS streams cannot be sized or opened | Normalize mixed stream fragments into a single logical stream model; add synthetic record fixtures |
+| Filesystem | NTFS | Encrypted NTFS `$DATA` (EFS) is unsupported | `src/filesystems/ntfs/record.rs` | Encrypted file contents remain unreadable even when the volume mounts | Decide whether to expose metadata-only fallback first or full decrypt support with external key material later |
+| Filesystem | HFS / HFS+ | HFS+ xattr extent overflow records are unsupported | `src/filesystems/hfs/filesystem.rs` | Large metadata streams can be lost | Add extent-overflow traversal for attribute records and cover with large-xattr fixtures |
+| Filesystem | ext2/ext3/ext4 | Xattrs stored in external inode references are unsupported; external xattr block count is assumed to be exactly `1` | `src/filesystems/ext/xattr.rs` | Some ACL/security/user metadata layouts are unreadable | Generalize xattr loading to external inode references and multi-block metadata |
+| Filesystem | ReFS | Fragmented data streams are rejected | `src/filesystems/refs/filesystem.rs` | Some files cannot be opened even though the filesystem loads | Extend stream assembly across multiple attribute records; add fragmented-stream fixtures |
+| Filesystem | ReFS | Parser is tightly constrained to specific major version, metadata version, checkpoint count, and cluster sizes | `src/filesystems/refs/parser.rs` | Valid ReFS variants are rejected early | Broaden version/layout acceptance behind fixture-backed guards |
+| Volume | BitLocker | Metadata and payload parsing are constrained to currently known versions and encodings | `src/volumes/bitlocker/metadata.rs`, `src/volumes/bitlocker/system.rs` | Some BitLocker volumes may fail to unlock | Add variant coverage incrementally, starting with metadata/header compatibility before new key payload types |
+| Volume | LVM2 | Multi-stripe segments are unsupported | `src/volumes/lvm/model.rs` | Striped logical volumes cannot be mapped | Extend logical-to-physical mapping for striped segments and add synthetic PV/VG fixtures |
+| Image | VMDK | Some descriptor extent types/access modes are rejected; sparse compression methods above `1` are rejected | `src/images/vmdk/image.rs`, `src/images/vmdk/header.rs` | Some VMware images remain unreadable | Expand descriptor coverage first, then add extra sparse-compression support if fixtures justify it |
+| Image | UDIF / DMG | Unsupported `blkx` block types and strict trailer/block-table version gates remain | `src/images/udif/block_map.rs`, `src/images/udif/trailer.rs` | Less-common DMG layouts fail despite valid outer signatures | Add block-type coverage one family at a time with small fixture slices |
+
+### Low priority
+
+These items look real but uncommon, or they are mostly strictness/compatibility work after the broader parser wave is stable.
+
+| Area | Format | Missing feature | Evidence | Impact | Planned work |
+| --- | --- | --- | --- | --- | --- |
+| Filesystem | XFS | Only known directory/data fork types are handled | `src/filesystems/xfs/filesystem.rs` | Some uncommon inode layouts are rejected | Add fork-type coverage after mainstream XFS fixture breadth improves |
+| Volume | LVM2 | Only one metadata area and one raw metadata location are supported | `src/volumes/lvm/parser.rs` | More defensive or redundant PV layouts are rejected | Broaden metadata area discovery after stripe support lands |
+| Volume | LVM2 | Metadata parser rejects negative numbers and non-simple root layouts | `src/volumes/lvm/metadata_text.rs` | Some valid text metadata variants can fail | Relax the text grammar once broader LVM fixtures are available |
+| Volume | MBR | Multiple extended containers / multiple primary extended entries are unsupported | `src/volumes/mbr/parser.rs`, `src/volumes/mbr/validation.rs` | Odd or hybrid tables are rejected conservatively | Revisit after the common partition-table cases remain stable |
+| Volume | GPT | Support is strict to revision `1.0`, 92-byte headers, and `512`/`4096` block sizes | `src/volumes/gpt/constants.rs`, `src/volumes/gpt/header.rs` | Nonstandard GPT variants are rejected | Expand compatibility only with real fixtures; do not loosen validation blindly |
+| Image | EWF | Only known hash/volume/data payload sizes and common segment naming workflows are supported | `src/images/ewf/parser.rs`, `src/images/ewf/naming.rs` | Some lesser EWF variants fail to open | Add compatibility as sample coverage appears |
+
+## Recommended execution order
+
+1. VHDX log replay and BAT-state completion
+2. QCOW feature-flag compatibility (`extended L2`, dirty/corrupt handling)
+3. ReFS fragmented streams and version/layout widening
+4. ext and HFS metadata completeness (`xattr`/overflow work)
+5. BitLocker metadata compatibility expansion
+6. LVM striped and redundant metadata layouts
+7. VMDK / UDIF compatibility sweep
+8. Low-priority strictness reductions in XFS, GPT, MBR, and EWF
+
+## Formats with no explicit unsupported markers in the current scan
+
+The current code scan did not find explicit unsupported-feature markers in these shipped parser families:
+
+- FAT12 / FAT16 / FAT32
+- APM
+- VHD
+- PDI
+- Split Raw
+- SparseImage
+- SparseBundle
+
+This does not mean they are complete forever. It only means the current source tree does not advertise obvious unsupported paths in those parsers today.

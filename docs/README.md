@@ -5,6 +5,7 @@ These documents lock the current direction for `wxtla`.
 - `development-plan.md`: scope, boundaries, approved dependency set, concurrent read architecture, and migration phases.
 - `architecture.md`: current crate architecture, module layering, and parser implementation patterns.
 - `format-inventory.md`: complete format inventory gathered from `keramics` and `regressor`, with proposed WXTLA ownership.
+- `feature-completion-plan.md`: current unsupported or narrowly gated parser features that still need fixture-backed completion work.
 - `implementation-workflow.md`: non-negotiable migration workflow and quality rules for the next agent.
 
 Current design decisions:
