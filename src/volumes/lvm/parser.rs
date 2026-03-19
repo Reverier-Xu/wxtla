@@ -14,23 +14,7 @@ const LABEL_SCAN_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
 
 pub(super) fn parse_lvm_image(source: &dyn DataSource) -> Result<LvmParsedImage> {
   let label = read_label_sector(source)?.ok_or_else(|| unsupported("missing LVM2 label"))?;
-
-  if label.metadata_areas.len() != 1 {
-    return Err(unsupported(format!(
-      "unsupported number of metadata areas: {}",
-      label.metadata_areas.len()
-    )));
-  }
-
-  let raw_locations = read_metadata_area(source, label.metadata_areas[0])?;
-  if raw_locations.len() != 1 {
-    return Err(unsupported(format!(
-      "unsupported number of metadata raw locations: {}",
-      raw_locations.len()
-    )));
-  }
-
-  let metadata = read_metadata_text(source, raw_locations[0])?;
+  let metadata = read_best_metadata_copy(source, &label)?;
   let current_pv_name = resolve_current_pv_name(&metadata, &label.pv_identifier)
     .ok_or_else(|| unsupported("unable to resolve current physical volume"))?;
 
@@ -38,6 +22,48 @@ pub(super) fn parse_lvm_image(source: &dyn DataSource) -> Result<LvmParsedImage>
     label,
     metadata,
     current_pv_name,
+  })
+}
+
+fn read_best_metadata_copy(
+  source: &dyn DataSource, label: &PhysicalVolumeLabel,
+) -> Result<ParsedMetadata> {
+  let mut best_metadata = None::<ParsedMetadata>;
+  let mut candidate_error = None::<Error>;
+
+  for area in &label.metadata_areas {
+    let raw_locations = match read_metadata_area(source, *area) {
+      Ok(raw_locations) => raw_locations,
+      Err(error) => {
+        if candidate_error.is_none() {
+          candidate_error = Some(error);
+        }
+        continue;
+      }
+    };
+    let Some(committed_location) = raw_locations.first().copied() else {
+      continue;
+    };
+
+    match read_metadata_text(source, committed_location) {
+      Ok(metadata) => {
+        if best_metadata
+          .as_ref()
+          .is_none_or(|current| metadata.seqno > current.seqno)
+        {
+          best_metadata = Some(metadata);
+        }
+      }
+      Err(error) => {
+        if candidate_error.is_none() {
+          candidate_error = Some(error);
+        }
+      }
+    }
+  }
+
+  best_metadata.ok_or_else(|| {
+    candidate_error.unwrap_or_else(|| unsupported("no readable LVM metadata copies were found"))
   })
 }
 
@@ -183,6 +209,12 @@ fn read_metadata_area(source: &dyn DataSource, area: AreaDescriptor) -> Result<V
     if flags & RAW_DESC_FLAG_IGNORE != 0 {
       continue;
     }
+    if rel_offset
+      .checked_add(size)
+      .is_none_or(|end| end > area.size)
+    {
+      continue;
+    }
     raw_locations.push(RawLocation {
       offset: area.offset + rel_offset,
       size,
@@ -322,5 +354,82 @@ mod tests {
 
     let parsed = read_label_sector(&MemDataSource { data: image }).unwrap();
     assert!(parsed.is_some());
+  }
+
+  #[test]
+  fn prefers_the_highest_seqno_across_metadata_areas() {
+    let image = build_image_with_metadata_areas(&[
+      (0x2000, 0x200, metadata_text(1)),
+      (0x3000, 0x200, metadata_text(2)),
+    ]);
+
+    let parsed = parse_lvm_image(&MemDataSource { data: image }).unwrap();
+
+    assert_eq!(parsed.metadata.seqno, 2);
+    assert_eq!(parsed.current_pv_name, "pv0");
+  }
+
+  #[test]
+  fn ignores_precommitted_raw_location_slots() {
+    let image = build_image_with_metadata_areas(&[(0x2000, 0x200, metadata_text(1))])
+      .into_iter()
+      .collect::<Vec<_>>();
+    let mut image = image;
+    write_raw_location_descriptor(&mut image, 0x2000, 1, 0x400, &metadata_text(99), 0, false);
+
+    let parsed = parse_lvm_image(&MemDataSource { data: image }).unwrap();
+
+    assert_eq!(parsed.metadata.seqno, 1);
+  }
+
+  fn build_image_with_metadata_areas(areas: &[(u64, u64, String)]) -> Vec<u8> {
+    let mut image = vec![0u8; 0x8000];
+    let label_offset = 512usize;
+    let label = &mut image[label_offset..label_offset + 512];
+    label[0..8].copy_from_slice(LABEL_SIGNATURE);
+    label[8..16].copy_from_slice(&1u64.to_le_bytes());
+    label[24..32].copy_from_slice(LABEL_TYPE_LVM2);
+    label[32..64].copy_from_slice(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    let mut cursor = 72usize;
+    cursor += 16;
+    for (area_offset, ..) in areas {
+      label[cursor..cursor + 8].copy_from_slice(&area_offset.to_le_bytes());
+      label[cursor + 8..cursor + 16].copy_from_slice(&0x1000u64.to_le_bytes());
+      cursor += 16;
+    }
+
+    for (area_offset, rel_offset, metadata) in areas {
+      let area_start = *area_offset as usize;
+      let mda = &mut image[area_start..area_start + 512];
+      mda[4..20].copy_from_slice(MDA_SIGNATURE);
+      mda[20..24].copy_from_slice(&1u32.to_le_bytes());
+      mda[24..32].copy_from_slice(&512u64.to_le_bytes());
+      mda[32..40].copy_from_slice(&0x1000u64.to_le_bytes());
+      write_raw_location_descriptor(&mut image, *area_offset, 0, *rel_offset, metadata, 0, false);
+    }
+
+    image
+  }
+
+  fn write_raw_location_descriptor(
+    image: &mut [u8], area_offset: u64, index: usize, rel_offset: u64, metadata: &str,
+    checksum: u32, ignored: bool,
+  ) {
+    let area_start = area_offset as usize;
+    let desc_offset = area_start + 40 + index * 24;
+    image[desc_offset..desc_offset + 8].copy_from_slice(&rel_offset.to_le_bytes());
+    image[desc_offset + 8..desc_offset + 16]
+      .copy_from_slice(&(metadata.len() as u64).to_le_bytes());
+    image[desc_offset + 16..desc_offset + 20].copy_from_slice(&checksum.to_le_bytes());
+    image[desc_offset + 20..desc_offset + 24].copy_from_slice(&(u32::from(ignored)).to_le_bytes());
+    let metadata_offset = area_start + rel_offset as usize;
+    image[metadata_offset..metadata_offset + metadata.len()].copy_from_slice(metadata.as_bytes());
+  }
+
+  fn metadata_text(seqno: u64) -> String {
+    format!(
+      "vg0 {{\n  id = \"vgid\"\n  seqno = {seqno}\n  extent_size = 8\n  physical_volumes {{\n    pv0 {{\n      id = \"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"\n    }}\n  }}\n  logical_volumes {{\n    lv0 {{\n      id = \"lvid\"\n      segment_count = 1\n      segment1 {{\n        start_extent = 0\n        extent_count = 1\n        type = \"striped\"\n        stripe_count = 1\n        stripes = [ \"pv0\", 0 ]\n      }}\n    }}\n  }}\n}}\n"
+    )
   }
 }

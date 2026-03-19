@@ -50,6 +50,7 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
     .ok_or_else(|| Error::InvalidFormat("empty LVM metadata".to_string()))?;
   let vg = as_object(&vg_node)?;
 
+  let seqno = get_number(vg, "seqno")?;
   let extent_size_sectors = get_number(vg, "extent_size")?;
   let extent_size_bytes = extent_size_sectors
     .checked_mul(512)
@@ -110,6 +111,7 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
 
   Ok(ParsedMetadata {
     vg_name,
+    seqno,
     extent_size_bytes,
     physical_volumes,
     logical_volumes,

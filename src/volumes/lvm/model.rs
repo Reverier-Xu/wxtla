@@ -27,6 +27,7 @@ pub struct LvmParsedImage {
 
 pub(super) struct ParsedMetadata {
   pub(super) vg_name: String,
+  pub(super) seqno: u64,
   pub(super) extent_size_bytes: u64,
   pub(super) physical_volumes: Vec<MetadataPhysicalVolume>,
   pub(super) logical_volumes: Vec<MetadataLogicalVolume>,

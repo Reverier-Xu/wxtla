@@ -31,6 +31,7 @@ Completed since the initial scan:
 - QCOW corrupt-flag images now open in best-effort read-only mode instead of being rejected up front in `src/images/qcow/parser.rs`
 - LVM2 striped segments now map logical reads across multiple stripe legs in `src/volumes/lvm/model.rs`
 - VMDK descriptor parsing now tolerates `NOACCESS ZERO` extents as synthetic zero regions in `src/images/vmdk/image.rs`
+- LVM2 now selects the highest-seqno committed metadata copy across redundant metadata areas in `src/volumes/lvm/parser.rs`
 
 ### High priority
 
@@ -61,7 +62,6 @@ These items look real but uncommon, or they are mostly strictness/compatibility 
 | Area | Format | Missing feature | Evidence | Impact | Planned work |
 | --- | --- | --- | --- | --- | --- |
 | Filesystem | XFS | Only known directory/data fork types are handled | `src/filesystems/xfs/filesystem.rs` | Some uncommon inode layouts are rejected | Add fork-type coverage after mainstream XFS fixture breadth improves |
-| Volume | LVM2 | Only one metadata area and one raw metadata location are supported | `src/volumes/lvm/parser.rs` | More defensive or redundant PV layouts are rejected | Broaden metadata area discovery after stripe support lands |
 | Volume | LVM2 | Metadata parser rejects negative numbers and non-simple root layouts | `src/volumes/lvm/metadata_text.rs` | Some valid text metadata variants can fail | Relax the text grammar once broader LVM fixtures are available |
 | Volume | MBR | Multiple extended containers / multiple primary extended entries are unsupported | `src/volumes/mbr/parser.rs`, `src/volumes/mbr/validation.rs` | Odd or hybrid tables are rejected conservatively | Revisit after the common partition-table cases remain stable |
 | Volume | GPT | Support is strict to revision `1.0`, 92-byte headers, and `512`/`4096` block sizes | `src/volumes/gpt/constants.rs`, `src/volumes/gpt/header.rs` | Nonstandard GPT variants are rejected | Expand compatibility only with real fixtures; do not loosen validation blindly |
