@@ -135,6 +135,7 @@ fn available_cache_space(path: &Path) -> Result<u64> {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::useless_conversion)]
 fn available_cache_space(path: &Path) -> Result<u64> {
   use std::{ffi::CString, os::unix::ffi::OsStrExt};
 

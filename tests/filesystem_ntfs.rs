@@ -100,7 +100,10 @@ fn ntfs_fixture_reads_large_nonresident_and_metadata_files() {
   let license_node = file_system.node(&license_entry.node_id).unwrap();
   let license_data = file_system.open_file(&license_entry.node_id).unwrap();
   let expected =
-    std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("LICENSE.apache2.0")).unwrap();
+    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("LICENSE.apache2.0"))
+      .unwrap()
+      .replace("\r\n", "\n")
+      .into_bytes();
   let expected = [b"\n".as_slice(), expected.as_slice()].concat();
 
   assert_eq!(license_node.kind, FileSystemNodeKind::File);
