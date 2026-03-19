@@ -37,6 +37,10 @@ type HfsNodeMap = Arc<HashMap<u64, Arc<HfsNode>>>;
 type HfsChildrenMap = Arc<HashMap<u64, Arc<[DirectoryEntry]>>>;
 type HfsAttributeMap = Arc<HashMap<u64, Arc<[HfsExtendedAttribute]>>>;
 
+const HFS_PLUS_XATTR_INLINE_RECORD: u32 = 0x0000_0010;
+const HFS_PLUS_XATTR_FORK_RECORD: u32 = 0x0000_0020;
+const HFS_PLUS_XATTR_EXTENTS_RECORD: u32 = 0x0000_0030;
+
 pub struct HfsFileSystem {
   descriptor: crate::FormatDescriptor,
   source: DataSourceHandle,
@@ -77,6 +81,7 @@ pub struct HfsExtendedAttribute {
 #[derive(Clone)]
 struct HfsFork {
   logical_size: u64,
+  total_blocks: u32,
   extents: Arc<[HfsExtent]>,
 }
 
@@ -111,6 +116,19 @@ struct HfsNodeInsert {
   hard_link_target: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct HfsPlusAttributeIdentity {
+  cnid: u64,
+  name: String,
+}
+
+#[derive(Debug, Clone)]
+struct HfsPlusAttributeKey {
+  identity: HfsPlusAttributeIdentity,
+  start_block: u32,
+  value_offset: usize,
+}
+
 impl HfsFileSystem {
   pub fn open(source: DataSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
@@ -133,9 +151,11 @@ impl HfsFileSystem {
     let mdb = source.read_bytes_at(1024, 162)?;
     let allocation_block_size = be_u32(&mdb[20..24]);
     let allocation_base_offset = u64::from(be_u16(&mdb[28..30])) * u64::from(allocation_block_size);
+    let catalog_extents = parse_hfs_extents(&mdb[150..162]);
     let catalog_fork = HfsFork {
       logical_size: u64::from(be_u32(&mdb[146..150])),
-      extents: Arc::from(parse_hfs_extents(&mdb[150..162])),
+      total_blocks: sum_extent_blocks(&catalog_extents),
+      extents: Arc::from(catalog_extents),
     };
     Ok(Self {
       descriptor: DESCRIPTOR,
@@ -569,17 +589,17 @@ fn parse_hfs_catalog_record(record: &[u8], builder: &mut HfsBuilder) -> Result<(
     }
     0x0200 => {
       let cnid = be_u32(&record[value_offset + 20..value_offset + 24]);
+      let data_extents = parse_hfs_extents(&record[value_offset + 74..value_offset + 86]);
       let data_fork = HfsFork {
         logical_size: u64::from(be_u32(&record[value_offset + 26..value_offset + 30])),
-        extents: Arc::from(parse_hfs_extents(
-          &record[value_offset + 74..value_offset + 86],
-        )),
+        total_blocks: sum_extent_blocks(&data_extents),
+        extents: Arc::from(data_extents),
       };
+      let resource_extents = parse_hfs_extents(&record[value_offset + 86..value_offset + 98]);
       let resource_fork = HfsFork {
         logical_size: u64::from(be_u32(&record[value_offset + 36..value_offset + 40])),
-        extents: Arc::from(parse_hfs_extents(
-          &record[value_offset + 86..value_offset + 98],
-        )),
+        total_blocks: sum_extent_blocks(&resource_extents),
+        extents: Arc::from(resource_extents),
       };
       insert_node(
         builder,
@@ -738,70 +758,96 @@ fn parse_hfs_plus_attributes(
   };
   let btree_header = parse_btree_header(&attributes_source)?;
   let mut attributes = HashMap::<u64, Vec<HfsExtendedAttribute>>::new();
+  let mut fork_attributes = HashMap::<HfsPlusAttributeIdentity, HfsFork>::new();
+  let mut overflow_extents = HashMap::<HfsPlusAttributeIdentity, Vec<(u32, Vec<HfsExtent>)>>::new();
 
   for record in read_leaf_records(&attributes_source, &btree_header)? {
-    if record.len() < 14 {
+    let Some(key) = parse_hfs_plus_attribute_key(&record)? else {
       continue;
-    }
-    let key_size = usize::from(be_u16(&record[0..2]));
-    if key_size < 12 || 2 + key_size > record.len() {
-      continue;
-    }
-
-    let cnid = u64::from(be_u32(&record[4..8]));
-    let name_length = usize::from(be_u16(&record[12..14]));
-    let name_end = 14 + name_length * 2;
-    if name_end > 2 + key_size {
-      return Err(Error::InvalidFormat(
-        "hfs+ attribute key name exceeds the encoded key size".to_string(),
-      ));
-    }
-    let name = decode_utf16be_string(&record[14..name_end], false)?;
-    let value_offset = 2 + key_size;
-    if value_offset + 4 > record.len() {
+    };
+    if key.value_offset + 4 > record.len() {
       continue;
     }
 
-    let value = match be_u32(&record[value_offset..value_offset + 4]) {
-      0x0000_0010 => {
-        let size = usize::try_from(be_u32(&record[value_offset + 12..value_offset + 16]))
-          .map_err(|_| Error::InvalidRange("hfs+ inline xattr size is too large".to_string()))?;
-        let data_offset = value_offset + 16;
+    match be_u32(&record[key.value_offset..key.value_offset + 4]) {
+      HFS_PLUS_XATTR_INLINE_RECORD => {
+        let size = usize::try_from(be_u32(
+          &record[key.value_offset + 12..key.value_offset + 16],
+        ))
+        .map_err(|_| Error::InvalidRange("hfs+ inline xattr size is too large".to_string()))?;
+        let data_offset = key.value_offset + 16;
         let data_end = data_offset
           .checked_add(size)
           .ok_or_else(|| Error::InvalidRange("hfs+ inline xattr end overflow".to_string()))?;
         let data = record.get(data_offset..data_end).ok_or_else(|| {
           Error::InvalidFormat("hfs+ inline xattr exceeds the record bounds".to_string())
         })?;
-        Arc::from(data)
+        attributes
+          .entry(key.identity.cnid)
+          .or_default()
+          .push(HfsExtendedAttribute {
+            name: key.identity.name,
+            value: Arc::from(data),
+          });
       }
-      0x0000_0020 => {
-        let fork = parse_hfs_plus_fork(&record[value_offset + 8..value_offset + 88])?;
-        HfsForkDataSource {
-          source: attributes_source.source.clone(),
-          allocation_block_size,
-          allocation_base_offset: 0,
-          fork,
+      HFS_PLUS_XATTR_FORK_RECORD => {
+        if key.start_block != 0 {
+          return Err(Error::InvalidFormat(
+            "hfs+ xattr fork records must start at logical block 0".to_string(),
+          ));
         }
-        .read_all()?
-        .into()
+        let fork_bytes = record
+          .get(key.value_offset + 8..key.value_offset + 88)
+          .ok_or_else(|| Error::InvalidFormat("hfs+ xattr fork record is truncated".to_string()))?;
+        let fork = parse_hfs_plus_fork(fork_bytes)?;
+        if fork_attributes.insert(key.identity, fork).is_some() {
+          return Err(Error::InvalidFormat(
+            "duplicate hfs+ xattr fork record encountered".to_string(),
+          ));
+        }
       }
-      0x0000_0030 => {
-        return Err(Error::InvalidFormat(
-          "hfs+ xattr extent overflow records are not supported yet".to_string(),
-        ));
+      HFS_PLUS_XATTR_EXTENTS_RECORD => {
+        let extent_bytes = record
+          .get(key.value_offset + 8..key.value_offset + 72)
+          .ok_or_else(|| {
+            Error::InvalidFormat("hfs+ xattr extent overflow record is truncated".to_string())
+          })?;
+        overflow_extents
+          .entry(key.identity)
+          .or_default()
+          .push((key.start_block, parse_hfs_plus_extent_record(extent_bytes)?));
       }
       other => {
         return Err(Error::InvalidFormat(format!(
           "unsupported hfs+ xattr record type: 0x{other:08x}"
         )));
       }
-    };
+    }
+  }
 
+  for (identity, fork) in fork_attributes {
+    let overflow = overflow_extents.remove(&identity).unwrap_or_default();
+    let fork = merge_hfs_plus_attribute_extents(fork, &overflow)?;
+    let value = HfsForkDataSource {
+      source: attributes_source.source.clone(),
+      allocation_block_size,
+      allocation_base_offset: 0,
+      fork,
+    }
+    .read_all()?
+    .into();
     attributes
-      .entry(cnid)
+      .entry(identity.cnid)
       .or_default()
-      .push(HfsExtendedAttribute { name, value });
+      .push(HfsExtendedAttribute {
+        name: identity.name,
+        value,
+      });
+  }
+  if !overflow_extents.is_empty() {
+    return Err(Error::InvalidFormat(
+      "hfs+ xattr extent overflow records are missing a base fork record".to_string(),
+    ));
   }
 
   Ok(
@@ -810,6 +856,95 @@ fn parse_hfs_plus_attributes(
       .map(|(node_id, values)| (node_id, Arc::from(values.into_boxed_slice())))
       .collect(),
   )
+}
+
+fn parse_hfs_plus_attribute_key(record: &[u8]) -> Result<Option<HfsPlusAttributeKey>> {
+  if record.len() < 14 {
+    return Ok(None);
+  }
+  let key_size = usize::from(be_u16(&record[0..2]));
+  if key_size < 12 || 2 + key_size > record.len() {
+    return Ok(None);
+  }
+
+  let name_length = usize::from(be_u16(&record[12..14]));
+  let name_end = 14 + name_length * 2;
+  if name_end > 2 + key_size {
+    return Err(Error::InvalidFormat(
+      "hfs+ attribute key name exceeds the encoded key size".to_string(),
+    ));
+  }
+
+  Ok(Some(HfsPlusAttributeKey {
+    identity: HfsPlusAttributeIdentity {
+      cnid: u64::from(be_u32(&record[4..8])),
+      name: decode_utf16be_string(&record[14..name_end], false)?,
+    },
+    start_block: be_u32(&record[8..12]),
+    value_offset: 2 + key_size,
+  }))
+}
+
+fn parse_hfs_plus_extent_record(bytes: &[u8]) -> Result<Vec<HfsExtent>> {
+  if bytes.len() < 64 {
+    return Err(Error::InvalidFormat(
+      "hfs+ xattr extent overflow record is truncated".to_string(),
+    ));
+  }
+
+  Ok(
+    bytes[..64]
+      .chunks_exact(8)
+      .filter_map(|chunk| {
+        let start_block = be_u32(&chunk[0..4]);
+        let block_count = be_u32(&chunk[4..8]);
+        (block_count != 0).then_some(HfsExtent {
+          start_block,
+          block_count,
+        })
+      })
+      .collect(),
+  )
+}
+
+fn merge_hfs_plus_attribute_extents(
+  fork: HfsFork, overflow_records: &[(u32, Vec<HfsExtent>)],
+) -> Result<HfsFork> {
+  let mut merged = fork.extents.iter().copied().collect::<Vec<_>>();
+  let mut covered_blocks = u64::from(sum_extent_blocks(&merged));
+  let target_blocks = u64::from(fork.total_blocks);
+  let mut overflow_records = overflow_records.to_vec();
+  overflow_records.sort_by_key(|(start_block, _)| *start_block);
+
+  for (start_block, extents) in overflow_records {
+    if u64::from(start_block) != covered_blocks {
+      return Err(Error::InvalidFormat(
+        "hfs+ xattr extent overflow records are not in logical-block order".to_string(),
+      ));
+    }
+    for extent in extents {
+      covered_blocks = covered_blocks
+        .checked_add(u64::from(extent.block_count))
+        .ok_or_else(|| Error::InvalidRange("hfs+ xattr block count overflow".to_string()))?;
+      merged.push(extent);
+      if target_blocks != 0 && covered_blocks >= target_blocks {
+        break;
+      }
+    }
+    if target_blocks != 0 && covered_blocks >= target_blocks {
+      break;
+    }
+  }
+  if target_blocks != 0 && covered_blocks < target_blocks {
+    return Err(Error::InvalidFormat(
+      "hfs+ xattr extents do not cover the declared fork block count".to_string(),
+    ));
+  }
+
+  Ok(HfsFork {
+    extents: Arc::from(merged.into_boxed_slice()),
+    ..fork
+  })
 }
 
 fn parse_hfs_extents(bytes: &[u8]) -> Box<[HfsExtent]> {
@@ -825,6 +960,10 @@ fn parse_hfs_extents(bytes: &[u8]) -> Box<[HfsExtent]> {
     }
   }
   extents.into_boxed_slice()
+}
+
+fn sum_extent_blocks(extents: &[HfsExtent]) -> u32 {
+  extents.iter().map(|extent| extent.block_count).sum()
 }
 
 fn parse_hfs_plus_fork(bytes: &[u8]) -> Result<HfsFork> {
@@ -847,6 +986,7 @@ fn parse_hfs_plus_fork(bytes: &[u8]) -> Result<HfsFork> {
   }
   Ok(HfsFork {
     logical_size,
+    total_blocks: be_u32(&bytes[12..16]),
     extents: Arc::from(extents.into_boxed_slice()),
   })
 }
@@ -920,7 +1060,7 @@ fn be_u64(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-  use std::path::Path;
+  use std::{path::Path, sync::Arc};
 
   use super::*;
 
@@ -954,5 +1094,122 @@ mod tests {
       decode_hfs_plus_name(&bytes[8..8 + name_length * 2]).unwrap(),
       "osx"
     );
+  }
+
+  #[test]
+  fn reads_hfs_plus_xattr_extent_overflow_records() {
+    let source = Arc::new(BytesDataSource::new(
+      build_hfs_plus_attribute_btree_with_overflow(),
+    ));
+    let attributes = parse_hfs_plus_attributes(
+      source,
+      512,
+      &HfsFork {
+        logical_size: 1024,
+        total_blocks: 2,
+        extents: Arc::from(vec![HfsExtent {
+          start_block: 0,
+          block_count: 2,
+        }]),
+      },
+    )
+    .unwrap();
+
+    let values = attributes.get(&42).unwrap();
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0].name, "overflow");
+    assert_eq!(values[0].value.len(), 9 * 512);
+    for (index, chunk) in values[0].value.chunks_exact(512).enumerate() {
+      assert!(chunk.iter().all(|byte| *byte == b'A' + index as u8));
+    }
+  }
+
+  fn build_hfs_plus_attribute_btree_with_overflow() -> Vec<u8> {
+    const NODE_SIZE: usize = 512;
+    const CNID: u32 = 42;
+    const NAME: &str = "overflow";
+    let mut bytes = vec![0u8; 11 * NODE_SIZE];
+
+    bytes[8] = 1;
+    bytes[24..28].copy_from_slice(&1u32.to_be_bytes());
+    bytes[32..34].copy_from_slice(&(NODE_SIZE as u16).to_be_bytes());
+
+    let mut leaf = vec![0u8; NODE_SIZE];
+    leaf[8] = 0xFF;
+    leaf[10..12].copy_from_slice(&2u16.to_be_bytes());
+    let fork_record = build_hfs_plus_attribute_record(
+      CNID,
+      0,
+      NAME,
+      HFS_PLUS_XATTR_FORK_RECORD,
+      &build_hfs_plus_fork_descriptor(9 * NODE_SIZE as u64, 9, 2, 1),
+    );
+    let overflow_record = build_hfs_plus_attribute_record(
+      CNID,
+      8,
+      NAME,
+      HFS_PLUS_XATTR_EXTENTS_RECORD,
+      &build_hfs_plus_extent_payload(10, 1),
+    );
+    let fork_start = 14usize;
+    let overflow_start = fork_start + fork_record.len();
+    let free_start = overflow_start + overflow_record.len();
+    leaf[fork_start..overflow_start].copy_from_slice(&fork_record);
+    leaf[overflow_start..free_start].copy_from_slice(&overflow_record);
+    leaf[NODE_SIZE - 6..NODE_SIZE - 4].copy_from_slice(&(free_start as u16).to_be_bytes());
+    leaf[NODE_SIZE - 4..NODE_SIZE - 2].copy_from_slice(&(overflow_start as u16).to_be_bytes());
+    leaf[NODE_SIZE - 2..NODE_SIZE].copy_from_slice(&(fork_start as u16).to_be_bytes());
+    bytes[NODE_SIZE..2 * NODE_SIZE].copy_from_slice(&leaf);
+
+    for index in 0..9usize {
+      bytes[(2 + index) * NODE_SIZE..(3 + index) * NODE_SIZE].fill(b'A' + index as u8);
+    }
+
+    bytes
+  }
+
+  fn build_hfs_plus_attribute_record(
+    cnid: u32, start_block: u32, name: &str, record_type: u32, payload: &[u8],
+  ) -> Vec<u8> {
+    let name_bytes = encode_utf16be(name);
+    let key_size = 12 + name_bytes.len();
+    let value_offset = 2 + key_size;
+    let mut record = vec![0u8; value_offset + 8 + payload.len()];
+    record[0..2].copy_from_slice(&(key_size as u16).to_be_bytes());
+    record[4..8].copy_from_slice(&cnid.to_be_bytes());
+    record[8..12].copy_from_slice(&start_block.to_be_bytes());
+    record[12..14].copy_from_slice(&((name_bytes.len() / 2) as u16).to_be_bytes());
+    record[14..14 + name_bytes.len()].copy_from_slice(&name_bytes);
+    record[value_offset..value_offset + 4].copy_from_slice(&record_type.to_be_bytes());
+    record[value_offset + 8..].copy_from_slice(payload);
+    record
+  }
+
+  fn build_hfs_plus_fork_descriptor(
+    logical_size: u64, total_blocks: u32, start_block: u32, block_count: u32,
+  ) -> Vec<u8> {
+    let mut bytes = vec![0u8; 80];
+    bytes[0..8].copy_from_slice(&logical_size.to_be_bytes());
+    bytes[12..16].copy_from_slice(&total_blocks.to_be_bytes());
+    for index in 0..8usize {
+      let offset = 16 + index * 8;
+      bytes[offset..offset + 4].copy_from_slice(&(start_block + index as u32).to_be_bytes());
+      bytes[offset + 4..offset + 8].copy_from_slice(&block_count.to_be_bytes());
+    }
+    bytes
+  }
+
+  fn build_hfs_plus_extent_payload(start_block: u32, block_count: u32) -> Vec<u8> {
+    let mut bytes = vec![0u8; 64];
+    bytes[0..4].copy_from_slice(&start_block.to_be_bytes());
+    bytes[4..8].copy_from_slice(&block_count.to_be_bytes());
+    bytes
+  }
+
+  fn encode_utf16be(value: &str) -> Vec<u8> {
+    value
+      .encode_utf16()
+      .flat_map(u16::to_be_bytes)
+      .collect::<Vec<_>>()
   }
 }
