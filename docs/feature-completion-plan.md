@@ -24,6 +24,7 @@ Completed since the initial scan:
 - VHDX active log replay now runs through a read-only in-memory overlay in `src/images/vhdx/log_replay.rs`
 - QCOW dirty images now open in read-only mode instead of being rejected up front in `src/images/qcow/parser.rs`
 - QCOW extended L2 entries now read through the subcluster-aware data path in `src/images/qcow/image.rs`
+- ReFS fragmented data streams now merge attribute runs instead of failing in `src/filesystems/refs/filesystem.rs`
 
 ### High priority
 
@@ -43,7 +44,6 @@ These items reduce coverage on real-world data, but usually after the top-level 
 | Filesystem | NTFS | Encrypted NTFS `$DATA` (EFS) is unsupported | `src/filesystems/ntfs/record.rs` | Encrypted file contents remain unreadable even when the volume mounts | Decide whether to expose metadata-only fallback first or full decrypt support with external key material later |
 | Filesystem | HFS / HFS+ | HFS+ xattr extent overflow records are unsupported | `src/filesystems/hfs/filesystem.rs` | Large metadata streams can be lost | Add extent-overflow traversal for attribute records and cover with large-xattr fixtures |
 | Filesystem | ext2/ext3/ext4 | Xattrs stored in external inode references are unsupported; external xattr block count is assumed to be exactly `1` | `src/filesystems/ext/xattr.rs` | Some ACL/security/user metadata layouts are unreadable | Generalize xattr loading to external inode references and multi-block metadata |
-| Filesystem | ReFS | Fragmented data streams are rejected | `src/filesystems/refs/filesystem.rs` | Some files cannot be opened even though the filesystem loads | Extend stream assembly across multiple attribute records; add fragmented-stream fixtures |
 | Filesystem | ReFS | Parser is tightly constrained to specific major version, metadata version, checkpoint count, and cluster sizes | `src/filesystems/refs/parser.rs` | Valid ReFS variants are rejected early | Broaden version/layout acceptance behind fixture-backed guards |
 | Volume | BitLocker | Metadata and payload parsing are constrained to currently known versions and encodings | `src/volumes/bitlocker/metadata.rs`, `src/volumes/bitlocker/system.rs` | Some BitLocker volumes may fail to unlock | Add variant coverage incrementally, starting with metadata/header compatibility before new key payload types |
 | Volume | LVM2 | Multi-stripe segments are unsupported | `src/volumes/lvm/model.rs` | Striped logical volumes cannot be mapped | Extend logical-to-physical mapping for striped segments and add synthetic PV/VG fixtures |

@@ -534,37 +534,74 @@ fn build_stream_sources(
 
   let mut streams = BTreeMap::new();
   for (name, attributes) in grouped {
-    if attributes.len() != 1 {
-      return Err(Error::InvalidFormat(
-        "fragmented refs data streams are not supported yet".to_string(),
-      ));
-    }
-    let attribute = &attributes[0];
-    let source = match &attribute.value {
-      RefsAttributeValue::Resident(data) => {
-        Arc::new(BytesDataSource::new(data.clone())) as DataSourceHandle
-      }
+    let source = build_stream_source(context, &attributes)?;
+    streams.insert(name, source);
+  }
+
+  Ok(streams)
+}
+
+fn build_stream_source(
+  context: &RefsContext, attributes: &[RefsAttribute],
+) -> Result<DataSourceHandle> {
+  let resident = attributes
+    .iter()
+    .filter_map(|attribute| match &attribute.value {
+      RefsAttributeValue::Resident(data) => Some(data.clone()),
+      RefsAttributeValue::NonResident { .. } => None,
+    })
+    .collect::<Vec<_>>();
+  let non_resident = attributes
+    .iter()
+    .filter_map(|attribute| match &attribute.value {
+      RefsAttributeValue::Resident(_) => None,
       RefsAttributeValue::NonResident {
         data_size,
         valid_data_size,
         data_runs,
         ..
-      } => {
-        let mut sorted_runs = data_runs.clone();
-        sorted_runs.sort_by_key(|run| run.logical_offset);
-        Arc::new(RefsDataRunsDataSource {
-          source: context.source.clone(),
-          metadata_block_size: u64::from(context.volume_header.metadata_block_size),
-          data_size: *data_size,
-          valid_data_size: *valid_data_size,
-          data_runs: Arc::from(sorted_runs.into_boxed_slice()),
-        }) as DataSourceHandle
-      }
-    };
-    streams.insert(name, source);
+      } => Some((*data_size, *valid_data_size, data_runs.clone())),
+    })
+    .collect::<Vec<_>>();
+
+  if !resident.is_empty() && !non_resident.is_empty() {
+    return Err(Error::InvalidFormat(
+      "mixed resident and non-resident refs data streams are not supported".to_string(),
+    ));
+  }
+  if let Some(data) = resident.first() {
+    if resident.len() != 1 {
+      return Err(Error::InvalidFormat(
+        "fragmented resident refs data streams are not supported yet".to_string(),
+      ));
+    }
+
+    return Ok(Arc::new(BytesDataSource::new(data.clone())) as DataSourceHandle);
   }
 
-  Ok(streams)
+  let mut sorted_runs = non_resident
+    .iter()
+    .flat_map(|(_, _, data_runs)| data_runs.iter().cloned())
+    .collect::<Vec<_>>();
+  sorted_runs.sort_by_key(|run| run.logical_offset);
+  let data_size = non_resident
+    .iter()
+    .map(|(data_size, ..)| *data_size)
+    .max()
+    .unwrap_or(0);
+  let valid_data_size = non_resident
+    .iter()
+    .map(|(_, valid_data_size, _)| *valid_data_size)
+    .max()
+    .unwrap_or(data_size);
+
+  Ok(Arc::new(RefsDataRunsDataSource {
+    source: context.source.clone(),
+    metadata_block_size: u64::from(context.volume_header.metadata_block_size),
+    data_size,
+    valid_data_size,
+    data_runs: Arc::from(sorted_runs.into_boxed_slice()),
+  }) as DataSourceHandle)
 }
 
 fn collect_leaf_records_from_source(
@@ -659,7 +696,10 @@ mod tests {
   use std::{collections::HashMap, sync::Arc};
 
   use super::*;
-  use crate::{BytesDataSource, filesystems::refs::parser::build_object_key};
+  use crate::{
+    BytesDataSource,
+    filesystems::refs::parser::{RefsDataRun, build_object_key},
+  };
 
   fn sample_context() -> RefsContext {
     RefsContext {
@@ -760,6 +800,55 @@ mod tests {
         .unwrap(),
       b"named"
     );
+  }
+
+  #[test]
+  fn builds_fragmented_data_stream_sources() {
+    let mut backing = vec![0u8; 3 * 16 * 1024];
+    backing[16 * 1024..32 * 1024].fill(0x33);
+    backing[32 * 1024..48 * 1024].fill(0x44);
+    let mut context = sample_context();
+    context.source = Arc::new(BytesDataSource::new(backing));
+    let streams = build_stream_sources(
+      &context,
+      &[
+        RefsAttribute {
+          attribute_type: 0x80,
+          name: None,
+          value: RefsAttributeValue::NonResident {
+            allocated_data_size: 16 * 1024,
+            data_size: 32 * 1024,
+            valid_data_size: 32 * 1024,
+            data_runs: vec![RefsDataRun {
+              logical_offset: 0,
+              block_count: 1,
+              physical_block_number: 1,
+            }],
+          },
+        },
+        RefsAttribute {
+          attribute_type: 0x80,
+          name: None,
+          value: RefsAttributeValue::NonResident {
+            allocated_data_size: 16 * 1024,
+            data_size: 0,
+            valid_data_size: 0,
+            data_runs: vec![RefsDataRun {
+              logical_offset: 16 * 1024,
+              block_count: 1,
+              physical_block_number: 2,
+            }],
+          },
+        },
+      ],
+    )
+    .unwrap();
+
+    let data = streams.get(&None).unwrap().read_all().unwrap();
+
+    assert_eq!(data.len(), 32 * 1024);
+    assert!(data[..16 * 1024].iter().all(|byte| *byte == 0x33));
+    assert!(data[16 * 1024..].iter().all(|byte| *byte == 0x44));
   }
 
   #[test]
