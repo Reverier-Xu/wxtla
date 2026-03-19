@@ -5,11 +5,13 @@ use std::collections::HashSet;
 use super::{
   constants,
   header::{VhdxImageHeader, VhdxRegionTable, VhdxRegionTableEntry, validate_file_identifier},
+  log_replay,
   metadata::{VhdxDiskType, VhdxMetadata},
 };
 use crate::{DataSource, DataSourceHandle, Error, Result};
 
 pub(super) struct ParsedVhdx {
+  pub source: DataSourceHandle,
   pub image_header: VhdxImageHeader,
   pub metadata: VhdxMetadata,
   pub block_allocation_table: VhdxBatLayout,
@@ -50,13 +52,10 @@ pub(super) enum VhdxSectorBitmapState {
 
 pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedVhdx> {
   validate_file_identifier(source.as_ref())?;
+  let active_header = read_active_image_header(source.as_ref())?;
+  let source = log_replay::apply(source, &active_header.0, active_header.1)?;
   let source_size = source.size()?;
-  let image_header = read_active_image_header(source.as_ref())?;
-  if !image_header.log_identifier.is_nil() || image_header.log_version != 0 {
-    return Err(Error::InvalidFormat(
-      "vhdx log replay is not supported".to_string(),
-    ));
-  }
+  let image_header = read_active_image_header(source.as_ref())?.0;
   let region_table = read_region_table_pair(source.as_ref())?;
   let metadata_region = require_known_region(&region_table, constants::METADATA_REGION_GUID)?;
   let bat_region = require_known_region(&region_table, constants::BAT_REGION_GUID)?;
@@ -88,6 +87,7 @@ pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedVhdx> {
   )?;
 
   Ok(ParsedVhdx {
+    source,
     image_header,
     metadata,
     block_allocation_table,
@@ -164,17 +164,18 @@ pub(super) fn sector_bitmap_state(entry: u64) -> Result<VhdxSectorBitmapState> {
   }
 }
 
-fn read_active_image_header(source: &dyn DataSource) -> Result<VhdxImageHeader> {
+fn read_active_image_header(source: &dyn DataSource) -> Result<(VhdxImageHeader, u64)> {
   let primary = VhdxImageHeader::read(source, constants::PRIMARY_IMAGE_HEADER_OFFSET);
   let secondary = VhdxImageHeader::read(source, constants::SECONDARY_IMAGE_HEADER_OFFSET);
 
   match (primary, secondary) {
     (Ok(left), Ok(right)) => Ok(if left.sequence_number >= right.sequence_number {
-      left
+      (left, constants::PRIMARY_IMAGE_HEADER_OFFSET)
     } else {
-      right
+      (right, constants::SECONDARY_IMAGE_HEADER_OFFSET)
     }),
-    (Ok(header), Err(_)) | (Err(_), Ok(header)) => Ok(header),
+    (Ok(header), Err(_)) => Ok((header, constants::PRIMARY_IMAGE_HEADER_OFFSET)),
+    (Err(_), Ok(header)) => Ok((header, constants::SECONDARY_IMAGE_HEADER_OFFSET)),
     (Err(_), Err(_)) => Err(Error::InvalidFormat(
       "no valid vhdx image header copy was found".to_string(),
     )),

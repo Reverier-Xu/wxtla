@@ -6,6 +6,7 @@ mod driver;
 mod guid;
 mod header;
 mod image;
+mod log_replay;
 mod metadata;
 mod parent_locator;
 mod parser;

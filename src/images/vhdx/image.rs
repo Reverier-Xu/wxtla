@@ -40,17 +40,17 @@ pub struct VhdxImage {
 
 impl VhdxImage {
   pub fn open(source: DataSourceHandle) -> Result<Self> {
-    let parsed = parse(source.clone())?;
+    let parsed = parse(source)?;
     if parsed.metadata.disk_type == VhdxDiskType::Differential {
       return Err(Error::InvalidSourceReference(
         "differential vhdx images require source hints and a related-source resolver".to_string(),
       ));
     }
-    Self::from_parsed(source, parsed, None)
+    Self::from_parsed(parsed, None)
   }
 
   pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
-    let parsed = parse(source.clone())?;
+    let parsed = parse(source)?;
     let parent_image = if parsed.metadata.disk_type == VhdxDiskType::Differential {
       let resolver = hints.resolver().ok_or_else(|| {
         Error::InvalidSourceReference(
@@ -98,19 +98,17 @@ impl VhdxImage {
       None
     };
 
-    Self::from_parsed(source, parsed, parent_image)
+    Self::from_parsed(parsed, parent_image)
   }
 
-  fn from_parsed(
-    source: DataSourceHandle, parsed: ParsedVhdx, parent_image: Option<DataSourceHandle>,
-  ) -> Result<Self> {
+  fn from_parsed(parsed: ParsedVhdx, parent_image: Option<DataSourceHandle>) -> Result<Self> {
     let block_size = usize::try_from(parsed.metadata.block_size)
       .map_err(|_| Error::InvalidRange("vhdx block size is too large".to_string()))?;
     let sector_bitmap_size = usize::try_from(parsed.sector_bitmap_size)
       .map_err(|_| Error::InvalidRange("vhdx sector bitmap size is too large".to_string()))?;
 
     Ok(Self {
-      source,
+      source: parsed.source,
       image_header: parsed.image_header,
       metadata: parsed.metadata,
       bat: parsed.block_allocation_table,

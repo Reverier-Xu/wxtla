@@ -21,6 +21,7 @@ Completed since the initial scan:
 
 - NTFS `$MFT` attribute-list bootstrap support landed in `src/filesystems/ntfs/filesystem.rs`
 - VHDX BAT-state compatibility now accepts the legacy v0.95 unmapped payload alias and rejects dynamic images that incorrectly allocate sector bitmap blocks in `src/images/vhdx/parser.rs`
+- VHDX active log replay now runs through a read-only in-memory overlay in `src/images/vhdx/log_replay.rs`
 
 ### High priority
 
@@ -29,7 +30,6 @@ These items block common real-world images or prevent entire formats from openin
 | Area | Format | Missing feature | Evidence | Impact | Planned work |
 | --- | --- | --- | --- | --- | --- |
 | Image | QCOW | Encrypted images, extended L2 entries, dirty images, and images marked corrupt are rejected | `src/images/qcow/parser.rs` | Real qcow2 images can fail before any child volume/filesystem is reachable | Split support into read-only safe subsets: extended L2 first, then dirty/corrupt handling, then encryption policy |
-| Image | VHDX | Active log replay is unsupported | `src/images/vhdx/parser.rs` | Unclean VHDX images still fail to open | Implement minimal safe log replay on open or a stricter clean-log validator with crash-recovery fixtures |
 
 ### Medium priority
 
@@ -63,14 +63,13 @@ These items look real but uncommon, or they are mostly strictness/compatibility 
 
 ## Recommended execution order
 
-1. VHDX log replay and BAT-state completion
-2. QCOW feature-flag compatibility (`extended L2`, dirty/corrupt handling)
-3. ReFS fragmented streams and version/layout widening
-4. ext and HFS metadata completeness (`xattr`/overflow work)
-5. BitLocker metadata compatibility expansion
-6. LVM striped and redundant metadata layouts
-7. VMDK / UDIF compatibility sweep
-8. Low-priority strictness reductions in XFS, GPT, MBR, and EWF
+1. QCOW feature-flag compatibility (`extended L2`, dirty/corrupt handling)
+2. ReFS fragmented streams and version/layout widening
+3. ext and HFS metadata completeness (`xattr`/overflow work)
+4. BitLocker metadata compatibility expansion
+5. LVM striped and redundant metadata layouts
+6. VMDK / UDIF compatibility sweep
+7. Low-priority strictness reductions in XFS, GPT, MBR, and EWF
 
 ## Formats with no explicit unsupported markers in the current scan
 
