@@ -136,6 +136,25 @@ impl RarArchive {
       return Ok(());
     }
 
+    if command_exists("unar") {
+      let output = extract_with_unar(&self.cache.source_path, &self.cache.extract_dir, password)?;
+      if !output.status.success() {
+        return Err(Error::InvalidSourceReference(if password.is_some() {
+          "rar archive password unlock failed".to_string()
+        } else {
+          format!(
+            "unable to extract rar archive into cache: {}{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+          )
+        }));
+      }
+
+      self.locked = false;
+      self.refresh_extracted_paths();
+      return Ok(());
+    }
+
     let mut command = archive_tool_command();
     command
       .arg("x")
@@ -289,6 +308,18 @@ fn extract_with_unrar(
       None => "-p-".to_string(),
     })
     .arg(source_path);
+  run_command_with_timeout(command, EXTRACT_TIMEOUT)
+}
+
+fn extract_with_unar(
+  source_path: &Path, extract_dir: &Path, password: Option<&str>,
+) -> Result<CommandOutput> {
+  let mut command = Command::new("unar");
+  command.arg("-f").arg("-D").arg("-q");
+  if let Some(password) = password {
+    command.arg("-p").arg(password);
+  }
+  command.arg("-o").arg(extract_dir).arg(source_path);
   run_command_with_timeout(command, EXTRACT_TIMEOUT)
 }
 

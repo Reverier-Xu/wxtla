@@ -48,7 +48,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          brew install sevenzip unrar
+          brew install sevenzip unar
           if ! command -v 7z >/dev/null 2>&1; then
             if ! command -v 7z >/dev/null 2>&1 && command -v 7zz >/dev/null 2>&1; then
               mkdir -p "$HOME/.local/bin"
