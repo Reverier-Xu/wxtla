@@ -9,7 +9,6 @@ use crate::{Error, Result};
 
 pub(super) const SECTOR_SIZE: u64 = 512;
 const BLOCK_TABLE_MAGIC: &[u8; 4] = b"mish";
-const BLOCK_TABLE_VERSION: u32 = 1;
 const BLOCK_TABLE_HEADER_SIZE: usize = 204;
 const BLOCK_RUN_SIZE: usize = 40;
 const MAX_PLIST_SIZE: usize = 16 * 1024 * 1024;
@@ -296,12 +295,7 @@ impl UdifBlockTableHeader {
       ));
     }
 
-    let version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-    if version != BLOCK_TABLE_VERSION {
-      return Err(Error::InvalidFormat(format!(
-        "unsupported udif block table version: {version}"
-      )));
-    }
+    let _version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
 
     Ok(Self {
       start_sector: u64::from_be_bytes([
@@ -341,5 +335,24 @@ impl UdifBlockRun {
         data[32], data[33], data[34], data[35], data[36], data[37], data[38], data[39],
       ]),
     })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn accepts_newer_block_table_versions() {
+    let mut data = vec![0u8; BLOCK_TABLE_HEADER_SIZE];
+    data[0..4].copy_from_slice(BLOCK_TABLE_MAGIC);
+    data[4..8].copy_from_slice(&3u32.to_be_bytes());
+    data[16..24].copy_from_slice(&8u64.to_be_bytes());
+    data[200..204].copy_from_slice(&1u32.to_be_bytes());
+
+    let header = UdifBlockTableHeader::from_bytes(&data).unwrap();
+
+    assert_eq!(header.sector_count, 8);
+    assert_eq!(header.entry_count, 1);
   }
 }

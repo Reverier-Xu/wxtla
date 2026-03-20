@@ -4,7 +4,6 @@ use crate::{DataSource, Error, Result};
 
 pub(super) const TRAILER_SIZE: usize = 512;
 const TRAILER_MAGIC: &[u8; 4] = b"koly";
-const FORMAT_VERSION: u32 = 4;
 
 /// Parsed UDIF trailer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,15 +59,10 @@ impl UdifTrailer {
       ));
     }
 
-    let version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-    if version != FORMAT_VERSION {
-      return Err(Error::InvalidFormat(format!(
-        "unsupported udif trailer format version: {version}"
-      )));
-    }
+    let _version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
 
     let trailer_size = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-    if trailer_size != TRAILER_SIZE as u32 {
+    if trailer_size < TRAILER_SIZE as u32 {
       return Err(Error::InvalidFormat(format!(
         "unsupported udif trailer size: {trailer_size}"
       )));
@@ -128,7 +122,7 @@ mod tests {
   fn sample_trailer() -> [u8; TRAILER_SIZE] {
     let mut data = [0u8; TRAILER_SIZE];
     data[0..4].copy_from_slice(TRAILER_MAGIC);
-    data[4..8].copy_from_slice(&FORMAT_VERSION.to_be_bytes());
+    data[4..8].copy_from_slice(&4u32.to_be_bytes());
     data[8..12].copy_from_slice(&(TRAILER_SIZE as u32).to_be_bytes());
     data[32..40].copy_from_slice(&4096u64.to_be_bytes());
     data[216..224].copy_from_slice(&4096u64.to_be_bytes());
@@ -158,5 +152,17 @@ mod tests {
     let result = UdifTrailer::from_bytes(&data);
 
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
+  }
+
+  #[test]
+  fn accepts_newer_trailer_versions_and_sizes() {
+    let mut data = sample_trailer();
+    data[4..8].copy_from_slice(&7u32.to_be_bytes());
+    data[8..12].copy_from_slice(&(TRAILER_SIZE as u32 + 128).to_be_bytes());
+
+    let trailer = UdifTrailer::from_bytes(&data).unwrap();
+
+    assert_eq!(trailer.data_fork_size, 4096);
+    assert_eq!(trailer.plist_size, 1024);
   }
 }

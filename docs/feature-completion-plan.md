@@ -43,6 +43,7 @@ Completed since the initial scan:
 - BitLocker unlocked reads now fall back to the metadata block header sector count when the volume-header metadata entry is absent in `src/volumes/bitlocker/system.rs`
 - VMDK raw-device-map extent aliases now parse through the existing flat extent path in `src/images/vmdk/descriptor.rs`
 - BitLocker VMK and FVEK decryptors now tolerate larger or newer key payload headers as long as the stable key offsets remain valid in `src/volumes/bitlocker/system.rs`
+- UDIF now accepts newer trailer and blkx table version/size fields as long as the known fixed-layout prefix remains valid in `src/images/udif/trailer.rs` and `src/images/udif/block_map.rs`
 
 ### High priority
 
@@ -64,7 +65,7 @@ These items reduce coverage on real-world data, but usually after the top-level 
 | Filesystem | ReFS | Full ReFS v3 filesystem layouts are still only partially covered despite the new core metadata parser support | `src/filesystems/refs/parser.rs`, `src/filesystems/refs/filesystem.rs` | Some newer ReFS volumes can still fail once object or allocator layouts diverge from the covered fixtures | Extend real-volume coverage for v3 object trees, allocator/container metadata, and any remaining multi-block layouts |
 | Volume | BitLocker | Metadata and payload parsing are still constrained to the currently known protector and payload layouts despite Vista, volume-header, and relaxed key-header fallback support | `src/volumes/bitlocker/metadata.rs`, `src/volumes/bitlocker/system.rs` | Some BitLocker volumes may still fail to unlock or decrypt | Add variant coverage incrementally, starting with metadata-copy selection and payload compatibility before new key material types |
 | Image | VMDK | Some descriptor extent types/access modes are still rejected, and sparse compression methods above `1` are rejected | `src/images/vmdk/image.rs`, `src/images/vmdk/header.rs` | Some VMware images remain unreadable | Continue expanding descriptor aliases first, then add extra sparse-compression support if fixtures justify it |
-| Image | UDIF / DMG | Unsupported `blkx` block types and strict trailer/block-table version gates remain | `src/images/udif/block_map.rs`, `src/images/udif/trailer.rs` | Less-common DMG layouts fail despite valid outer signatures | Add block-type coverage one family at a time with small fixture slices |
+| Image | UDIF / DMG | Unsupported `blkx` block types still remain after version-gate relaxation | `src/images/udif/block_map.rs` | Less-common DMG layouts can still fail despite valid outer signatures | Add block-type coverage one family at a time with small fixture slices |
 
 ### Low priority
 
