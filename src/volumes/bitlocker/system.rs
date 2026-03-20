@@ -343,14 +343,16 @@ fn decrypt_volume_master_key(
     Error::InvalidFormat("bitlocker VMK protector is missing its AES-CCM payload".to_string())
   })?;
   let decrypted = decrypt_aes_ccm_key_blob(aes_ccm_key, &encrypted.nonce, &encrypted.data)?;
-  if decrypted.len() < 60 {
+  if decrypted.len() < 28 {
     return Err(Error::InvalidFormat(
       "bitlocker decrypted VMK payload is too small".to_string(),
     ));
   }
   let data_size = u16::from_le_bytes([decrypted[16], decrypted[17]]);
-  let version = u16::from_le_bytes([decrypted[20], decrypted[21]]);
-  if version != 1 || data_size != 0x2C {
+  let payload_end = 16usize
+    .checked_add(usize::from(data_size))
+    .ok_or_else(|| Error::InvalidRange("bitlocker VMK payload size overflow".to_string()))?;
+  if payload_end > decrypted.len() || data_size < 0x2C {
     return Err(Error::InvalidFormat(
       "unsupported bitlocker VMK payload layout".to_string(),
     ));
@@ -373,10 +375,12 @@ fn decrypt_full_volume_encryption_key(
     })?;
   let decrypted = decrypt_aes_ccm_key_blob(volume_master_key, &encrypted.nonce, &encrypted.data)?;
   let data_size = usize::from(u16::from_le_bytes([decrypted[16], decrypted[17]]));
-  let version = u16::from_le_bytes([decrypted[20], decrypted[21]]);
-  if version != 1 {
+  let payload_end = 16usize
+    .checked_add(data_size)
+    .ok_or_else(|| Error::InvalidRange("bitlocker FVEK payload size overflow".to_string()))?;
+  if decrypted.len() < payload_end {
     return Err(Error::InvalidFormat(
-      "unsupported bitlocker FVEK payload version".to_string(),
+      "bitlocker decrypted FVEK payload is truncated".to_string(),
     ));
   }
 
@@ -391,7 +395,7 @@ fn decrypt_full_volume_encryption_key(
     | BitlockerEncryptionMethod::Aes256Xts => 0x4C,
     BitlockerEncryptionMethod::None => 0,
   };
-  if method != BitlockerEncryptionMethod::None && data_size != expected_data_size {
+  if method != BitlockerEncryptionMethod::None && data_size < expected_data_size {
     return Err(Error::InvalidFormat(
       "unsupported bitlocker FVEK payload size for the encryption method".to_string(),
     ));
@@ -898,6 +902,49 @@ mod tests {
         aes_ccm_property([7; 12], &vmk_plain, &clear_key),
       ),
       fvek_entry(method, &vmk, &fvek, None),
+    ];
+    let mut plaintext_header = [0u8; 512];
+    plaintext_header[..8].copy_from_slice(b"TESTNTFS");
+    let source = Arc::new(MemDataSource {
+      data: build_synthetic_volume(method, entries, &fvek, None, &plaintext_header),
+    }) as DataSourceHandle;
+
+    let mut system = BitlockerVolumeSystem::open(source).unwrap();
+
+    assert!(system.unlock_with_clear_key().unwrap());
+    assert_eq!(
+      &system.open_volume(0).unwrap().read_bytes_at(0, 8).unwrap(),
+      b"TESTNTFS"
+    );
+  }
+
+  #[test]
+  fn unlocks_with_nonstandard_key_payload_headers() {
+    let method = BitlockerEncryptionMethod::Aes128Cbc;
+    let clear_key = [0x23; 32];
+    let vmk = [0x34; 32];
+    let fvek = vec![0x45; method.fvek_length()];
+    let mut vmk_plain = vec![0u8; 48];
+    vmk_plain[0..2].copy_from_slice(&48u16.to_le_bytes());
+    vmk_plain[4..6].copy_from_slice(&2u16.to_le_bytes());
+    vmk_plain[12..44].copy_from_slice(&vmk);
+    let mut fvek_plain = [0u8; 16 + 0x1C + 4];
+    let fvek_data_size = u16::try_from(fvek_plain.len() - 16).unwrap();
+    fvek_plain[16..18].copy_from_slice(&fvek_data_size.to_le_bytes());
+    fvek_plain[20..22].copy_from_slice(&2u16.to_le_bytes());
+    fvek_plain[28..28 + fvek.len()].copy_from_slice(&fvek);
+    let entries = vec![
+      vmk_entry(
+        BitlockerKeyProtectorKind::ClearKey,
+        Some(key_property(BitlockerEncryptionMethod::None, &clear_key)),
+        None,
+        aes_ccm_property([7; 12], &vmk_plain, &clear_key),
+      ),
+      metadata_entry(
+        ENTRY_TYPE_FULL_VOLUME_ENCRYPTION_KEY,
+        VALUE_TYPE_AES_CCM_ENCRYPTED_KEY,
+        &aes_ccm_property([9; 12], &fvek_plain[16..], &vmk)[8..],
+      ),
     ];
     let mut plaintext_header = [0u8; 512];
     plaintext_header[..8].copy_from_slice(b"TESTNTFS");
