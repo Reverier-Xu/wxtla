@@ -176,7 +176,13 @@ impl BitlockerVolumeSystem {
       metadata_offsets: self.header.metadata_offsets,
       metadata_size: self.header.metadata_size,
       volume_header_offset: self.metadata.block_header.volume_header_offset,
-      volume_header_size: self.metadata.volume_header_size,
+      volume_header_size: self.metadata.volume_header_size.max(
+        u64::from(self.metadata.block_header.volume_header_sector_count)
+          .checked_mul(u64::from(self.header.bytes_per_sector))
+          .ok_or_else(|| {
+            Error::InvalidRange("bitlocker volume header size overflow".to_string())
+          })?,
+      ),
       encrypted_volume_size: if self.metadata.block_header.encrypted_volume_size != 0 {
         self.metadata.block_header.encrypted_volume_size
       } else {
@@ -872,6 +878,40 @@ mod tests {
     assert_eq!(system.header().version, 6);
     assert_eq!(system.header().metadata_offsets, metadata_offsets);
     assert_eq!(system.open_volume(0).unwrap().size().unwrap(), volume_size);
+  }
+
+  #[test]
+  fn unlocks_without_a_volume_header_metadata_entry() {
+    let method = BitlockerEncryptionMethod::Aes128Cbc;
+    let clear_key = [0x33; 32];
+    let vmk = [0x44; 32];
+    let fvek = vec![0x55; method.fvek_length()];
+    let mut vmk_plain = vec![0u8; 44];
+    vmk_plain[0..2].copy_from_slice(&0x2Cu16.to_le_bytes());
+    vmk_plain[4..6].copy_from_slice(&1u16.to_le_bytes());
+    vmk_plain[12..44].copy_from_slice(&vmk);
+    let entries = vec![
+      vmk_entry(
+        BitlockerKeyProtectorKind::ClearKey,
+        Some(key_property(BitlockerEncryptionMethod::None, &clear_key)),
+        None,
+        aes_ccm_property([7; 12], &vmk_plain, &clear_key),
+      ),
+      fvek_entry(method, &vmk, &fvek, None),
+    ];
+    let mut plaintext_header = [0u8; 512];
+    plaintext_header[..8].copy_from_slice(b"TESTNTFS");
+    let source = Arc::new(MemDataSource {
+      data: build_synthetic_volume(method, entries, &fvek, None, &plaintext_header),
+    }) as DataSourceHandle;
+
+    let mut system = BitlockerVolumeSystem::open(source).unwrap();
+
+    assert!(system.unlock_with_clear_key().unwrap());
+    assert_eq!(
+      &system.open_volume(0).unwrap().read_bytes_at(0, 8).unwrap(),
+      b"TESTNTFS"
+    );
   }
 
   #[test]
