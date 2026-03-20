@@ -115,9 +115,13 @@ pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedEwfSources> {
 pub(super) fn parse_with_hints(
   source: DataSourceHandle, hints: SourceHints<'_>,
 ) -> Result<ParsedEwfSources> {
+  let current_file_header = EwfFileHeader::read(source.as_ref())?;
   let naming_info = hints
     .source_identity()
-    .map(EwfSegmentPathInfo::from_identity)
+    .map(|identity| {
+      EwfSegmentPathInfo::from_identity(identity)
+        .or_else(|_| EwfSegmentPathInfo::from_identity_and_header(identity, &current_file_header))
+    })
     .transpose()?;
   let mut current_source = resolve_initial_source(source, hints, naming_info.as_ref())?;
   let mut segment_sources = HashMap::new();
@@ -524,6 +528,56 @@ mod tests {
     .unwrap();
 
     assert!(Arc::ptr_eq(&resolved, &first));
+  }
+
+  #[test]
+  fn parses_alpha_segment_file_name_info_with_header_context() {
+    let identity = SourceIdentity::from_relative_path("images/ext2.EAA").unwrap();
+    let info = EwfSegmentPathInfo::from_identity_and_header(
+      &identity,
+      &EwfFileHeader {
+        signature: super::super::file_header::EwfFileSignature::Evf,
+        segment_number: 100,
+      },
+    )
+    .unwrap();
+
+    assert_eq!(info.segment_number, 100);
+    assert_eq!(info.file_name_for_segment(1).unwrap(), "ext2.E01");
+  }
+
+  #[test]
+  fn resolves_first_segment_from_a_later_alpha_segment() {
+    let volume_payload = make_e01_volume_payload(0, 1, 512);
+    let volume_offset = FILE_HEADER_SIZE as u64;
+    let volume_section = make_section("volume", &volume_payload, volume_offset);
+    let done_offset = volume_offset + volume_section.len() as u64;
+    let done_section = make_descriptor("done", done_offset, SECTION_DESCRIPTOR_SIZE as u64);
+    let first_segment = [make_file_header(1), volume_section, done_section].concat();
+    let resolver = Resolver {
+      data: HashMap::from([(
+        "images/ext2.E01".to_string(),
+        Arc::new(MemDataSource {
+          data: first_segment.clone(),
+        }) as DataSourceHandle,
+      )]),
+    };
+    let source: DataSourceHandle = Arc::new(MemDataSource {
+      data: make_file_header(100),
+    });
+    let identity = SourceIdentity::from_relative_path("images/ext2.EAA").unwrap();
+
+    let parsed = parse_with_hints(
+      source,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert_eq!(parsed.parsed.segment_number, 1);
+    assert_eq!(parsed.parsed.volume.chunk_count, 0);
+    assert!(parsed.segment_sources.contains_key(&1));
   }
 
   #[test]

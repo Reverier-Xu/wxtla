@@ -1,5 +1,6 @@
 //! Segment naming rules for the EWF family.
 
+use super::file_header::{EwfFileHeader, EwfFileSignature};
 use crate::{Error, Result, SourceIdentity};
 
 /// EWF family segment naming schemes.
@@ -30,6 +31,15 @@ impl EwfSegmentPathInfo {
       Error::InvalidSourceReference("ewf source identity is missing an entry name".to_string())
     })?;
     Self::parse_entry_name(entry_name)
+  }
+
+  pub(crate) fn from_identity_and_header(
+    identity: &SourceIdentity, file_header: &EwfFileHeader,
+  ) -> Result<Self> {
+    let entry_name = identity.entry_name().ok_or_else(|| {
+      Error::InvalidSourceReference("ewf source identity is missing an entry name".to_string())
+    })?;
+    Self::parse_entry_name_with_header(entry_name, file_header)
   }
 
   /// Parse the segment naming info from an entry name such as `image.E01`.
@@ -80,6 +90,70 @@ impl EwfSegmentPathInfo {
       base_name: base_name.to_string(),
       naming_scheme: scheme,
       segment_number,
+    })
+  }
+
+  pub(crate) fn parse_entry_name_with_header(
+    entry_name: &str, file_header: &EwfFileHeader,
+  ) -> Result<Self> {
+    if let Ok(info) = Self::parse_entry_name(entry_name) {
+      return Ok(info);
+    }
+
+    let (base_name, extension) = entry_name.rsplit_once('.').ok_or_else(|| {
+      Error::InvalidSourceReference(format!(
+        "ewf segment file name is missing an extension: {entry_name}"
+      ))
+    })?;
+    if extension.len() != 3 {
+      return Err(Error::InvalidSourceReference(format!(
+        "unsupported ewf segment extension: {extension}"
+      )));
+    }
+
+    let candidates = match file_header.signature {
+      EwfFileSignature::Evf => [
+        EwfSegmentNamingScheme::E01Upper,
+        EwfSegmentNamingScheme::E01Lower,
+        EwfSegmentNamingScheme::S01Upper,
+        EwfSegmentNamingScheme::S01Lower,
+      ]
+      .as_slice(),
+      EwfFileSignature::Lvf => [
+        EwfSegmentNamingScheme::L01Upper,
+        EwfSegmentNamingScheme::L01Lower,
+      ]
+      .as_slice(),
+    };
+    let matches = candidates
+      .iter()
+      .copied()
+      .filter(|scheme| {
+        scheme
+          .extension_for(file_header.segment_number)
+          .ok()
+          .as_deref()
+          == Some(extension)
+      })
+      .collect::<Vec<_>>();
+    let naming_scheme = match matches.as_slice() {
+      [scheme] => *scheme,
+      [] => {
+        return Err(Error::InvalidSourceReference(format!(
+          "unable to infer ewf naming scheme from extension: {extension}"
+        )));
+      }
+      _ => {
+        return Err(Error::InvalidSourceReference(format!(
+          "ambiguous ewf segment naming scheme for extension: {extension}"
+        )));
+      }
+    };
+
+    Ok(Self {
+      base_name: base_name.to_string(),
+      naming_scheme,
+      segment_number: file_header.segment_number,
     })
   }
 
@@ -196,5 +270,21 @@ mod tests {
       EwfSegmentNamingScheme::S01Lower.extension_for(100).unwrap(),
       "saa"
     );
+  }
+
+  #[test]
+  fn parses_alpha_segment_names_with_file_headers() {
+    let info = EwfSegmentPathInfo::parse_entry_name_with_header(
+      "image.EAA",
+      &EwfFileHeader {
+        signature: EwfFileSignature::Evf,
+        segment_number: 100,
+      },
+    )
+    .unwrap();
+
+    assert_eq!(info.naming_scheme, EwfSegmentNamingScheme::E01Upper);
+    assert_eq!(info.segment_number, 100);
+    assert_eq!(info.file_name_for_segment(1).unwrap(), "image.E01");
   }
 }
