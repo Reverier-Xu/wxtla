@@ -47,7 +47,7 @@ impl BitlockerVolumeSystem {
   }
 
   pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
-    let header = BitlockerVolumeHeader::from_bytes(&source.read_bytes_at(0, 512)?)?;
+    let mut header = BitlockerVolumeHeader::from_bytes(&source.read_bytes_at(0, 512)?)?;
     let metadata = header
       .metadata_offsets
       .iter()
@@ -57,6 +57,10 @@ impl BitlockerVolumeSystem {
       .ok_or_else(|| {
         Error::InvalidFormat("unable to parse any bitlocker metadata block".to_string())
       })?;
+    header.metadata_offsets = merge_metadata_offsets(
+      header.metadata_offsets,
+      metadata.block_header.metadata_offsets,
+    );
     let media_size = source.size()?;
     let mut system = Self {
       source,
@@ -411,6 +415,24 @@ fn decrypt_full_volume_encryption_key(
   Ok((fvek, tweak))
 }
 
+fn merge_metadata_offsets(header_offsets: [u64; 3], metadata_offsets: [u64; 3]) -> [u64; 3] {
+  let mut merged = [0u64; 3];
+  let mut index = 0usize;
+
+  for offset in metadata_offsets.into_iter().chain(header_offsets) {
+    if offset == 0 || merged[..index].contains(&offset) {
+      continue;
+    }
+    merged[index] = offset;
+    index += 1;
+    if index == merged.len() {
+      break;
+    }
+  }
+
+  merged
+}
+
 #[cfg(test)]
 mod tests {
   use std::path::Path;
@@ -661,6 +683,19 @@ mod tests {
     data
   }
 
+  fn build_vista_volume_header(first_metadata_lcn: u64, volume_size: u64) -> [u8; 512] {
+    let mut data = [0u8; 512];
+    let total_sectors = volume_size / 512;
+    data[0..3].copy_from_slice(&[0xEB, 0x52, 0x90]);
+    data[3..11].copy_from_slice(b"-FVE-FS-");
+    data[11..13].copy_from_slice(&512u16.to_le_bytes());
+    data[13] = 8;
+    data[40..48].copy_from_slice(&total_sectors.to_le_bytes());
+    data[56..64].copy_from_slice(&first_metadata_lcn.to_le_bytes());
+    data[510..512].copy_from_slice(&[0x55, 0xAA]);
+    data
+  }
+
   fn build_metadata_block(
     entries: &[Vec<u8>], method: BitlockerEncryptionMethod, encrypted_volume_size: u64,
     volume_header_offset: u64, metadata_offsets: [u64; 3],
@@ -687,6 +722,29 @@ mod tests {
       block_header[start..start + 8].copy_from_slice(&offset.to_le_bytes());
     }
     block_header[56..64].copy_from_slice(&volume_header_offset.to_le_bytes());
+
+    [block_header, header, entry_bytes].concat()
+  }
+
+  fn build_vista_metadata_block(entries: &[Vec<u8>], metadata_offsets: [u64; 3]) -> Vec<u8> {
+    let mut entry_bytes = entries.concat();
+    entry_bytes.extend_from_slice(&[0u8; 8]);
+    let metadata_size = 48 + u32::try_from(entry_bytes.len()).unwrap();
+
+    let mut header = vec![0u8; 48];
+    header[0..4].copy_from_slice(&metadata_size.to_le_bytes());
+    header[4..8].copy_from_slice(&1u32.to_le_bytes());
+    header[8..12].copy_from_slice(&48u32.to_le_bytes());
+    header[12..16].copy_from_slice(&metadata_size.to_le_bytes());
+
+    let mut block_header = vec![0u8; 64];
+    block_header[0..8].copy_from_slice(BLOCK_SIGNATURE);
+    block_header[8..10].copy_from_slice(&64u16.to_le_bytes());
+    block_header[10..12].copy_from_slice(&1u16.to_le_bytes());
+    for (index, offset) in metadata_offsets.iter().enumerate() {
+      let start = 32 + index * 8;
+      block_header[start..start + 8].copy_from_slice(&offset.to_le_bytes());
+    }
 
     [block_header, header, entry_bytes].concat()
   }
@@ -794,6 +852,26 @@ mod tests {
     let volume = system.open_volume(0).unwrap();
     let header = volume.read_bytes_at(0, 8).unwrap();
     assert_eq!(&header, b"TESTNTFS");
+  }
+
+  #[test]
+  fn opens_vista_style_headers_via_metadata_lcn_fallback() {
+    let metadata_offsets = [0x1000u64, 0x1800u64, 0x2000u64];
+    let volume_size = 0x6000u64;
+    let metadata_block = build_vista_metadata_block(&[], metadata_offsets);
+    let mut image = vec![0u8; volume_size as usize];
+    image[..512].copy_from_slice(&build_vista_volume_header(1, volume_size));
+    for offset in metadata_offsets {
+      image[offset as usize..offset as usize + metadata_block.len()]
+        .copy_from_slice(&metadata_block);
+    }
+
+    let system = BitlockerVolumeSystem::open(Arc::new(MemDataSource { data: image })).unwrap();
+
+    assert!(!system.is_locked());
+    assert_eq!(system.header().version, 6);
+    assert_eq!(system.header().metadata_offsets, metadata_offsets);
+    assert_eq!(system.open_volume(0).unwrap().size().unwrap(), volume_size);
   }
 
   #[test]

@@ -33,6 +33,7 @@ Completed since the initial scan:
 - VMDK descriptor parsing now tolerates `NOACCESS ZERO` extents as synthetic zero regions in `src/images/vmdk/image.rs`
 - LVM2 now selects the highest-seqno committed metadata copy across redundant metadata areas in `src/volumes/lvm/parser.rs`
 - GPT now accepts larger header sizes and infers `1024`/`2048` logical block sizes in `src/volumes/gpt/header.rs` and `src/volumes/gpt/constants.rs`
+- BitLocker fixed-volume headers now fall back to Vista-style metadata LCN discovery in `src/volumes/bitlocker/header.rs`
 
 ### High priority
 
@@ -52,7 +53,7 @@ These items reduce coverage on real-world data, but usually after the top-level 
 | Filesystem | NTFS | Encrypted NTFS `$DATA` (EFS) is unsupported | `src/filesystems/ntfs/record.rs` | Encrypted file contents remain unreadable even when the volume mounts | Decide whether to expose metadata-only fallback first or full decrypt support with external key material later |
 | Filesystem | ext2/ext3/ext4 | External xattr blocks are still assumed to have a single backing block | `src/filesystems/ext/xattr.rs` | Some larger or less common ext metadata layouts can still be rejected | Extend external xattr loading across multi-block layouts once fixture coverage exists |
 | Filesystem | ReFS | Full ReFS v3 filesystem layouts are still only partially covered despite the new core metadata parser support | `src/filesystems/refs/parser.rs`, `src/filesystems/refs/filesystem.rs` | Some newer ReFS volumes can still fail once object or allocator layouts diverge from the covered fixtures | Extend real-volume coverage for v3 object trees, allocator/container metadata, and any remaining multi-block layouts |
-| Volume | BitLocker | Metadata and payload parsing are constrained to currently known versions and encodings | `src/volumes/bitlocker/metadata.rs`, `src/volumes/bitlocker/system.rs` | Some BitLocker volumes may fail to unlock | Add variant coverage incrementally, starting with metadata/header compatibility before new key payload types |
+| Volume | BitLocker | Metadata and payload parsing are still constrained to the currently known protector and payload layouts despite Vista header fallback | `src/volumes/bitlocker/metadata.rs`, `src/volumes/bitlocker/system.rs` | Some BitLocker volumes may still fail to unlock or decrypt | Add variant coverage incrementally, starting with metadata-copy selection and payload compatibility before new key material types |
 | Image | VMDK | Some descriptor extent types/access modes are still rejected, and sparse compression methods above `1` are rejected | `src/images/vmdk/image.rs`, `src/images/vmdk/header.rs` | Some VMware images remain unreadable | Expand descriptor coverage first, then add extra sparse-compression support if fixtures justify it |
 | Image | UDIF / DMG | Unsupported `blkx` block types and strict trailer/block-table version gates remain | `src/images/udif/block_map.rs`, `src/images/udif/trailer.rs` | Less-common DMG layouts fail despite valid outer signatures | Add block-type coverage one family at a time with small fixture slices |
 

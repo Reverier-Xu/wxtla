@@ -65,7 +65,14 @@ impl BitlockerVolumeHeader {
       if total16 != 0 {
         total16
       } else {
-        u64::from(u32::from_le_bytes([data[32], data[33], data[34], data[35]]))
+        let total32 = u64::from(u32::from_le_bytes([data[32], data[33], data[34], data[35]]));
+        if total32 != 0 {
+          total32
+        } else {
+          u64::from_le_bytes([
+            data[40], data[41], data[42], data[43], data[44], data[45], data[46], data[47],
+          ])
+        }
       }
     };
     let volume_size = total_number_of_sectors
@@ -78,6 +85,31 @@ impl BitlockerVolumeHeader {
         Error::InvalidFormat("bitlocker metadata offset length mismatch".to_string())
       })?);
     }
+    let mut version = match flavor {
+      BitlockerHeaderFlavor::Fixed => 7,
+      BitlockerHeaderFlavor::ToGo => u32::from(b'T'),
+    };
+    let mut metadata_size = 65_536u64;
+    if matches!(flavor, BitlockerHeaderFlavor::Fixed)
+      && metadata_offsets.iter().all(|offset| *offset == 0)
+    {
+      let metadata_lcn = u64::from_le_bytes([
+        data[56], data[57], data[58], data[59], data[60], data[61], data[62], data[63],
+      ]);
+      if metadata_lcn != 0 {
+        let cluster_size = u64::from(bytes_per_sector)
+          .checked_mul(u64::from(sectors_per_cluster))
+          .ok_or_else(|| Error::InvalidRange("bitlocker cluster size overflow".to_string()))?;
+        metadata_offsets[0] = metadata_lcn
+          .checked_mul(cluster_size)
+          .ok_or_else(|| Error::InvalidRange("bitlocker metadata offset overflow".to_string()))?;
+        metadata_size = (16 * 1024u64)
+          .div_ceil(cluster_size)
+          .checked_mul(cluster_size)
+          .ok_or_else(|| Error::InvalidRange("bitlocker metadata size overflow".to_string()))?;
+        version = 6;
+      }
+    }
     if metadata_offsets.iter().all(|offset| *offset == 0) {
       return Err(Error::InvalidFormat(
         "bitlocker headers must contain at least one metadata block offset".to_string(),
@@ -89,12 +121,9 @@ impl BitlockerVolumeHeader {
       bytes_per_sector,
       sectors_per_cluster,
       hidden_sector_count: u32::from_le_bytes([data[28], data[29], data[30], data[31]]),
-      metadata_size: 65_536,
+      metadata_size,
       volume_size,
-      version: match flavor {
-        BitlockerHeaderFlavor::Fixed => 7,
-        BitlockerHeaderFlavor::ToGo => u32::from(b'T'),
-      },
+      version,
       identifier: data[identifier_offset..identifier_offset + 16]
         .try_into()
         .map_err(|_| Error::InvalidFormat("bitlocker identifier length mismatch".to_string()))?,
@@ -123,5 +152,24 @@ mod tests {
     assert_eq!(header.volume_size, 0);
     assert_eq!(header.version, 7);
     assert_eq!(header.metadata_offsets[0], 34_603_008);
+  }
+
+  #[test]
+  fn derives_vista_metadata_offsets_from_the_metadata_lcn() {
+    let mut data = [0u8; 512];
+    data[0..3].copy_from_slice(&[0xEB, 0x52, 0x90]);
+    data[3..11].copy_from_slice(SIGNATURE_FIXED);
+    data[11..13].copy_from_slice(&512u16.to_le_bytes());
+    data[13] = 8;
+    data[40..48].copy_from_slice(&8192u64.to_le_bytes());
+    data[56..64].copy_from_slice(&4u64.to_le_bytes());
+    data[510..512].copy_from_slice(&[0x55, 0xAA]);
+
+    let header = BitlockerVolumeHeader::from_bytes(&data).unwrap();
+
+    assert_eq!(header.version, 6);
+    assert_eq!(header.volume_size, 8192 * 512);
+    assert_eq!(header.metadata_size, 16 * 1024);
+    assert_eq!(header.metadata_offsets, [16_384, 0, 0]);
   }
 }
