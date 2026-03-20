@@ -7,6 +7,7 @@ use std::{
 
 use super::{
   DESCRIPTOR,
+  attribute_list::{NtfsAttributeListEntry, parse_attribute_list},
   boot_sector::NtfsBootSector,
   record::{
     NtfsDataAttribute, NtfsDataAttributeValue, NtfsFileRecord, NtfsNonResidentAttribute,
@@ -66,9 +67,16 @@ impl NtfsFileSystem {
     })?;
     let bootstrap_mft_stream =
       build_stream_data_source(source.clone(), &boot_sector, &mft_record.data_attributes)?;
-    let resolved_mft_record =
-      resolve_bootstrap_mft_record(bootstrap_mft_stream.clone(), file_record_size, &mft_record)?;
-    let mft_stream = if resolved_mft_record.attribute_list_entries.is_empty() {
+    let resolved_mft_record = resolve_bootstrap_mft_record(
+      source.clone(),
+      &boot_sector,
+      bootstrap_mft_stream.clone(),
+      file_record_size,
+      &mft_record,
+    )?;
+    let mft_stream = if resolved_mft_record.attribute_list_entries.is_empty()
+      && resolved_mft_record.attribute_list_attributes.is_empty()
+    {
       bootstrap_mft_stream
     } else {
       build_stream_data_source(
@@ -212,9 +220,14 @@ impl NtfsFileSystem {
       return Ok(None);
     }
 
-    resolve_attribute_list_record(record_number, &record, &mut |referenced_record| {
-      self.read_parsed_record(referenced_record)
-    })
+    let attribute_list_entries =
+      load_attribute_list_entries(self.source.clone(), &self.boot_sector, &record)?;
+    resolve_attribute_list_record(
+      record_number,
+      &record,
+      &attribute_list_entries,
+      &mut |referenced_record| self.read_parsed_record(referenced_record),
+    )
     .map(Some)
   }
 
@@ -348,42 +361,51 @@ fn grouped_stream_attributes(
 }
 
 fn resolve_bootstrap_mft_record(
-  bootstrap_mft_stream: DataSourceHandle, file_record_size: u64, record: &NtfsFileRecord,
+  source: DataSourceHandle, boot_sector: &NtfsBootSector, bootstrap_mft_stream: DataSourceHandle,
+  file_record_size: u64, record: &NtfsFileRecord,
 ) -> Result<NtfsFileRecord> {
-  if record.attribute_list_entries.is_empty() {
+  let attribute_list_entries = load_attribute_list_entries(source, boot_sector, record)?;
+  if attribute_list_entries.is_empty() {
     return Ok(record.clone());
   }
 
   let record_count = bootstrap_mft_stream.size()? / file_record_size;
-  resolve_attribute_list_record(0, record, &mut |referenced_record| {
-    if referenced_record >= record_count {
-      return Ok(None);
-    }
+  resolve_attribute_list_record(
+    0,
+    record,
+    &attribute_list_entries,
+    &mut |referenced_record| {
+      if referenced_record >= record_count {
+        return Ok(None);
+      }
 
-    let record_offset = referenced_record
-      .checked_mul(file_record_size)
-      .ok_or_else(|| Error::InvalidRange("ntfs MFT record offset overflow".to_string()))?;
-    let bytes = read_file_record(
-      bootstrap_mft_stream.as_ref(),
-      record_offset,
-      file_record_size,
-    )?;
-    parse_file_record(&bytes, referenced_record)
-  })
+      let record_offset = referenced_record
+        .checked_mul(file_record_size)
+        .ok_or_else(|| Error::InvalidRange("ntfs MFT record offset overflow".to_string()))?;
+      let bytes = read_file_record(
+        bootstrap_mft_stream.as_ref(),
+        record_offset,
+        file_record_size,
+      )?;
+      parse_file_record(&bytes, referenced_record)
+    },
+  )
 }
 
 fn resolve_attribute_list_record<F>(
-  record_number: u64, record: &NtfsFileRecord, load_record: &mut F,
+  record_number: u64, record: &NtfsFileRecord, attribute_list_entries: &[NtfsAttributeListEntry],
+  load_record: &mut F,
 ) -> Result<NtfsFileRecord>
 where
   F: FnMut(u64) -> Result<Option<NtfsFileRecord>>, {
-  if record.attribute_list_entries.is_empty() {
+  if attribute_list_entries.is_empty() {
     return Ok(record.clone());
   }
 
   let mut resolved = record.clone();
+  resolved.attribute_list_entries = attribute_list_entries.to_vec();
   let mut referenced_records = BTreeMap::<u64, ()>::new();
-  for entry in &record.attribute_list_entries {
+  for entry in attribute_list_entries {
     if entry.base_file_record != record_number {
       referenced_records.insert(entry.base_file_record, ());
     }
@@ -413,6 +435,23 @@ where
   }
 
   Ok(resolved)
+}
+
+fn load_attribute_list_entries(
+  source: DataSourceHandle, boot_sector: &NtfsBootSector, record: &NtfsFileRecord,
+) -> Result<Vec<NtfsAttributeListEntry>> {
+  if record.attribute_list_attributes.is_empty() {
+    return Ok(record.attribute_list_entries.clone());
+  }
+  if !record.attribute_list_entries.is_empty() {
+    return Err(Error::InvalidFormat(
+      "ntfs file record stores $ATTRIBUTE_LIST as both resident and non-resident".to_string(),
+    ));
+  }
+
+  let data =
+    build_stream_data_source(source, boot_sector, &record.attribute_list_attributes)?.read_all()?;
+  parse_attribute_list(&data)
 }
 
 fn classify_node(record: &NtfsFileRecord) -> Result<(FileSystemNodeKind, u64)> {
@@ -778,6 +817,18 @@ mod tests {
     attribute
   }
 
+  fn synthetic_attribute_list_entry_bytes(
+    attribute_type: u32, starting_vcn: u64, base_file_record: u64, attribute_id: u16,
+  ) -> Vec<u8> {
+    let mut bytes = vec![0u8; 32];
+    bytes[0..4].copy_from_slice(&attribute_type.to_le_bytes());
+    bytes[4..6].copy_from_slice(&32u16.to_le_bytes());
+    bytes[8..16].copy_from_slice(&starting_vcn.to_le_bytes());
+    bytes[16..22].copy_from_slice(&base_file_record.to_le_bytes()[..6]);
+    bytes[24..26].copy_from_slice(&attribute_id.to_le_bytes());
+    bytes
+  }
+
   fn synthetic_file_record(attribute: &[u8]) -> Vec<u8> {
     let mut record = vec![0u8; 512];
     record[0..4].copy_from_slice(b"FILE");
@@ -816,6 +867,7 @@ mod tests {
         attribute_id: 7,
         name: None,
       }],
+      attribute_list_attributes: vec![],
       reparse_point: None,
       has_reparse_point: false,
     };
@@ -830,16 +882,54 @@ mod tests {
       }],
       data_attributes: vec![resident_data_attribute(b"extension", 7)],
       attribute_list_entries: vec![],
+      attribute_list_attributes: vec![],
       reparse_point: None,
       has_reparse_point: false,
     };
     let records = HashMap::from([(42u64, extension_record)]);
     let mut load_record = |record_number| Ok(records.get(&record_number).cloned());
 
-    let resolved = resolve_attribute_list_record(5, &base_record, &mut load_record).unwrap();
+    let resolved = resolve_attribute_list_record(
+      5,
+      &base_record,
+      &base_record.attribute_list_entries,
+      &mut load_record,
+    )
+    .unwrap();
 
     assert_eq!(resolved.file_names[0].name, "merged.txt");
     assert_eq!(resolved.data_attributes.len(), 2);
+  }
+
+  #[test]
+  fn loads_nonresident_attribute_list_entries() {
+    let entry_bytes = synthetic_attribute_list_entry_bytes(0x80, 0, 42, 7);
+    let mut source_bytes = vec![0u8; 2 * 4096];
+    source_bytes[4096..4096 + entry_bytes.len()].copy_from_slice(&entry_bytes);
+    let source = Arc::new(BytesDataSource::new(source_bytes)) as DataSourceHandle;
+    let record = NtfsFileRecord {
+      flags: 0x0001,
+      base_record_number: None,
+      file_names: vec![],
+      data_attributes: vec![],
+      attribute_list_entries: vec![],
+      attribute_list_attributes: vec![non_resident_data_attribute(
+        0,
+        0,
+        32,
+        32,
+        &[0x11, 0x01, 0x01, 0x00],
+        1,
+      )],
+      reparse_point: None,
+      has_reparse_point: false,
+    };
+
+    let entries = load_attribute_list_entries(source, &sample_boot_sector(), &record).unwrap();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].base_file_record, 42);
+    assert_eq!(entries[0].attribute_id, 7);
   }
 
   #[test]
@@ -865,6 +955,7 @@ mod tests {
         attribute_id: 7,
         name: None,
       }],
+      attribute_list_attributes: vec![],
       reparse_point: None,
       has_reparse_point: false,
     };
@@ -880,7 +971,14 @@ mod tests {
     bootstrap_bytes[512..1024].copy_from_slice(&extension_record);
     let bootstrap_stream = Arc::new(BytesDataSource::new(bootstrap_bytes)) as DataSourceHandle;
 
-    let resolved = resolve_bootstrap_mft_record(bootstrap_stream, 512, &base_record).unwrap();
+    let resolved = resolve_bootstrap_mft_record(
+      bootstrap_stream.clone(),
+      &sample_boot_sector(),
+      bootstrap_stream,
+      512,
+      &base_record,
+    )
+    .unwrap();
 
     assert_eq!(resolved.data_attributes.len(), 2);
     assert!(resolved.data_attributes.iter().any(|attribute| {

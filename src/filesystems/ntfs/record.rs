@@ -60,6 +60,7 @@ pub(crate) struct NtfsFileRecord {
   pub file_names: Vec<NtfsFileNameAttribute>,
   pub data_attributes: Vec<NtfsDataAttribute>,
   pub attribute_list_entries: Vec<NtfsAttributeListEntry>,
+  pub attribute_list_attributes: Vec<NtfsDataAttribute>,
   pub reparse_point: Option<NtfsReparsePointInfo>,
   pub has_reparse_point: bool,
 }
@@ -117,6 +118,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
   let mut file_names = Vec::new();
   let mut data_attributes = Vec::new();
   let mut attribute_list_entries = Vec::new();
+  let mut attribute_list_attributes = Vec::new();
   let mut reparse_point = None;
   let mut has_reparse_point = false;
   let mut cursor = attributes_offset;
@@ -167,14 +169,19 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
     match attribute_type {
       ATTRIBUTE_TYPE_ATTRIBUTE_LIST => {
         if non_resident {
-          return Err(Error::InvalidFormat(format!(
-            "ntfs file record {record_number} stores $ATTRIBUTE_LIST as non-resident"
-          )));
+          attribute_list_attributes.push(parse_stream_attribute(
+            attribute,
+            attribute_name,
+            attribute_id,
+            record_number,
+            "ntfs $ATTRIBUTE_LIST",
+          )?);
+        } else {
+          attribute_list_entries.extend(parse_attribute_list(resident_attribute_data(
+            attribute,
+            "ntfs $ATTRIBUTE_LIST",
+          )?)?);
         }
-        attribute_list_entries.extend(parse_attribute_list(resident_attribute_data(
-          attribute,
-          "ntfs $ATTRIBUTE_LIST",
-        )?)?);
       }
       ATTRIBUTE_TYPE_FILE_NAME => {
         if non_resident {
@@ -190,11 +197,12 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
             "ntfs encrypted data attributes are not supported in record {record_number}"
           )));
         }
-        data_attributes.push(parse_data_attribute(
+        data_attributes.push(parse_stream_attribute(
           attribute,
           attribute_name,
           attribute_id,
           record_number,
+          "ntfs $DATA",
         )?);
       }
       ATTRIBUTE_TYPE_REPARSE_POINT => {
@@ -221,6 +229,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
     file_names,
     data_attributes,
     attribute_list_entries,
+    attribute_list_attributes,
     reparse_point,
     has_reparse_point,
   }))
@@ -300,29 +309,29 @@ fn parse_file_name_attribute(attribute: &[u8], attribute_id: u16) -> Result<Ntfs
   })
 }
 
-fn parse_data_attribute(
-  attribute: &[u8], name: Option<String>, attribute_id: u16, record_number: u64,
+fn parse_stream_attribute(
+  attribute: &[u8], name: Option<String>, attribute_id: u16, record_number: u64, label: &str,
 ) -> Result<NtfsDataAttribute> {
   let data_flags = le_u16(&attribute[12..14]);
   let value = if attribute[8] == 0 {
-    NtfsDataAttributeValue::Resident(Arc::from(resident_attribute_data(attribute, "ntfs $DATA")?))
+    NtfsDataAttributeValue::Resident(Arc::from(resident_attribute_data(attribute, label)?))
   } else {
     if attribute.len() < 64 {
       return Err(Error::InvalidFormat(format!(
-        "ntfs non-resident $DATA attribute in record {record_number} is truncated"
+        "{label} attribute in record {record_number} is truncated"
       )));
     }
     let first_vcn = le_u64(&attribute[16..24]);
     let last_vcn = le_u64(&attribute[24..32]);
     if last_vcn < first_vcn {
       return Err(Error::InvalidFormat(format!(
-        "ntfs non-resident $DATA attribute in record {record_number} has an invalid VCN range"
+        "{label} attribute in record {record_number} has an invalid VCN range"
       )));
     }
     let runlist_offset = usize::from(le_u16(&attribute[32..34]));
     if runlist_offset > attribute.len() {
       return Err(Error::InvalidFormat(format!(
-        "ntfs non-resident $DATA attribute in record {record_number} has an invalid runlist offset"
+        "{label} attribute in record {record_number} has an invalid runlist offset"
       )));
     }
     let compression_unit = le_u16(&attribute[34..36]);
@@ -430,7 +439,16 @@ mod tests {
   use super::*;
 
   fn non_resident_data_attribute_bytes(data_flags: u16, compression_unit: u16) -> Vec<u8> {
+    non_resident_attribute_bytes(ATTRIBUTE_TYPE_DATA, data_flags, compression_unit)
+  }
+
+  fn non_resident_attribute_bytes(
+    attribute_type: u32, data_flags: u16, compression_unit: u16,
+  ) -> Vec<u8> {
     let mut attribute = vec![0u8; 70];
+    let attribute_len = attribute.len() as u32;
+    attribute[0..4].copy_from_slice(&attribute_type.to_le_bytes());
+    attribute[4..8].copy_from_slice(&attribute_len.to_le_bytes());
     attribute[8] = 1;
     attribute[12..14].copy_from_slice(&data_flags.to_le_bytes());
     attribute[14..16].copy_from_slice(&5u16.to_le_bytes());
@@ -441,6 +459,28 @@ mod tests {
     attribute[56..64].copy_from_slice(&12u64.to_le_bytes());
     attribute[64..70].copy_from_slice(&[0x11, 0x01, 0x01, 0x01, 0x0F, 0x00]);
     attribute
+  }
+
+  fn synthetic_file_record(attribute: &[u8]) -> Vec<u8> {
+    let mut record = vec![0u8; 512];
+    let record_len = record.len() as u32;
+    record[0..4].copy_from_slice(FILE_RECORD_SIGNATURE);
+    record[4..6].copy_from_slice(&48u16.to_le_bytes());
+    record[6..8].copy_from_slice(&2u16.to_le_bytes());
+    record[16..18].copy_from_slice(&1u16.to_le_bytes());
+    record[20..22].copy_from_slice(&56u16.to_le_bytes());
+    record[22..24].copy_from_slice(&FILE_RECORD_FLAG_IN_USE.to_le_bytes());
+    let used_size = 56 + attribute.len() + 4;
+    record[24..28].copy_from_slice(&(used_size as u32).to_le_bytes());
+    record[28..32].copy_from_slice(&record_len.to_le_bytes());
+    record[40..42].copy_from_slice(&2u16.to_le_bytes());
+    record[48..50].copy_from_slice(&[0xAA, 0xBB]);
+    record[50..52].copy_from_slice(&[0x11, 0x22]);
+    record[56..56 + attribute.len()].copy_from_slice(attribute);
+    record[56 + attribute.len()..60 + attribute.len()]
+      .copy_from_slice(&ATTRIBUTE_TYPE_END.to_le_bytes());
+    record[510..512].copy_from_slice(&[0xAA, 0xBB]);
+    record
   }
 
   #[test]
@@ -454,7 +494,7 @@ mod tests {
   fn parses_compressed_nonresident_data_attributes() {
     let attribute = non_resident_data_attribute_bytes(0x0001, 0);
 
-    let parsed = parse_data_attribute(&attribute, None, 5, 50).unwrap();
+    let parsed = parse_stream_attribute(&attribute, None, 5, 50, "ntfs $DATA").unwrap();
 
     let NtfsDataAttributeValue::NonResident(non_resident) = parsed.value else {
       panic!("expected a non-resident attribute");
@@ -464,5 +504,37 @@ mod tests {
     assert_eq!(non_resident.compression_unit, 0);
     assert_eq!(non_resident.data_size, 12);
     assert_eq!(non_resident.valid_data_size, 12);
+  }
+
+  #[test]
+  fn parses_nonresident_attribute_list_stream_attributes() {
+    let attribute = non_resident_data_attribute_bytes(0, 0);
+
+    let parsed = parse_stream_attribute(&attribute, None, 5, 50, "ntfs $ATTRIBUTE_LIST").unwrap();
+
+    let NtfsDataAttributeValue::NonResident(non_resident) = parsed.value else {
+      panic!("expected a non-resident attribute");
+    };
+    assert_eq!(non_resident.first_vcn, 0);
+    assert_eq!(non_resident.last_vcn, 15);
+    assert_eq!(non_resident.data_size, 12);
+  }
+
+  #[test]
+  fn parses_nonresident_attribute_list_file_record_attributes() {
+    let record = synthetic_file_record(&non_resident_attribute_bytes(
+      ATTRIBUTE_TYPE_ATTRIBUTE_LIST,
+      0,
+      0,
+    ));
+
+    let parsed = parse_file_record(&record, 342).unwrap().unwrap();
+
+    assert!(parsed.attribute_list_entries.is_empty());
+    assert_eq!(parsed.attribute_list_attributes.len(), 1);
+    assert!(matches!(
+      parsed.attribute_list_attributes[0].value,
+      NtfsDataAttributeValue::NonResident(_)
+    ));
   }
 }
