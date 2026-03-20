@@ -38,6 +38,7 @@ Completed since the initial scan:
 - MBR parsing now follows logical partitions from multiple primary extended containers in `src/volumes/mbr/parser.rs`
 - XFS special/device inodes now classify as `Special` instead of tripping unsupported fork-type reads in `src/filesystems/xfs/filesystem.rs`
 - EWF segment resolution now understands alpha-suffixed later segments such as `EAA` when the file header provides the segment number in `src/images/ewf/parser.rs`
+- EWF volume/data sections now accept larger payloads by parsing the classic prefix and ignoring trailing bytes in `src/images/ewf/volume.rs`
 
 ### High priority
 
@@ -70,7 +71,7 @@ These items look real but uncommon, or they are mostly strictness/compatibility 
 | Filesystem | XFS | Rare metadata-only fork formats still remain rejected after special/device inode support | `src/filesystems/xfs/filesystem.rs` | Some uncommon XFS metadata inodes could still fail if surfaced as regular content | Add fixture-backed handling only if real-world images require `UUID` or metadata-btree inode formats |
 | Volume | LVM2 | Metadata parser still expects a simple root layout even though ignored negative values are now tolerated | `src/volumes/lvm/metadata_text.rs` | Some valid text metadata variants can still fail | Relax the remaining root/object grammar once broader LVM fixtures are available |
 | Volume | GPT | Support is still strict to revision `1.0` despite broader header-size and block-size tolerance | `src/volumes/gpt/header.rs`, `src/volumes/gpt/constants.rs` | Some nonstandard GPT variants are still rejected | Expand revision compatibility only with real fixtures; do not loosen validation blindly |
-| Image | EWF | Only known hash/volume/data payload sizes are still covered after alpha-segment naming support | `src/images/ewf/parser.rs`, `src/images/ewf/hash.rs`, `src/images/ewf/volume.rs` | Some lesser EWF variants can still fail to open | Extend payload parsing only when real fixtures show additional section layouts |
+| Image | EWF | Only known hash/digest payload sizes are still covered after alpha-segment naming and relaxed volume/data prefix parsing | `src/images/ewf/parser.rs`, `src/images/ewf/hash.rs` | Some lesser EWF variants can still fail to open | Extend hash/digest parsing only when real fixtures show additional section layouts |
 
 ## Recommended execution order
 

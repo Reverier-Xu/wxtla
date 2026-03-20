@@ -399,12 +399,14 @@ fn parse_volume_payload(
 ) -> Result<EwfVolumeInfo> {
   let payload = source.read_bytes_at(payload_offset, payload_size)?;
 
-  match payload_size {
-    E01_VOLUME_DATA_SIZE => EwfVolumeInfo::parse_e01(&payload),
-    S01_VOLUME_DATA_SIZE => EwfVolumeInfo::parse_s01(&payload),
-    _ => Err(Error::InvalidFormat(format!(
+  if payload_size >= E01_VOLUME_DATA_SIZE {
+    EwfVolumeInfo::parse_e01(&payload)
+  } else if payload_size >= S01_VOLUME_DATA_SIZE {
+    EwfVolumeInfo::parse_s01(&payload)
+  } else {
+    Err(Error::InvalidFormat(format!(
       "unsupported ewf volume/data payload size: {payload_size}"
-    ))),
+    )))
   }
 }
 
@@ -614,6 +616,24 @@ mod tests {
     assert_eq!(parsed.parsed.volume.chunk_count, 1);
     assert_eq!(parsed.parsed.chunk_tables.len(), 1);
     assert_eq!(parsed.parsed.chunk_tables[0].entry_count, 1);
+  }
+
+  #[test]
+  fn accepts_volume_sections_with_trailing_bytes() {
+    let mut volume_payload = make_e01_volume_payload(0, 1, 512);
+    volume_payload.extend_from_slice(&[0xAA; 32]);
+    let volume_offset = FILE_HEADER_SIZE as u64;
+    let volume_section = make_section("volume", &volume_payload, volume_offset);
+    let done_offset = volume_offset + volume_section.len() as u64;
+    let done_section = make_descriptor("done", done_offset, SECTION_DESCRIPTOR_SIZE as u64);
+    let source: DataSourceHandle = Arc::new(MemDataSource {
+      data: [make_file_header(1), volume_section, done_section].concat(),
+    });
+
+    let parsed = parse(source).unwrap();
+
+    assert_eq!(parsed.parsed.volume.chunk_count, 0);
+    assert_eq!(parsed.parsed.volume.bytes_per_sector, 512);
   }
 
   fn make_file_header(segment_number: u16) -> Vec<u8> {

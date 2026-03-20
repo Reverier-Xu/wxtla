@@ -34,12 +34,13 @@ pub struct EwfVolumeInfo {
 impl EwfVolumeInfo {
   /// Parse an E01-style 1052-byte volume or data section payload.
   pub fn parse_e01(data: &[u8]) -> Result<Self> {
-    if data.len() != E01_VOLUME_DATA_SIZE {
+    if data.len() < E01_VOLUME_DATA_SIZE {
       return Err(Error::InvalidFormat(format!(
-        "ewf volume section must be {E01_VOLUME_DATA_SIZE} bytes, got {}",
+        "ewf volume section must be at least {E01_VOLUME_DATA_SIZE} bytes, got {}",
         data.len()
       )));
     }
+    let data = &data[..E01_VOLUME_DATA_SIZE];
 
     let stored_checksum = u32::from_le_bytes([data[1048], data[1049], data[1050], data[1051]]);
     let calculated_checksum = adler32_slice(&data[..1048]);
@@ -64,12 +65,13 @@ impl EwfVolumeInfo {
 
   /// Parse an S01-style 94-byte volume section payload.
   pub fn parse_s01(data: &[u8]) -> Result<Self> {
-    if data.len() != S01_VOLUME_DATA_SIZE {
+    if data.len() < S01_VOLUME_DATA_SIZE {
       return Err(Error::InvalidFormat(format!(
-        "ewf s01 volume section must be {S01_VOLUME_DATA_SIZE} bytes, got {}",
+        "ewf s01 volume section must be at least {S01_VOLUME_DATA_SIZE} bytes, got {}",
         data.len()
       )));
     }
+    let data = &data[..S01_VOLUME_DATA_SIZE];
 
     let stored_checksum = u32::from_le_bytes([data[90], data[91], data[92], data[93]]);
     let calculated_checksum = adler32_slice(&data[..90]);
@@ -186,5 +188,22 @@ mod tests {
     assert_eq!(volume.chunk_count, 45);
     assert_eq!(volume.chunk_size().unwrap(), 32768);
     assert_eq!(volume.media_size().unwrap(), 1_474_560);
+  }
+
+  #[test]
+  fn parses_e01_volume_prefix_with_trailing_bytes() {
+    let mut data = vec![0u8; E01_VOLUME_DATA_SIZE + 32];
+    data[0] = 1;
+    data[4..8].copy_from_slice(&128u32.to_le_bytes());
+    data[8..12].copy_from_slice(&64u32.to_le_bytes());
+    data[12..16].copy_from_slice(&512u32.to_le_bytes());
+    data[16..24].copy_from_slice(&8192u64.to_le_bytes());
+    let checksum = adler32_slice(&data[..1048]);
+    data[1048..1052].copy_from_slice(&checksum.to_le_bytes());
+
+    let volume = EwfVolumeInfo::parse_e01(&data).unwrap();
+
+    assert_eq!(volume.chunk_count, 128);
+    assert_eq!(volume.media_size().unwrap(), 4_194_304);
   }
 }
