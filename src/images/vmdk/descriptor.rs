@@ -181,7 +181,9 @@ fn parse_extent_bytes(line: &[u8], encoding: &'static Encoding) -> Result<VmdkDe
     b"vmfs" => VmdkExtentType::Vmfs,
     b"vmfssparse" => VmdkExtentType::VmfsSparse,
     b"vmfsraw" => VmdkExtentType::VmfsRaw,
-    b"vmfsrdm" => VmdkExtentType::VmfsRdm,
+    b"vmfsrdm" | b"vmfsrawdevicemap" | b"vmfspassthroughrawdevicemap" | b"vmfsrdmp" => {
+      VmdkExtentType::VmfsRdm
+    }
     b"zero" => VmdkExtentType::Zero,
     _ => VmdkExtentType::Unknown,
   };
@@ -476,6 +478,24 @@ RW 8192 FLAT "disk.raw" 63 partitionUUID deadbeef
 
     assert_eq!(descriptor.file_type, VmdkFileType::PartitionedDevice);
     assert_eq!(descriptor.extents[0].start_sector, 63);
+  }
+
+  #[test]
+  fn parses_raw_device_map_extent_aliases() {
+    let descriptor = VmdkDescriptor::from_bytes(
+      br#"# Disk DescriptorFile
+version=1
+CID=4c069322
+parentCID=ffffffff
+createType="vmfsrdmp"
+
+RW 8192 VMFSPASSTHROUGHRAWDEVICEMAP "disk.raw" 0
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(descriptor.file_type, VmdkFileType::VmfsRdmp);
+    assert_eq!(descriptor.extents[0].extent_type, VmdkExtentType::VmfsRdm);
   }
 
   #[test]

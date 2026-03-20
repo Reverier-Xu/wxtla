@@ -1483,6 +1483,38 @@ mod tests {
   }
 
   #[test]
+  fn opens_descriptor_backed_raw_device_map_extent_aliases() {
+    let descriptor = Arc::new(MemDataSource {
+      data: br#"# Disk DescriptorFile
+version=1
+CID=89abcdef
+parentCID=ffffffff
+createType="vmfsrdmp"
+RW 1 VMFSPASSTHROUGHRAWDEVICEMAP "part.bin" 0
+"#
+      .to_vec(),
+    }) as DataSourceHandle;
+    let extent = Arc::new(MemDataSource {
+      data: vec![b'R'; 512],
+    }) as DataSourceHandle;
+    let resolver = Resolver {
+      files: HashMap::from([("vmdk/part.bin".to_string(), extent)]),
+    };
+    let identity = SourceIdentity::from_relative_path("vmdk/raw-map.vmdk").unwrap();
+
+    let image = VmdkImage::open_with_hints(
+      descriptor,
+      SourceHints::new()
+        .with_resolver(&resolver)
+        .with_source_identity(&identity),
+    )
+    .unwrap();
+
+    assert_eq!(image.read_all().unwrap(), vec![b'R'; 512]);
+    assert_eq!(image.descriptor_data().file_type, VmdkFileType::VmfsRdmp);
+  }
+
+  #[test]
   fn reads_multi_extent_descriptor_with_zero_gap() {
     let descriptor = Arc::new(MemDataSource {
       data: br#"# Disk DescriptorFile
