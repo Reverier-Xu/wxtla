@@ -350,7 +350,7 @@ fn parse_segment(source: &dyn DataSource, state: &mut ParseState) -> Result<Pars
           Some(EwfHashSection::parse(&source.read_bytes_at(payload_offset, payload_size)?)?.md5);
       }
       EwfSectionKind::Digest => {
-        if payload_size != DIGEST_DATA_SIZE {
+        if payload_size < DIGEST_DATA_SIZE {
           return Err(Error::InvalidFormat(format!(
             "unsupported ewf digest payload size: {payload_size}"
           )));
@@ -634,6 +634,36 @@ mod tests {
 
     assert_eq!(parsed.parsed.volume.chunk_count, 0);
     assert_eq!(parsed.parsed.volume.bytes_per_sector, 512);
+  }
+
+  #[test]
+  fn accepts_digest_sections_with_trailing_bytes() {
+    let volume_payload = make_e01_volume_payload(0, 1, 512);
+    let mut digest_payload = vec![0u8; DIGEST_DATA_SIZE + 16];
+    digest_payload[..16].copy_from_slice(&[0x11; 16]);
+    digest_payload[16..36].copy_from_slice(&[0x22; 20]);
+    let checksum = adler32_slice(&digest_payload[..76]);
+    digest_payload[76..80].copy_from_slice(&checksum.to_le_bytes());
+    let volume_offset = FILE_HEADER_SIZE as u64;
+    let volume_section = make_section("volume", &volume_payload, volume_offset);
+    let digest_offset = volume_offset + volume_section.len() as u64;
+    let digest_section = make_section("digest", &digest_payload, digest_offset);
+    let done_offset = digest_offset + digest_section.len() as u64;
+    let done_section = make_descriptor("done", done_offset, SECTION_DESCRIPTOR_SIZE as u64);
+    let source: DataSourceHandle = Arc::new(MemDataSource {
+      data: [
+        make_file_header(1),
+        volume_section,
+        digest_section,
+        done_section,
+      ]
+      .concat(),
+    });
+
+    let parsed = parse(source).unwrap();
+
+    assert_eq!(parsed.parsed.md5_hash, Some([0x11; 16]));
+    assert_eq!(parsed.parsed.sha1_hash, Some([0x22; 20]));
   }
 
   fn make_file_header(segment_number: u16) -> Vec<u8> {
