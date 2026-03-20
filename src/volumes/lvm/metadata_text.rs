@@ -8,7 +8,7 @@ use crate::{Error, Result};
 #[derive(Debug, Clone)]
 enum Node {
   Object(BTreeMap<String, Node>),
-  Number(u64),
+  Number(i128),
   String(String),
   Array(Vec<Node>),
 }
@@ -17,7 +17,7 @@ enum Node {
 enum Token {
   Ident(String),
   String(String),
-  Number(u64),
+  Number(i128),
   Eq,
   LBrace,
   RBrace,
@@ -219,12 +219,9 @@ fn tokenize(text: &str) -> Result<Vec<Token>> {
         tokens.push(Token::String(output));
       }
       _ => {
-        if current == b'-' {
-          return Err(Error::InvalidFormat(
-            "negative numbers are not supported in LVM metadata".to_string(),
-          ));
-        }
-        if current.is_ascii_digit() {
+        if current.is_ascii_digit()
+          || current == b'-' && bytes.get(index + 1).is_some_and(u8::is_ascii_digit)
+        {
           let start = index;
           index += 1;
           while index < bytes.len() && bytes[index].is_ascii_digit() {
@@ -234,7 +231,7 @@ fn tokenize(text: &str) -> Result<Vec<Token>> {
             Error::InvalidFormat("invalid numeric token in LVM metadata".to_string())
           })?;
           let value = text
-            .parse::<u64>()
+            .parse::<i128>()
             .map_err(|_| Error::InvalidFormat("invalid number in LVM metadata".to_string()))?;
           tokens.push(Token::Number(value));
         } else {
@@ -436,7 +433,9 @@ fn as_string(node: &Node) -> Result<&str> {
 
 fn as_number(node: &Node) -> Result<u64> {
   match node {
-    Node::Number(value) => Ok(*value),
+    Node::Number(value) => u64::try_from(*value).map_err(|_| {
+      Error::InvalidFormat("expected a non-negative number in LVM metadata".to_string())
+    }),
     _ => Err(Error::InvalidFormat(
       "expected number in LVM metadata".to_string(),
     )),
@@ -459,7 +458,7 @@ fn get_optional_string(map: &BTreeMap<String, Node>, key: &str) -> Option<String
 
 fn get_optional_number(map: &BTreeMap<String, Node>, key: &str) -> Option<u64> {
   map.get(key).and_then(|value| match value {
-    Node::Number(value) => Some(*value),
+    Node::Number(value) => u64::try_from(*value).ok(),
     _ => None,
   })
 }
