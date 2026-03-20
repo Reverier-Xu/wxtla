@@ -183,4 +183,50 @@ mod tests {
     assert_eq!(system.partitions()[0].record.role, VolumeRole::Protective);
     assert_eq!(system.partitions()[1].record.role, VolumeRole::Primary);
   }
+
+  #[test]
+  fn opens_logical_partitions_from_multiple_extended_containers() {
+    let mut disk = vec![0u8; 512 * 128];
+    write_partition_entry(&mut disk, 0, 0x00, 0x05, 1, 16);
+    write_partition_entry(&mut disk, 1, 0x00, 0x0F, 32, 16);
+    write_boot_signature(&mut disk, 0);
+
+    let first_ebr_offset = 512usize;
+    write_partition_entry(
+      &mut disk[first_ebr_offset..first_ebr_offset + 512],
+      0,
+      0x00,
+      0x83,
+      1,
+      2,
+    );
+    write_boot_signature(&mut disk, first_ebr_offset);
+
+    let second_ebr_offset = 32 * 512usize;
+    write_partition_entry(
+      &mut disk[second_ebr_offset..second_ebr_offset + 512],
+      0,
+      0x00,
+      0x07,
+      1,
+      2,
+    );
+    write_boot_signature(&mut disk, second_ebr_offset);
+
+    let system = MbrDriver::open_with_sector_size(synthetic_source(disk), 512).unwrap();
+
+    assert_eq!(system.partitions().len(), 4);
+    assert_eq!(
+      system.partitions()[0].record.role,
+      VolumeRole::ExtendedContainer
+    );
+    assert_eq!(
+      system.partitions()[1].record.role,
+      VolumeRole::ExtendedContainer
+    );
+    assert_eq!(system.partitions()[2].record.role, VolumeRole::Logical);
+    assert_eq!(system.partitions()[2].absolute_start_lba, 2);
+    assert_eq!(system.partitions()[3].record.role, VolumeRole::Logical);
+    assert_eq!(system.partitions()[3].absolute_start_lba, 33);
+  }
 }

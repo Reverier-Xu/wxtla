@@ -29,41 +29,35 @@ fn validate_bounds(source_size: u64, partitions: &[MbrPartitionInfo]) -> Result<
 }
 
 fn validate_extended_container(partitions: &[MbrPartitionInfo]) -> Result<()> {
-  let mut extended_container = None;
-
-  for partition in partitions {
-    if partition.record.role == VolumeRole::ExtendedContainer {
-      if extended_container.is_some() {
-        return Err(Error::InvalidFormat(
-          "multiple extended partition containers are not supported".to_string(),
-        ));
-      }
-      extended_container = Some(partition);
-    }
-  }
+  let extended_containers = partitions
+    .iter()
+    .filter(|partition| partition.record.role == VolumeRole::ExtendedContainer)
+    .collect::<Vec<_>>();
 
   for partition in partitions {
     if partition.origin != MbrPartitionOrigin::Logical {
       continue;
     }
 
-    let container = extended_container.ok_or_else(|| {
-      Error::InvalidFormat("logical partitions require an extended container".to_string())
-    })?;
-    let container_end = container
-      .record
-      .span
-      .end_offset()
-      .ok_or_else(|| Error::InvalidRange("extended partition end offset overflow".to_string()))?;
+    if extended_containers.is_empty() {
+      return Err(Error::InvalidFormat(
+        "logical partitions require an extended container".to_string(),
+      ));
+    }
+
     let partition_end = partition
       .record
       .span
       .end_offset()
       .ok_or_else(|| Error::InvalidRange("logical partition end offset overflow".to_string()))?;
-
-    if partition.record.span.byte_offset < container.record.span.byte_offset
-      || partition_end > container_end
-    {
+    let inside_any_container = extended_containers.iter().any(|container| {
+      let Some(container_end) = container.record.span.end_offset() else {
+        return false;
+      };
+      partition.record.span.byte_offset >= container.record.span.byte_offset
+        && partition_end <= container_end
+    });
+    if !inside_any_container {
       return Err(Error::InvalidFormat(format!(
         "logical partition {} falls outside the extended container",
         partition.record.index

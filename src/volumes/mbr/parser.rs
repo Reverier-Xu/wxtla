@@ -97,7 +97,7 @@ fn parse_layout(
   }
 
   let mut partitions = Vec::new();
-  let mut first_extended_container_lba = None;
+  let mut extended_container_lbas = Vec::new();
 
   for entry in boot_record.entries().iter().copied() {
     if entry.is_unused() {
@@ -106,22 +106,19 @@ fn parse_layout(
 
     let info = MbrPartitionInfo::from_primary(partitions.len(), entry, bytes_per_sector)?;
     if entry.is_extended() {
-      if first_extended_container_lba.is_some() {
-        return Err(Error::InvalidFormat(
-          "multiple primary extended partition entries are not supported".to_string(),
-        ));
-      }
-      first_extended_container_lba = Some(u64::from(entry.start_lba));
+      extended_container_lbas.push(u64::from(entry.start_lba));
     }
     partitions.push(info);
   }
 
-  if let Some(first_extended_container_lba) = first_extended_container_lba {
+  let mut seen_ebrs = HashSet::new();
+  for first_extended_container_lba in extended_container_lbas {
     parse_logical_partitions(
       source,
       bytes_per_sector,
       first_extended_container_lba,
       &mut partitions,
+      &mut seen_ebrs,
     )?;
   }
 
@@ -136,16 +133,19 @@ fn parse_layout(
 
 fn parse_logical_partitions(
   source: &dyn DataSource, bytes_per_sector: u32, first_ebr_lba: u64,
-  partitions: &mut Vec<MbrPartitionInfo>,
+  partitions: &mut Vec<MbrPartitionInfo>, seen_ebrs: &mut HashSet<u64>,
 ) -> Result<()> {
   let mut current_ebr_lba = first_ebr_lba;
-  let mut seen_ebrs = HashSet::new();
+  let mut local_seen_ebrs = HashSet::new();
 
   loop {
-    if !seen_ebrs.insert(current_ebr_lba) {
+    if !local_seen_ebrs.insert(current_ebr_lba) {
       return Err(Error::InvalidFormat(
         "mbr extended partition chain contains a loop".to_string(),
       ));
+    }
+    if !seen_ebrs.insert(current_ebr_lba) {
+      break;
     }
     if partitions.len() >= MAX_LOGICAL_PARTITIONS {
       return Err(Error::InvalidFormat(format!(
