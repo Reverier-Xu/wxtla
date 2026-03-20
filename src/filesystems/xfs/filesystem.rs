@@ -6,9 +6,10 @@ use std::{
 use super::{
   DESCRIPTOR,
   constants::{
-    BTREE_SIG_V4, BTREE_SIG_V5, DIR_LEAF_OFFSET, FILETYPE_DIR, FILETYPE_MASK, FILETYPE_SYMLINK,
-    FORK_BTREE, FORK_EXTENTS, FORK_INLINE, INOBT_SIG_V4, INOBT_SIG_V5, INODES_PER_CHUNK,
-    XFS_MAX_INODE_NUMBER,
+    BTREE_SIG_V4, BTREE_SIG_V5, DIR_LEAF_OFFSET, FILETYPE_BLOCK_DEVICE, FILETYPE_CHAR_DEVICE,
+    FILETYPE_DIR, FILETYPE_FIFO, FILETYPE_MASK, FILETYPE_REGULAR, FILETYPE_SOCKET,
+    FILETYPE_SYMLINK, FORK_BTREE, FORK_EXTENTS, FORK_INLINE, INOBT_SIG_V4, INOBT_SIG_V5,
+    INODES_PER_CHUNK, XFS_MAX_INODE_NUMBER,
   },
   data_source::XfsExtentDataSource,
   directory::{XfsDirEntry, parse_block_directory, parse_shortform_directory},
@@ -560,7 +561,7 @@ impl FileSystem for XfsFileSystem {
   fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
     let inode_number = decode_node_id(file_id)?;
     let inode = self.read_inode(inode_number)?;
-    if inode.is_dir() || inode.is_symlink() {
+    if kind_from_inode(&inode) != FileSystemNodeKind::File {
       return Err(Error::NotFound(format!(
         "xfs inode {inode_number} is not a readable file"
       )));
@@ -570,13 +571,14 @@ impl FileSystem for XfsFileSystem {
 }
 
 fn kind_from_inode(inode: &XfsInode) -> FileSystemNodeKind {
-  let file_type = inode.mode & FILETYPE_MASK;
-  if file_type == FILETYPE_DIR {
-    FileSystemNodeKind::Directory
-  } else if file_type == FILETYPE_SYMLINK {
-    FileSystemNodeKind::Symlink
-  } else {
-    FileSystemNodeKind::File
+  match inode.mode & FILETYPE_MASK {
+    FILETYPE_DIR => FileSystemNodeKind::Directory,
+    FILETYPE_SYMLINK => FileSystemNodeKind::Symlink,
+    FILETYPE_REGULAR => FileSystemNodeKind::File,
+    FILETYPE_FIFO | FILETYPE_CHAR_DEVICE | FILETYPE_BLOCK_DEVICE | FILETYPE_SOCKET => {
+      FileSystemNodeKind::Special
+    }
+    _ => FileSystemNodeKind::Special,
   }
 }
 
@@ -647,6 +649,22 @@ mod tests {
     assert_eq!(source.reads.load(Ordering::Relaxed), 2);
   }
 
+  #[test]
+  fn classifies_special_inodes_and_rejects_open_file() {
+    let filesystem = XfsFileSystem {
+      source: Arc::new(BytesDataSource::new(synthetic_special_inode_source())),
+      superblock: test_superblock(),
+      inode_chunk_cache: Mutex::new(HashMap::new()),
+    };
+    let node_id = FileSystemNodeId::from_u64(64);
+
+    let node = filesystem.node(&node_id).unwrap();
+    let error = filesystem.open_file(&node_id).err().unwrap();
+
+    assert_eq!(node.kind, FileSystemNodeKind::Special);
+    assert!(matches!(error, Error::NotFound(_)));
+  }
+
   fn test_superblock() -> XfsSuperblock {
     XfsSuperblock {
       block_size: 4096,
@@ -676,6 +694,27 @@ mod tests {
     block[4..6].copy_from_slice(&0u16.to_be_bytes());
     block[6..8].copy_from_slice(&1u16.to_be_bytes());
     block[56..60].copy_from_slice(&64u32.to_be_bytes());
+
+    data
+  }
+
+  fn synthetic_special_inode_source() -> Vec<u8> {
+    let mut data = vec![0u8; 9 * 4096];
+    data[1024..1028].copy_from_slice(b"XAGI");
+    data[1044..1048].copy_from_slice(&4u32.to_be_bytes());
+    data[1048..1052].copy_from_slice(&1u32.to_be_bytes());
+
+    let block = &mut data[4 * 4096..5 * 4096];
+    block[0..4].copy_from_slice(INOBT_SIG_V5);
+    block[4..6].copy_from_slice(&0u16.to_be_bytes());
+    block[6..8].copy_from_slice(&1u16.to_be_bytes());
+    block[56..60].copy_from_slice(&64u32.to_be_bytes());
+
+    let inode = &mut data[8 * 4096..8 * 4096 + 512];
+    inode[0..2].copy_from_slice(b"IN");
+    inode[2..4].copy_from_slice(&FILETYPE_CHAR_DEVICE.to_be_bytes());
+    inode[4] = 2;
+    inode[16..20].copy_from_slice(&1u32.to_be_bytes());
 
     data
   }

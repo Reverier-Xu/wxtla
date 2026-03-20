@@ -6,8 +6,13 @@ pub(crate) const FORK_EXTENTS: u8 = 2;
 pub(crate) const FORK_BTREE: u8 = 3;
 
 pub(crate) const FILETYPE_MASK: u16 = 0xF000;
+pub(crate) const FILETYPE_FIFO: u16 = 0x1000;
+pub(crate) const FILETYPE_CHAR_DEVICE: u16 = 0x2000;
 pub(crate) const FILETYPE_DIR: u16 = 0x4000;
+pub(crate) const FILETYPE_BLOCK_DEVICE: u16 = 0x6000;
+pub(crate) const FILETYPE_REGULAR: u16 = 0x8000;
 pub(crate) const FILETYPE_SYMLINK: u16 = 0xA000;
+pub(crate) const FILETYPE_SOCKET: u16 = 0xC000;
 
 pub(crate) const SECONDARY_FEATURE_FILETYPE: u32 = 0x0000_0200;
 

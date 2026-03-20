@@ -36,6 +36,7 @@ Completed since the initial scan:
 - BitLocker fixed-volume headers now fall back to Vista-style metadata LCN discovery in `src/volumes/bitlocker/header.rs`
 - LVM2 metadata parsing now tolerates negative numbers in ignored fields in `src/volumes/lvm/metadata_text.rs`
 - MBR parsing now follows logical partitions from multiple primary extended containers in `src/volumes/mbr/parser.rs`
+- XFS special/device inodes now classify as `Special` instead of tripping unsupported fork-type reads in `src/filesystems/xfs/filesystem.rs`
 
 ### High priority
 
@@ -65,7 +66,7 @@ These items look real but uncommon, or they are mostly strictness/compatibility 
 
 | Area | Format | Missing feature | Evidence | Impact | Planned work |
 | --- | --- | --- | --- | --- | --- |
-| Filesystem | XFS | Only known directory/data fork types are handled | `src/filesystems/xfs/filesystem.rs` | Some uncommon inode layouts are rejected | Add fork-type coverage after mainstream XFS fixture breadth improves |
+| Filesystem | XFS | Rare metadata-only fork formats still remain rejected after special/device inode support | `src/filesystems/xfs/filesystem.rs` | Some uncommon XFS metadata inodes could still fail if surfaced as regular content | Add fixture-backed handling only if real-world images require `UUID` or metadata-btree inode formats |
 | Volume | LVM2 | Metadata parser still expects a simple root layout even though ignored negative values are now tolerated | `src/volumes/lvm/metadata_text.rs` | Some valid text metadata variants can still fail | Relax the remaining root/object grammar once broader LVM fixtures are available |
 | Volume | GPT | Support is still strict to revision `1.0` despite broader header-size and block-size tolerance | `src/volumes/gpt/header.rs`, `src/volumes/gpt/constants.rs` | Some nonstandard GPT variants are still rejected | Expand revision compatibility only with real fixtures; do not loosen validation blindly |
 | Image | EWF | Only known hash/volume/data payload sizes and common segment naming workflows are supported | `src/images/ewf/parser.rs`, `src/images/ewf/naming.rs` | Some lesser EWF variants fail to open | Add compatibility as sample coverage appears |
