@@ -268,6 +268,50 @@ vg0 {
   }
 
   #[test]
+  fn lvm_metadata_accepts_extra_root_objects() {
+    let image = build_lvm_image_with_raw_metadata(
+      r#"
+contents = "Text Format Volume Group"
+version = 1
+
+archive {
+  note = "ignored"
+}
+
+vg0 {
+  id = "vgid"
+  seqno = 1
+  extent_size = 8
+  physical_volumes {
+    pv0 {
+      id = "aaaaaa-aaaa-aaaa-aaaa-aaaa-aaaa-aaaaaa"
+      pe_start = 2048
+    }
+  }
+  logical_volumes {
+    lv0 {
+      id = "lvid"
+      segment_count = 1
+      segment1 {
+        start_extent = 0
+        extent_count = 1
+        type = striped
+        stripe_count = 1
+        stripes = [ "pv0", 0 ]
+      }
+    }
+  }
+}
+"#,
+    );
+
+    let system =
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+    assert_eq!(system.volumes().len(), 1);
+    assert_eq!(system.volumes()[0].name.as_deref(), Some("lv0"));
+  }
+
+  #[test]
   fn lvm_metadata_accepts_large_unsigned_numbers_beyond_i64() {
     let image = build_lvm_image_with_raw_metadata(
       r#"

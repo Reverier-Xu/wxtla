@@ -38,15 +38,18 @@ enum TokenKind {
 pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
   let tokens = tokenize(text)?;
   let root = parse_root(&tokens)?;
-  if root.len() != 1 {
+  let mut vg_candidates = root
+    .into_iter()
+    .filter(|(_, node)| is_volume_group_node(node))
+    .collect::<Vec<_>>();
+  if vg_candidates.len() != 1 {
     return Err(Error::InvalidFormat(
       "unsupported LVM metadata root layout".to_string(),
     ));
   }
 
-  let (vg_name, vg_node) = root
-    .into_iter()
-    .next()
+  let (vg_name, vg_node) = vg_candidates
+    .pop()
     .ok_or_else(|| Error::InvalidFormat("empty LVM metadata".to_string()))?;
   let vg = as_object(&vg_node)?;
 
@@ -116,6 +119,16 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
     physical_volumes,
     logical_volumes,
   })
+}
+
+fn is_volume_group_node(node: &Node) -> bool {
+  let Ok(object) = as_object(node) else {
+    return false;
+  };
+  object.contains_key("id")
+    && object.contains_key("seqno")
+    && object.contains_key("extent_size")
+    && object.contains_key("logical_volumes")
 }
 
 fn parse_segment_stripes(segment: &BTreeMap<String, Node>) -> Result<Vec<MetadataStripe>> {

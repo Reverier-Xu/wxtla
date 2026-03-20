@@ -44,6 +44,7 @@ Completed since the initial scan:
 - VMDK raw-device-map extent aliases now parse through the existing flat extent path in `src/images/vmdk/descriptor.rs`
 - BitLocker VMK and FVEK decryptors now tolerate larger or newer key payload headers as long as the stable key offsets remain valid in `src/volumes/bitlocker/system.rs`
 - UDIF now accepts newer trailer and blkx table version/size fields as long as the known fixed-layout prefix remains valid in `src/images/udif/trailer.rs` and `src/images/udif/block_map.rs`
+- LVM2 metadata parsing now selects the real VG object even when extra root-level objects are present in `src/volumes/lvm/metadata_text.rs`
 
 ### High priority
 
@@ -74,7 +75,7 @@ These items look real but uncommon, or they are mostly strictness/compatibility 
 | Area | Format | Missing feature | Evidence | Impact | Planned work |
 | --- | --- | --- | --- | --- | --- |
 | Filesystem | XFS | Rare metadata-only fork formats still remain rejected after special/device inode support | `src/filesystems/xfs/filesystem.rs` | Some uncommon XFS metadata inodes could still fail if surfaced as regular content | Add fixture-backed handling only if real-world images require `UUID` or metadata-btree inode formats |
-| Volume | LVM2 | Metadata parser still expects a simple root layout even though ignored negative values are now tolerated | `src/volumes/lvm/metadata_text.rs` | Some valid text metadata variants can still fail | Relax the remaining root/object grammar once broader LVM fixtures are available |
+| Volume | LVM2 | Metadata parser still has a simplified object grammar even though ignored negative values and extra root objects are now tolerated | `src/volumes/lvm/metadata_text.rs` | Some valid text metadata variants can still fail | Relax the remaining root/object grammar once broader LVM fixtures are available |
 | Volume | GPT | Support is still strict to revision `1.0` despite broader header-size and block-size tolerance | `src/volumes/gpt/header.rs`, `src/volumes/gpt/constants.rs` | Some nonstandard GPT variants are still rejected | Expand revision compatibility only with real fixtures; do not loosen validation blindly |
 | Image | EWF | Only known hash payload sizes are still covered after alpha-segment naming and relaxed volume/data/digest prefix parsing | `src/images/ewf/parser.rs`, `src/images/ewf/hash.rs` | Some lesser EWF variants can still fail to open | Extend hash parsing only when real fixtures show additional section layouts |
 
