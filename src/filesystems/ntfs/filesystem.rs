@@ -9,6 +9,7 @@ use super::{
   DESCRIPTOR,
   attribute_list::{NtfsAttributeListEntry, parse_attribute_list},
   boot_sector::NtfsBootSector,
+  index::read_directory_index_entries,
   record::{
     NtfsDataAttribute, NtfsDataAttributeValue, NtfsFileRecord, NtfsNonResidentAttribute,
     parse_file_record,
@@ -26,8 +27,6 @@ use crate::{
 const ROOT_FILE_RECORD_NUMBER: u64 = 5;
 const DEFAULT_NTFS_COMPRESSION_UNIT_CLUSTERS: u64 = 16;
 
-type NtfsChildrenIndex = Arc<HashMap<u64, Arc<[DirectoryEntry]>>>;
-
 pub struct NtfsFileSystem {
   source: DataSourceHandle,
   boot_sector: NtfsBootSector,
@@ -35,7 +34,7 @@ pub struct NtfsFileSystem {
   file_record_size: u64,
   record_count: u64,
   nodes: Mutex<HashMap<u64, Arc<NtfsNode>>>,
-  children: Mutex<Option<NtfsChildrenIndex>>,
+  children: Mutex<HashMap<u64, Arc<[DirectoryEntry]>>>,
 }
 
 struct NtfsNode {
@@ -43,6 +42,8 @@ struct NtfsNode {
   parent_id: Option<u64>,
   record: FileSystemNodeRecord,
   data_attributes: Arc<[NtfsDataAttribute]>,
+  index_root_attributes: Arc<[NtfsDataAttribute]>,
+  index_allocation_attributes: Arc<[NtfsDataAttribute]>,
   reparse_point: Option<NtfsReparsePointInfo>,
 }
 
@@ -99,7 +100,7 @@ impl NtfsFileSystem {
       file_record_size,
       record_count: mft_stream_size / file_record_size,
       nodes: Mutex::new(HashMap::new()),
-      children: Mutex::new(None),
+      children: Mutex::new(HashMap::new()),
     };
     let root_id = FileSystemNodeId::from_u64(ROOT_FILE_RECORD_NUMBER);
     if filesystem.lookup_node(&root_id).is_err() {
@@ -197,6 +198,8 @@ impl NtfsFileSystem {
       parent_id,
       record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(record_number), kind, size),
       data_attributes: Arc::from(record.data_attributes),
+      index_root_attributes: Arc::from(record.index_root_attributes),
+      index_allocation_attributes: Arc::from(record.index_allocation_attributes),
       reparse_point: record.reparse_point,
     });
 
@@ -246,57 +249,84 @@ impl NtfsFileSystem {
     parse_file_record(&record_bytes, record_number)
   }
 
-  fn children_index(&self) -> Result<NtfsChildrenIndex> {
-    if let Some(children) = self
+  fn directory_entries(
+    &self, record_number: u64, node: &NtfsNode,
+  ) -> Result<Arc<[DirectoryEntry]>> {
+    if let Some(entries) = self
       .children
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner())
-      .as_ref()
+      .get(&record_number)
       .cloned()
     {
-      return Ok(children);
+      return Ok(entries);
     }
 
-    let mut children = HashMap::<u64, Vec<DirectoryEntry>>::new();
-    for record_number in 0..self.record_count {
-      let Some(node) = self.load_node(record_number)? else {
-        continue;
+    let mut entries =
+      if let Some(root_data) = resident_index_root_data(&node.index_root_attributes)? {
+        let allocation_source = if node.index_allocation_attributes.is_empty() {
+          None
+        } else {
+          let allocation_attributes = i30_attributes(&node.index_allocation_attributes)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+          Some(build_stream_data_source(
+            self.source.clone(),
+            &self.boot_sector,
+            &allocation_attributes,
+          )?)
+        };
+        let cluster_size = self.boot_sector.cluster_size()?;
+        read_directory_index_entries(
+          &root_data,
+          allocation_source,
+          cluster_size,
+          &mut |child_record_number| {
+            self
+              .load_node(child_record_number)?
+              .map(|child| child.record.kind)
+              .ok_or_else(|| {
+                Error::NotFound(format!(
+                  "ntfs index entry points to missing record {child_record_number}"
+                ))
+              })
+          },
+        )?
+      } else {
+        self.scan_directory_entries(record_number)?
       };
-      let Some(parent_id) = node.parent_id else {
-        continue;
-      };
-      if record_number == ROOT_FILE_RECORD_NUMBER {
-        continue;
-      }
-      children
-        .entry(parent_id)
-        .or_default()
-        .push(DirectoryEntry::new(
-          node.name.clone(),
-          node.record.id.clone(),
-          node.record.kind,
-        ));
-    }
-    let children = Arc::new(
-      children
-        .into_iter()
-        .map(|(parent_id, mut entries)| {
-          entries.sort_by(|left, right| left.name.cmp(&right.name));
-          (parent_id, Arc::from(entries.into_boxed_slice()))
-        })
-        .collect::<HashMap<_, _>>(),
-    );
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    let entries: Arc<[DirectoryEntry]> = Arc::from(entries.into_boxed_slice());
 
-    let mut cached = self
+    let mut cache = self
       .children
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(existing) = cached.as_ref().cloned() {
+    if let Some(existing) = cache.get(&record_number).cloned() {
       return Ok(existing);
     }
-    *cached = Some(children.clone());
+    cache.insert(record_number, entries.clone());
+    Ok(entries)
+  }
 
-    Ok(children)
+  fn scan_directory_entries(&self, record_number: u64) -> Result<Vec<DirectoryEntry>> {
+    let mut entries = Vec::new();
+    for child_record_number in 0..self.record_count {
+      let Some(node) = self.load_node(child_record_number)? else {
+        continue;
+      };
+      if node.parent_id != Some(record_number) || child_record_number == ROOT_FILE_RECORD_NUMBER {
+        continue;
+      }
+      entries.push(DirectoryEntry::new(
+        node.name.clone(),
+        node.record.id.clone(),
+        node.record.kind,
+      ));
+    }
+
+    Ok(entries)
   }
 }
 
@@ -322,12 +352,7 @@ impl FileSystem for NtfsFileSystem {
       )));
     }
 
-    let children = self.children_index()?;
-    Ok(
-      children
-        .get(&record_number)
-        .map_or_else(Vec::new, |entries| entries.to_vec()),
-    )
+    Ok(self.directory_entries(record_number, &node)?.to_vec())
   }
 
   fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
@@ -428,6 +453,36 @@ where
         resolved.data_attributes.push(data_attribute.clone());
       }
     }
+    for index_root_attribute in &extension.index_root_attributes {
+      if !resolved
+        .index_root_attributes
+        .contains(index_root_attribute)
+      {
+        resolved
+          .index_root_attributes
+          .push(index_root_attribute.clone());
+      }
+    }
+    for index_allocation_attribute in &extension.index_allocation_attributes {
+      if !resolved
+        .index_allocation_attributes
+        .contains(index_allocation_attribute)
+      {
+        resolved
+          .index_allocation_attributes
+          .push(index_allocation_attribute.clone());
+      }
+    }
+    for attribute_list_attribute in &extension.attribute_list_attributes {
+      if !resolved
+        .attribute_list_attributes
+        .contains(attribute_list_attribute)
+      {
+        resolved
+          .attribute_list_attributes
+          .push(attribute_list_attribute.clone());
+      }
+    }
     if resolved.reparse_point.is_none() && extension.reparse_point.is_some() {
       resolved.reparse_point = extension.reparse_point.clone();
       resolved.has_reparse_point = true;
@@ -452,6 +507,37 @@ fn load_attribute_list_entries(
   let data =
     build_stream_data_source(source, boot_sector, &record.attribute_list_attributes)?.read_all()?;
   parse_attribute_list(&data)
+}
+
+fn i30_attributes(attributes: &[NtfsDataAttribute]) -> Vec<&NtfsDataAttribute> {
+  let named = attributes
+    .iter()
+    .filter(|attribute| attribute.name.as_deref() == Some("$I30"))
+    .collect::<Vec<_>>();
+  if named.is_empty() {
+    attributes.iter().collect()
+  } else {
+    named
+  }
+}
+
+fn resident_index_root_data(attributes: &[NtfsDataAttribute]) -> Result<Option<Arc<[u8]>>> {
+  let attributes = i30_attributes(attributes);
+  if attributes.is_empty() {
+    return Ok(None);
+  }
+  if attributes.len() != 1 {
+    return Err(Error::InvalidFormat(
+      "ntfs fragmented $INDEX_ROOT attributes are not supported".to_string(),
+    ));
+  }
+
+  match &attributes[0].value {
+    NtfsDataAttributeValue::Resident(data) => Ok(Some(data.clone())),
+    NtfsDataAttributeValue::NonResident(_) => Err(Error::InvalidFormat(
+      "ntfs non-resident $INDEX_ROOT attributes are not supported".to_string(),
+    )),
+  }
 }
 
 fn classify_node(record: &NtfsFileRecord) -> Result<(FileSystemNodeKind, u64)> {
@@ -868,6 +954,8 @@ mod tests {
         name: None,
       }],
       attribute_list_attributes: vec![],
+      index_root_attributes: vec![],
+      index_allocation_attributes: vec![],
       reparse_point: None,
       has_reparse_point: false,
     };
@@ -883,6 +971,8 @@ mod tests {
       data_attributes: vec![resident_data_attribute(b"extension", 7)],
       attribute_list_entries: vec![],
       attribute_list_attributes: vec![],
+      index_root_attributes: vec![],
+      index_allocation_attributes: vec![],
       reparse_point: None,
       has_reparse_point: false,
     };
@@ -921,6 +1011,8 @@ mod tests {
         &[0x11, 0x01, 0x01, 0x00],
         1,
       )],
+      index_root_attributes: vec![],
+      index_allocation_attributes: vec![],
       reparse_point: None,
       has_reparse_point: false,
     };
@@ -956,6 +1048,8 @@ mod tests {
         name: None,
       }],
       attribute_list_attributes: vec![],
+      index_root_attributes: vec![],
+      index_allocation_attributes: vec![],
       reparse_point: None,
       has_reparse_point: false,
     };

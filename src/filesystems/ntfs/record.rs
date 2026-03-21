@@ -15,6 +15,8 @@ const FILE_RECORD_FLAG_DIRECTORY: u16 = 0x0002;
 const ATTRIBUTE_TYPE_ATTRIBUTE_LIST: u32 = 0x0000_0020;
 const ATTRIBUTE_TYPE_FILE_NAME: u32 = 0x0000_0030;
 const ATTRIBUTE_TYPE_DATA: u32 = 0x0000_0080;
+const ATTRIBUTE_TYPE_INDEX_ROOT: u32 = 0x0000_0090;
+const ATTRIBUTE_TYPE_INDEX_ALLOCATION: u32 = 0x0000_00A0;
 const ATTRIBUTE_TYPE_REPARSE_POINT: u32 = 0x0000_00C0;
 const ATTRIBUTE_TYPE_END: u32 = 0xFFFF_FFFF;
 
@@ -61,6 +63,8 @@ pub(crate) struct NtfsFileRecord {
   pub data_attributes: Vec<NtfsDataAttribute>,
   pub attribute_list_entries: Vec<NtfsAttributeListEntry>,
   pub attribute_list_attributes: Vec<NtfsDataAttribute>,
+  pub index_root_attributes: Vec<NtfsDataAttribute>,
+  pub index_allocation_attributes: Vec<NtfsDataAttribute>,
   pub reparse_point: Option<NtfsReparsePointInfo>,
   pub has_reparse_point: bool,
 }
@@ -119,6 +123,8 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
   let mut data_attributes = Vec::new();
   let mut attribute_list_entries = Vec::new();
   let mut attribute_list_attributes = Vec::new();
+  let mut index_root_attributes = Vec::new();
+  let mut index_allocation_attributes = Vec::new();
   let mut reparse_point = None;
   let mut has_reparse_point = false;
   let mut cursor = attributes_offset;
@@ -205,6 +211,24 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
           "ntfs $DATA",
         )?);
       }
+      ATTRIBUTE_TYPE_INDEX_ROOT => {
+        index_root_attributes.push(parse_stream_attribute(
+          attribute,
+          attribute_name,
+          attribute_id,
+          record_number,
+          "ntfs $INDEX_ROOT",
+        )?);
+      }
+      ATTRIBUTE_TYPE_INDEX_ALLOCATION => {
+        index_allocation_attributes.push(parse_stream_attribute(
+          attribute,
+          attribute_name,
+          attribute_id,
+          record_number,
+          "ntfs $INDEX_ALLOCATION",
+        )?);
+      }
       ATTRIBUTE_TYPE_REPARSE_POINT => {
         if non_resident {
           return Err(Error::InvalidFormat(format!(
@@ -230,6 +254,8 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
     data_attributes,
     attribute_list_entries,
     attribute_list_attributes,
+    index_root_attributes,
+    index_allocation_attributes,
     reparse_point,
     has_reparse_point,
   }))

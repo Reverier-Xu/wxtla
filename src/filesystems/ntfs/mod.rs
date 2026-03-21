@@ -4,6 +4,7 @@ mod attribute_list;
 mod boot_sector;
 mod driver;
 mod filesystem;
+mod index;
 mod record;
 mod reparse;
 mod runlist;
