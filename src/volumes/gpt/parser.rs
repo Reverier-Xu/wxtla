@@ -21,16 +21,48 @@ struct GptHeaderCandidate {
   header: GptHeader,
 }
 
-pub(super) fn open(source: DataSourceHandle) -> Result<GptVolumeSystem> {
+pub(super) fn candidate_block_sizes(source: &dyn DataSource) -> Result<Vec<u32>> {
+  let mut candidates = Vec::new();
+  let source_size = source.size()?;
   for block_size in constants::SUPPORTED_BLOCK_SIZES {
-    if let Ok(system) = open_with_block_size(source.clone(), block_size) {
-      return Ok(system);
+    if source_size < u64::from(block_size) + constants::HEADER_SIGNATURE.len() as u64 {
+      continue;
+    }
+
+    let signature =
+      source.read_bytes_at(u64::from(block_size), constants::HEADER_SIGNATURE.len())?;
+    if signature == constants::HEADER_SIGNATURE {
+      push_candidate_block_size(&mut candidates, block_size);
+    }
+  }
+  for block_size in constants::SUPPORTED_BLOCK_SIZES {
+    push_candidate_block_size(&mut candidates, block_size);
+  }
+
+  Ok(candidates)
+}
+
+pub(super) fn open(source: DataSourceHandle) -> Result<GptVolumeSystem> {
+  let mut first_error = None;
+  for block_size in candidate_block_sizes(source.as_ref())? {
+    match open_with_block_size(source.clone(), block_size) {
+      Ok(system) => return Ok(system),
+      Err(error) => {
+        if first_error.is_none() {
+          first_error = Some(error);
+        }
+      }
     }
   }
 
-  Err(Error::InvalidFormat(
-    "unable to infer a supported gpt block size".to_string(),
-  ))
+  Err(first_error.unwrap_or_else(|| {
+    Error::InvalidFormat("unable to infer a supported gpt block size".to_string())
+  }))
+}
+
+pub(super) fn validate_primary_probe(source: &dyn DataSource, block_size: u32) -> Result<()> {
+  validate_protective_mbr(source)?;
+  read_header_candidate(source, block_size, GptHeaderLocation::Primary).map(|_| ())
 }
 
 pub(super) fn open_with_block_size(
@@ -177,6 +209,12 @@ fn read_header_block(
   let block = source.read_bytes_at(offset, block_size as usize)?;
   let header = GptHeader::parse(&block)?;
   Ok((header, block))
+}
+
+fn push_candidate_block_size(candidates: &mut Vec<u32>, block_size: u32) {
+  if !candidates.contains(&block_size) {
+    candidates.push(block_size);
+  }
 }
 
 fn read_entry_array(

@@ -45,13 +45,8 @@ impl FormatProbe for GptProbe {
   }
 
   fn probe(&self, context: &ProbeContext<'_>) -> Result<ProbeResult> {
-    for block_size in constants::SUPPORTED_BLOCK_SIZES {
-      let Ok(signature) =
-        context.read_bytes_at(u64::from(block_size), constants::HEADER_SIGNATURE.len())
-      else {
-        continue;
-      };
-      if signature == constants::HEADER_SIGNATURE {
+    for block_size in parser::candidate_block_sizes(context.source())? {
+      if parser::validate_primary_probe(context.source(), block_size).is_ok() {
         let detail = if block_size == constants::DEFAULT_BLOCK_SIZE {
           "gpt header found at lba1"
         } else {
@@ -96,7 +91,26 @@ mod tests {
   #[test]
   fn probe_matches_non_default_block_size_header() {
     let mut data = vec![0u8; 8192];
+    data[446 + 4] = 0xEE;
+    data[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
+    data[446 + 12..446 + 16].copy_from_slice(&15u32.to_le_bytes());
+    data[510..512].copy_from_slice(&[0x55, 0xAA]);
     data[4096..4104].copy_from_slice(constants::HEADER_SIGNATURE);
+    data[4104..4108].copy_from_slice(&constants::GPT_FORMAT_REVISION.to_le_bytes());
+    data[4108..4112].copy_from_slice(&92u32.to_le_bytes());
+    data[4116..4120].copy_from_slice(&1u32.to_le_bytes());
+    data[4120..4128].copy_from_slice(&1u64.to_le_bytes());
+    data[4128..4136].copy_from_slice(&15u64.to_le_bytes());
+    data[4136..4144].copy_from_slice(&34u64.to_le_bytes());
+    data[4144..4152].copy_from_slice(&14u64.to_le_bytes());
+    data[4152..4168].copy_from_slice(&[1; 16]);
+    data[4168..4176].copy_from_slice(&2u64.to_le_bytes());
+    data[4176..4180].copy_from_slice(&1u32.to_le_bytes());
+    data[4180..4184].copy_from_slice(&128u32.to_le_bytes());
+    let mut checksum_input = data[4096..4188].to_vec();
+    checksum_input[16..20].fill(0);
+    let crc = crate::volumes::gpt::integrity::crc32(&checksum_input);
+    data[4112..4116].copy_from_slice(&crc.to_le_bytes());
     let source = MemDataSource { data };
     let probe = GptProbe;
     let context = ProbeContext::new(&source);
@@ -104,6 +118,20 @@ mod tests {
     assert!(matches!(
       probe.probe(&context).unwrap(),
       ProbeResult::Matched(_)
+    ));
+  }
+
+  #[test]
+  fn probe_rejects_bare_signature_false_positives() {
+    let mut data = vec![0u8; 8192];
+    data[4096..4104].copy_from_slice(constants::HEADER_SIGNATURE);
+    let source = MemDataSource { data };
+    let probe = GptProbe;
+    let context = ProbeContext::new(&source);
+
+    assert!(matches!(
+      probe.probe(&context).unwrap(),
+      ProbeResult::Rejected
     ));
   }
 }
