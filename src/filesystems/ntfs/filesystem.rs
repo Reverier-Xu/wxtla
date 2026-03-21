@@ -14,7 +14,7 @@ use super::{
     NtfsDataAttribute, NtfsDataAttributeValue, NtfsFileRecord, NtfsNonResidentAttribute,
     parse_file_record,
   },
-  reparse::NtfsReparsePointInfo,
+  reparse::{NtfsReparsePointInfo, NtfsReparsePointKind},
   runlist::{NtfsCompressedDataSource, NtfsDataRun, NtfsNonResidentDataSource, parse_runlist},
 };
 use crate::{
@@ -542,19 +542,21 @@ fn resident_index_root_data(attributes: &[NtfsDataAttribute]) -> Result<Option<A
 
 fn classify_node(record: &NtfsFileRecord) -> Result<(FileSystemNodeKind, u64)> {
   if record.is_directory() {
-    let kind = if record.has_reparse_point {
-      FileSystemNodeKind::Symlink
-    } else {
-      FileSystemNodeKind::Directory
+    let kind = match record.reparse_point.as_ref().map(|info| info.kind) {
+      Some(NtfsReparsePointKind::MountPoint | NtfsReparsePointKind::SymbolicLink) => {
+        FileSystemNodeKind::Symlink
+      }
+      _ => FileSystemNodeKind::Directory,
     };
     return Ok((kind, 0));
   }
 
   let size = default_stream_size(&record.data_attributes)?;
-  let kind = if record.has_reparse_point {
-    FileSystemNodeKind::Symlink
-  } else {
-    FileSystemNodeKind::File
+  let kind = match record.reparse_point.as_ref().map(|info| info.kind) {
+    Some(NtfsReparsePointKind::MountPoint | NtfsReparsePointKind::SymbolicLink) => {
+      FileSystemNodeKind::Symlink
+    }
+    _ => FileSystemNodeKind::File,
   };
   Ok((kind, size))
 }
@@ -883,6 +885,30 @@ mod tests {
     }
   }
 
+  fn sample_record_with_reparse(
+    flags: u16, reparse_kind: NtfsReparsePointKind, data_attributes: Vec<NtfsDataAttribute>,
+  ) -> NtfsFileRecord {
+    NtfsFileRecord {
+      flags,
+      base_record_number: None,
+      file_names: vec![],
+      data_attributes,
+      attribute_list_entries: vec![],
+      attribute_list_attributes: vec![],
+      index_root_attributes: vec![],
+      index_allocation_attributes: vec![],
+      reparse_point: Some(NtfsReparsePointInfo {
+        kind: reparse_kind,
+        tag: 0,
+        substitute_name: None,
+        print_name: None,
+        flags: None,
+        compression_method: None,
+      }),
+      has_reparse_point: true,
+    }
+  }
+
   fn synthetic_non_resident_attribute_bytes(
     first_vcn: u64, last_vcn: u64, data_size: u64, valid_data_size: u64, runlist: &[u8],
     attribute_id: u16,
@@ -989,6 +1015,36 @@ mod tests {
 
     assert_eq!(resolved.file_names[0].name, "merged.txt");
     assert_eq!(resolved.data_attributes.len(), 2);
+  }
+
+  #[test]
+  fn classifies_wof_reparse_records_as_regular_files() {
+    let record = sample_record_with_reparse(
+      0x0001,
+      NtfsReparsePointKind::WofCompressed,
+      vec![resident_data_attribute(b"wof", 1)],
+    );
+
+    let (kind, size) = classify_node(&record).unwrap();
+
+    assert_eq!(kind, FileSystemNodeKind::File);
+    assert_eq!(size, 3);
+  }
+
+  #[test]
+  fn classifies_mount_point_directories_as_symlinks_only() {
+    let mount_point =
+      sample_record_with_reparse(0x0001 | 0x0002, NtfsReparsePointKind::MountPoint, vec![]);
+    let unknown = sample_record_with_reparse(0x0001 | 0x0002, NtfsReparsePointKind::Other, vec![]);
+
+    assert_eq!(
+      classify_node(&mount_point).unwrap().0,
+      FileSystemNodeKind::Symlink
+    );
+    assert_eq!(
+      classify_node(&unknown).unwrap().0,
+      FileSystemNodeKind::Directory
+    );
   }
 
   #[test]

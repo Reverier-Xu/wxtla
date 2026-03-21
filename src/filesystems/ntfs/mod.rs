@@ -13,7 +13,7 @@ pub use attribute_list::{NtfsAttributeListEntry, parse_attribute_list};
 pub use boot_sector::NtfsBootSector;
 pub use driver::NtfsDriver;
 pub use filesystem::{NtfsDataStreamInfo, NtfsFileSystem};
-pub use reparse::NtfsReparsePointInfo;
+pub use reparse::{NtfsReparsePointInfo, NtfsReparsePointKind};
 
 use self::boot_sector::BOOT_SECTOR_SIZE;
 use crate::{

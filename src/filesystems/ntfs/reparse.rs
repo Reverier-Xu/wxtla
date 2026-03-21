@@ -6,8 +6,17 @@ const REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
 const REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
 const REPARSE_TAG_COMPRESSED: u32 = 0x8000_0017;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtfsReparsePointKind {
+  MountPoint,
+  SymbolicLink,
+  WofCompressed,
+  Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NtfsReparsePointInfo {
+  pub kind: NtfsReparsePointKind,
   pub tag: u32,
   pub substitute_name: Option<String>,
   pub print_name: Option<String>,
@@ -17,16 +26,30 @@ pub struct NtfsReparsePointInfo {
 
 impl NtfsReparsePointInfo {
   pub fn preferred_target(&self) -> Option<String> {
-    self
-      .print_name
-      .clone()
-      .filter(|name| !name.is_empty())
-      .or_else(|| {
-        self
-          .substitute_name
-          .as_deref()
-          .map(normalize_substitute_name)
-      })
+    matches!(
+      self.kind,
+      NtfsReparsePointKind::MountPoint | NtfsReparsePointKind::SymbolicLink
+    )
+    .then(|| {
+      self
+        .print_name
+        .clone()
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+          self
+            .substitute_name
+            .as_deref()
+            .map(normalize_substitute_name)
+        })
+    })
+    .flatten()
+  }
+
+  pub fn is_link_like(&self) -> bool {
+    matches!(
+      self.kind,
+      NtfsReparsePointKind::MountPoint | NtfsReparsePointKind::SymbolicLink
+    )
   }
 }
 
@@ -47,6 +70,12 @@ pub(crate) fn parse_reparse_point(bytes: &[u8]) -> Result<NtfsReparsePointInfo> 
   let reparse_data = &bytes[8..8 + reparse_data_size];
 
   let mut info = NtfsReparsePointInfo {
+    kind: match tag {
+      REPARSE_TAG_MOUNT_POINT => NtfsReparsePointKind::MountPoint,
+      REPARSE_TAG_SYMLINK => NtfsReparsePointKind::SymbolicLink,
+      REPARSE_TAG_COMPRESSED => NtfsReparsePointKind::WofCompressed,
+      _ => NtfsReparsePointKind::Other,
+    },
     tag,
     substitute_name: None,
     print_name: None,
@@ -160,10 +189,33 @@ mod tests {
     let bytes = std::fs::read(fixture_path("reparse_point_values.1")).unwrap();
     let info = parse_reparse_point(&bytes[24..]).unwrap();
 
+    assert_eq!(info.kind, NtfsReparsePointKind::MountPoint);
     assert_eq!(info.tag, REPARSE_TAG_MOUNT_POINT);
     assert_eq!(info.substitute_name.as_deref(), Some(r"\??\C:\Users"));
     assert_eq!(info.print_name.as_deref(), Some(r"C:\Users"));
     assert_eq!(info.preferred_target().as_deref(), Some(r"C:\Users"));
     assert_eq!(info.flags, None);
+  }
+
+  #[test]
+  fn parses_wof_reparse_points_without_a_target() {
+    let info = parse_reparse_point(&[
+      0x17, 0x00, 0x00, 0x80, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
+      0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+    ])
+    .unwrap();
+
+    assert_eq!(info.kind, NtfsReparsePointKind::WofCompressed);
+    assert_eq!(info.compression_method, Some(3));
+    assert_eq!(info.preferred_target(), None);
+  }
+
+  #[test]
+  fn leaves_unknown_reparse_points_as_non_link_targets() {
+    let info = parse_reparse_point(&[0x34, 0x12, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00]).unwrap();
+
+    assert_eq!(info.kind, NtfsReparsePointKind::Other);
+    assert!(!info.is_link_like());
+    assert_eq!(info.preferred_target(), None);
   }
 }
