@@ -33,7 +33,10 @@ const XATTR_DATA_STREAM: u16 = 0x0001;
 const DREC_EXT_TYPE_SIBLING_ID: u8 = 1;
 
 const INO_EXT_TYPE_NAME: u8 = 4;
+const INO_EXT_TYPE_SNAP_XID: u8 = 1;
+const INO_EXT_TYPE_DOCUMENT_ID: u8 = 3;
 const INO_EXT_TYPE_DSTREAM: u8 = 8;
+const INO_EXT_TYPE_SPARSE_BYTES: u8 = 13;
 const INO_EXT_TYPE_RDEV: u8 = 14;
 
 pub(crate) const UF_COMPRESSED: u32 = 0x0000_0020;
@@ -90,7 +93,14 @@ pub(crate) struct ApfsInodeRecord {
   pub object_id: u64,
   pub parent_id: u64,
   pub private_id: u64,
+  pub create_time: u64,
+  pub modification_time: u64,
+  pub change_time: u64,
+  pub access_time: u64,
   pub internal_flags: u64,
+  pub children_or_links: u32,
+  pub protection_class: u32,
+  pub write_generation_counter: u32,
   pub bsd_flags: u32,
   pub owner: u32,
   pub group: u32,
@@ -98,6 +108,9 @@ pub(crate) struct ApfsInodeRecord {
   pub uncompressed_size: u64,
   pub name: Option<String>,
   pub dstream: Option<ApfsDstream>,
+  pub snapshot_xid: Option<u64>,
+  pub document_id: Option<u32>,
+  pub sparse_bytes: Option<u64>,
   pub rdev: Option<u32>,
 }
 
@@ -117,14 +130,26 @@ impl ApfsInodeRecord {
 
     let mut name = None;
     let mut dstream = None;
+    let mut snapshot_xid = None;
+    let mut document_id = None;
+    let mut sparse_bytes = None;
     let mut rdev = None;
     for field in parse_xfields(&value[92..])? {
       match field.kind {
+        INO_EXT_TYPE_SNAP_XID if field.value.len() >= 8 => {
+          snapshot_xid = Some(read_u64_le(&field.value, 0)?);
+        }
+        INO_EXT_TYPE_DOCUMENT_ID if field.value.len() >= 4 => {
+          document_id = Some(read_u32_le(&field.value, 0)?);
+        }
         INO_EXT_TYPE_NAME => {
           name = Some(bytes_to_cstring(&field.value));
         }
         INO_EXT_TYPE_DSTREAM => {
           dstream = Some(ApfsDstream::parse(&field.value)?);
+        }
+        INO_EXT_TYPE_SPARSE_BYTES if field.value.len() >= 8 => {
+          sparse_bytes = Some(read_u64_le(&field.value, 0)?);
         }
         INO_EXT_TYPE_RDEV if field.value.len() >= 4 => {
           rdev = Some(read_u32_le(&field.value, 0)?);
@@ -137,7 +162,14 @@ impl ApfsInodeRecord {
       object_id: header.object_id,
       parent_id: read_u64_le(value, 0)?,
       private_id: read_u64_le(value, 8)?,
+      create_time: read_u64_le(value, 16)?,
+      modification_time: read_u64_le(value, 24)?,
+      change_time: read_u64_le(value, 32)?,
+      access_time: read_u64_le(value, 40)?,
       internal_flags: read_u64_le(value, 48)?,
+      children_or_links: read_u32_le(value, 56)?,
+      protection_class: read_u32_le(value, 60)?,
+      write_generation_counter: read_u32_le(value, 64)?,
       bsd_flags: read_u32_le(value, 68)?,
       owner: read_u32_le(value, 72)?,
       group: read_u32_le(value, 76)?,
@@ -145,6 +177,9 @@ impl ApfsInodeRecord {
       uncompressed_size: read_u64_le(value, 84)?,
       name,
       dstream,
+      snapshot_xid,
+      document_id,
+      sparse_bytes,
       rdev,
     })
   }
@@ -525,5 +560,59 @@ mod tests {
     assert_eq!(record.logical_block_address, 0x5678);
     assert_eq!(record.hashed_length, 0x10);
     assert_eq!(record.hash.as_ref(), &[0xAA, 0xBB, 0xCC, 0xDD]);
+  }
+
+  #[test]
+  fn parses_inode_metadata_and_xfields() {
+    let key = [0x34, 0x12, 0, 0, 0, 0, 0, 0x30];
+    let mut value = vec![0u8; 92 + 4 + 4 * 4 + 8 + 8 + 8 + 8 + 4];
+    value[0..8].copy_from_slice(&5u64.to_le_bytes());
+    value[8..16].copy_from_slice(&7u64.to_le_bytes());
+    value[16..24].copy_from_slice(&11u64.to_le_bytes());
+    value[24..32].copy_from_slice(&13u64.to_le_bytes());
+    value[32..40].copy_from_slice(&17u64.to_le_bytes());
+    value[40..48].copy_from_slice(&19u64.to_le_bytes());
+    value[48..56].copy_from_slice(&23u64.to_le_bytes());
+    value[56..60].copy_from_slice(&29u32.to_le_bytes());
+    value[60..64].copy_from_slice(&31u32.to_le_bytes());
+    value[64..68].copy_from_slice(&37u32.to_le_bytes());
+    value[68..72].copy_from_slice(&41u32.to_le_bytes());
+    value[72..76].copy_from_slice(&43u32.to_le_bytes());
+    value[76..80].copy_from_slice(&47u32.to_le_bytes());
+    value[80..82].copy_from_slice(&0x8000u16.to_le_bytes());
+    value[84..92].copy_from_slice(&53u64.to_le_bytes());
+    value[92..94].copy_from_slice(&4u16.to_le_bytes());
+    value[94..96].copy_from_slice(&32u16.to_le_bytes());
+    value[96..100].copy_from_slice(&[1, 0, 8, 0]);
+    value[100..104].copy_from_slice(&[3, 0, 4, 0]);
+    value[104..108].copy_from_slice(&[4, 0, 8, 0]);
+    value[108..112].copy_from_slice(&[13, 0, 8, 0]);
+    value[112..120].copy_from_slice(&59u64.to_le_bytes());
+    value[120..124].copy_from_slice(&61u32.to_le_bytes());
+    value[128..136].copy_from_slice(b"node\0\0\0\0");
+    value[136..144].copy_from_slice(&67u64.to_le_bytes());
+
+    let record = ApfsInodeRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.object_id, 0x1234);
+    assert_eq!(record.parent_id, 5);
+    assert_eq!(record.private_id, 7);
+    assert_eq!(record.create_time, 11);
+    assert_eq!(record.modification_time, 13);
+    assert_eq!(record.change_time, 17);
+    assert_eq!(record.access_time, 19);
+    assert_eq!(record.internal_flags, 23);
+    assert_eq!(record.children_or_links, 29);
+    assert_eq!(record.protection_class, 31);
+    assert_eq!(record.write_generation_counter, 37);
+    assert_eq!(record.bsd_flags, 41);
+    assert_eq!(record.owner, 43);
+    assert_eq!(record.group, 47);
+    assert_eq!(record.mode, 0x8000);
+    assert_eq!(record.uncompressed_size, 53);
+    assert_eq!(record.snapshot_xid, Some(59));
+    assert_eq!(record.document_id, Some(61));
+    assert_eq!(record.name.as_deref(), Some("node"));
+    assert_eq!(record.sparse_bytes, Some(67));
   }
 }
