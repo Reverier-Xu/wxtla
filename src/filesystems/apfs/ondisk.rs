@@ -18,6 +18,7 @@ pub(crate) const OBJECT_TYPE_BTREE_NODE: u32 = 0x0000_0003;
 pub(crate) const OBJECT_TYPE_OMAP: u32 = 0x0000_000B;
 pub(crate) const OBJECT_TYPE_FS: u32 = 0x0000_000D;
 pub(crate) const OBJECT_TYPE_SNAP_META_TREE: u32 = 0x0000_0010;
+pub(crate) const OBJECT_TYPE_INTEGRITY_META: u32 = 0x0000_001E;
 pub(crate) const OBJECT_TYPE_FEXT_TREE: u32 = 0x0000_001F;
 pub(crate) const APFS_OBJECT_TYPE_CONTAINER_KEYBAG: u32 = 0x6B65_7973;
 pub(crate) const APFS_OBJECT_TYPE_VOLUME_KEYBAG: u32 = 0x7265_6373;
@@ -67,6 +68,11 @@ pub(crate) const APFS_VOL_ROLE_PRELOGIN: u16 = 11 << APFS_VOLUME_ENUM_SHIFT;
 pub(crate) const OBJECT_HEADER_SIZE: usize = 32;
 pub(crate) const BTREE_NODE_HEADER_SIZE: usize = 24;
 pub(crate) const BTREE_INFO_SIZE: usize = 40;
+pub(crate) const APFS_SEAL_BROKEN: u32 = 1;
+pub(crate) const APFS_HASH_SHA256: u32 = 0x1;
+pub(crate) const APFS_HASH_SHA512_256: u32 = 0x2;
+pub(crate) const APFS_HASH_SHA384: u32 = 0x3;
+pub(crate) const APFS_HASH_SHA512: u32 = 0x4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApfsObjectHeader {
   pub checksum: u64,
@@ -446,6 +452,78 @@ impl ApfsVolumeSuperblock {
   }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApfsIntegrityMetadata {
+  header: ApfsObjectHeader,
+  pub version: u32,
+  pub flags: u32,
+  pub hash_type: u32,
+  pub broken_xid: u64,
+  pub root_hash: Box<[u8]>,
+}
+
+impl ApfsIntegrityMetadata {
+  pub(crate) fn parse(block: &[u8]) -> Result<Self> {
+    require_len(block, 112, "apfs integrity metadata")?;
+    let header = ApfsObjectHeader::parse(block)?;
+    if header.type_code() != OBJECT_TYPE_INTEGRITY_META {
+      return Err(Error::InvalidFormat(format!(
+        "invalid apfs integrity metadata type: 0x{:08x}",
+        header.object_type
+      )));
+    }
+    if !header.validate_checksum(block) {
+      return Err(Error::InvalidFormat(
+        "invalid apfs integrity metadata checksum".to_string(),
+      ));
+    }
+
+    let hash_type = read_u32_le(block, 40)?;
+    let root_hash_offset = usize::try_from(read_u32_le(block, 44)?).map_err(|_| {
+      Error::InvalidRange("apfs integrity metadata root hash offset exceeds usize".to_string())
+    })?;
+    let root_hash_length = apfs_hash_size(hash_type)?;
+    let root_hash = read_slice(
+      block,
+      root_hash_offset,
+      root_hash_length,
+      "apfs integrity metadata root hash",
+    )?;
+
+    Ok(Self {
+      header,
+      version: read_u32_le(block, 32)?,
+      flags: read_u32_le(block, 36)?,
+      hash_type,
+      broken_xid: read_u64_le(block, 48)?,
+      root_hash: root_hash.to_vec().into_boxed_slice(),
+    })
+  }
+
+  pub fn seal_broken(&self) -> bool {
+    (self.flags & APFS_SEAL_BROKEN) != 0
+  }
+
+  pub fn object_id(&self) -> u64 {
+    self.header.oid
+  }
+
+  pub fn xid(&self) -> u64 {
+    self.header.xid
+  }
+}
+
+pub(crate) fn apfs_hash_size(hash_type: u32) -> Result<usize> {
+  match hash_type {
+    APFS_HASH_SHA256 | APFS_HASH_SHA512_256 => Ok(32),
+    APFS_HASH_SHA384 => Ok(48),
+    APFS_HASH_SHA512 => Ok(64),
+    _ => Err(Error::Unsupported(format!(
+      "unsupported apfs integrity hash type: {hash_type}"
+    ))),
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ApfsPrange {
   pub start_paddr: u64,
@@ -727,5 +805,27 @@ mod tests {
     assert_eq!(footer.node_size, 4096);
     assert_eq!(footer.key_size, 16);
     assert_eq!(footer.value_size, 16);
+  }
+
+  #[test]
+  fn parses_integrity_metadata_blocks() {
+    let mut block = vec![0u8; 128];
+    block[24..28].copy_from_slice(&OBJECT_TYPE_INTEGRITY_META.to_le_bytes());
+    block[32..36].copy_from_slice(&2u32.to_le_bytes());
+    block[36..40].copy_from_slice(&APFS_SEAL_BROKEN.to_le_bytes());
+    block[40..44].copy_from_slice(&APFS_HASH_SHA256.to_le_bytes());
+    block[44..48].copy_from_slice(&96u32.to_le_bytes());
+    block[48..56].copy_from_slice(&123u64.to_le_bytes());
+    block[96..128].copy_from_slice(&[0xAB; 32]);
+    let checksum = fletcher64(&block[8..]);
+    block[0..8].copy_from_slice(&checksum.to_le_bytes());
+
+    let metadata = ApfsIntegrityMetadata::parse(&block).unwrap();
+
+    assert_eq!(metadata.version, 2);
+    assert!(metadata.seal_broken());
+    assert_eq!(metadata.hash_type, APFS_HASH_SHA256);
+    assert_eq!(metadata.broken_xid, 123);
+    assert_eq!(metadata.root_hash.as_ref(), &[0xAB; 32]);
   }
 }

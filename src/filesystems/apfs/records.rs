@@ -10,6 +10,7 @@ pub(crate) const APFS_TYPE_INODE: u8 = 0x3;
 pub(crate) const APFS_TYPE_XATTR: u8 = 0x4;
 pub(crate) const APFS_TYPE_FILE_EXTENT: u8 = 0x8;
 pub(crate) const APFS_TYPE_DIR_REC: u8 = 0x9;
+pub(crate) const APFS_TYPE_FILE_INFO: u8 = 0xD;
 
 pub(crate) const APFS_ROOT_DIRECTORY_OBJECT_ID: u64 = 2;
 
@@ -18,6 +19,10 @@ const FS_RECORD_TYPE_SHIFT: u64 = 60;
 const DREC_LEN_MASK: u32 = 0x0000_03FF;
 const DREC_TYPE_MASK: u16 = 0x000F;
 const J_FILE_EXTENT_LEN_MASK: u64 = 0x00FF_FFFF_FFFF_FFFF;
+const FILE_INFO_LBA_MASK: u64 = 0x00FF_FFFF_FFFF_FFFF;
+const FILE_INFO_TYPE_SHIFT: u64 = 56;
+
+pub const APFS_FILE_INFO_DATA_HASH: u8 = 1;
 
 const DT_DIR: u16 = 0x0004;
 const DT_REG: u16 = 0x0008;
@@ -342,6 +347,49 @@ impl ApfsFileExtentRecord {
   }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApfsFileInfoRecord {
+  pub object_id: u64,
+  pub info_type: u8,
+  pub logical_block_address: u64,
+  pub hashed_length: u16,
+  pub hash: Box<[u8]>,
+}
+
+impl ApfsFileInfoRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    let header = ApfsFsKeyHeader::parse(key)?;
+    if header.record_type != APFS_TYPE_FILE_INFO {
+      return Err(Error::InvalidFormat(
+        "apfs file-info key has the wrong record type".to_string(),
+      ));
+    }
+    if key.len() != 16 {
+      return Err(Error::InvalidFormat(
+        "apfs file-info key must be 16 bytes".to_string(),
+      ));
+    }
+    if value.len() < 3 {
+      return Err(Error::InvalidFormat(
+        "apfs file-info value is too short".to_string(),
+      ));
+    }
+
+    let info_and_lba = read_u64_le(key, 8)?;
+    let info_type = ((info_and_lba >> FILE_INFO_TYPE_SHIFT) & 0xFF) as u8;
+    let hash_size = usize::from(value[2]);
+    let hash = read_slice(value, 3, hash_size, "apfs file-info hash")?;
+
+    Ok(Self {
+      object_id: header.object_id,
+      info_type,
+      logical_block_address: info_and_lba & FILE_INFO_LBA_MASK,
+      hashed_length: read_u16_le(value, 0)?,
+      hash: hash.to_vec().into_boxed_slice(),
+    })
+  }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedXfield {
   pub kind: u8,
@@ -453,5 +501,22 @@ mod tests {
     assert_eq!(record.logical_address, 0x5678);
     assert_eq!(record.length, 0x2000);
     assert_eq!(record.physical_block_number, 0xBC9A);
+  }
+
+  #[test]
+  fn parses_file_info_records() {
+    let key = [
+      0x34, 0x12, 0, 0, 0, 0, 0, 0xD0, // object id + type
+      0x78, 0x56, 0, 0, 0, 0, 0, 0x01, // lba + info type
+    ];
+    let value = [0x10, 0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD];
+
+    let record = ApfsFileInfoRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.object_id, 0x1234);
+    assert_eq!(record.info_type, APFS_FILE_INFO_DATA_HASH);
+    assert_eq!(record.logical_block_address, 0x5678);
+    assert_eq!(record.hashed_length, 0x10);
+    assert_eq!(record.hash.as_ref(), &[0xAA, 0xBB, 0xCC, 0xDD]);
   }
 }

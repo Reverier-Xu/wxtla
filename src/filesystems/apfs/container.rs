@@ -116,6 +116,10 @@ impl ApfsVolumeInfo {
     self.superblock.fext_tree_oid
   }
 
+  pub fn integrity_meta_oid(&self) -> u64 {
+    self.superblock.integrity_meta_oid
+  }
+
   pub fn incompatible_features(&self) -> u64 {
     self.superblock.incompatible_features
   }

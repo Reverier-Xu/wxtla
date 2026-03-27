@@ -17,13 +17,13 @@ use super::{
   btree::ApfsBTree,
   container::{ApfsVolume, ApfsVolumeInfo, lookup_omap_address, read_blocks, read_object_map},
   keybag::unlock_volume,
-  ondisk::read_u64_le,
+  ondisk::{ApfsIntegrityMetadata, read_u64_le},
   records::{
-    APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE,
-    APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, ApfsDirectoryRecord, ApfsFextRecord,
-    ApfsFileExtentRecord, ApfsFsKeyHeader, ApfsInodeRecord, ApfsSnapshotMetadataRecord,
-    ApfsStreamStorageSpec, ApfsXattrRecord, UF_COMPRESSED, XATTR_RESOURCE_FORK_NAME,
-    XATTR_SYMLINK_NAME, directory_kind_from_flags, node_kind_from_mode,
+    APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_FILE_INFO,
+    APFS_TYPE_INODE, APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, ApfsDirectoryRecord, ApfsFextRecord,
+    ApfsFileExtentRecord, ApfsFileInfoRecord, ApfsFsKeyHeader, ApfsInodeRecord,
+    ApfsSnapshotMetadataRecord, ApfsStreamStorageSpec, ApfsXattrRecord, UF_COMPRESSED,
+    XATTR_RESOURCE_FORK_NAME, XATTR_SYMLINK_NAME, directory_kind_from_flags, node_kind_from_mode,
   },
 };
 use crate::{
@@ -275,6 +275,63 @@ impl ApfsVolume {
       .unlock_state
       .as_ref()
       .and_then(|state| state.password_hint.as_deref())
+  }
+
+  pub fn integrity_metadata(&self) -> Result<Option<ApfsIntegrityMetadata>> {
+    if self.info().integrity_meta_oid() == 0 {
+      return Ok(None);
+    }
+    let block = read_blocks(
+      self.source.as_ref(),
+      self.block_size,
+      self.info().integrity_meta_oid(),
+      1,
+    )?;
+    Ok(Some(ApfsIntegrityMetadata::parse(&block)?))
+  }
+
+  pub fn file_info_records(&self) -> Result<Vec<ApfsFileInfoRecord>> {
+    if self.info().is_encrypted() && self.unlock_state.is_none() {
+      return Err(Error::InvalidSourceReference(
+        "apfs volume is locked; reopen the volume with credentials".to_string(),
+      ));
+    }
+
+    let volume_omap = read_object_map(
+      self.source.as_ref(),
+      self.block_size,
+      self
+        .omap_oid_override
+        .unwrap_or_else(|| self.info().omap_oid()),
+    )?;
+    let omap_tree = ApfsBTree::open(self.source.clone(), self.block_size, volume_omap.tree_oid)?;
+    let root_tree_address = lookup_omap_address(
+      &omap_tree,
+      self.info().root_tree_oid(),
+      self.info().superblock_xid(),
+    )?;
+    let fs_tree = ApfsBTree::open_virtual(
+      self.source.clone(),
+      self.block_size,
+      root_tree_address,
+      omap_tree,
+      self.info().superblock_xid(),
+      if self.info().is_sealed() {
+        self.info().root_tree_oid()
+      } else {
+        0
+      },
+      self.unlock_state.as_ref().map(|state| state.cipher.clone()),
+    )?;
+
+    let mut records = Vec::new();
+    for (key, value) in fs_tree.walk_records()? {
+      let header = ApfsFsKeyHeader::parse(&key)?;
+      if header.record_type == APFS_TYPE_FILE_INFO {
+        records.push(ApfsFileInfoRecord::parse(&key, &value)?);
+      }
+    }
+    Ok(records)
   }
 
   pub(crate) fn clone_with_credentials(
@@ -808,19 +865,7 @@ impl DataSource for ApfsVolume {
 impl ApfsVolume {
   fn open_content_stream(&self, node_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let node = self.lookup_node(node_id)?;
-    match node.record.kind {
-      NamespaceNodeKind::Directory | NamespaceNodeKind::Special => {
-        return Err(Error::InvalidFormat(
-          "apfs file opens require a regular file or symlink inode".to_string(),
-        ));
-      }
-      NamespaceNodeKind::Symlink => {
-        return Err(Error::InvalidFormat(
-          "apfs symlink content is stored in com.apple.fs.symlink".to_string(),
-        ));
-      }
-      NamespaceNodeKind::File => {}
-    }
+    ensure_openable_content_node(&node)?;
 
     if node.compressed {
       return self.open_compressed_stream(node_id);
@@ -1235,4 +1280,49 @@ fn decode_lzfse_chunk(chunk: &[u8], expected_size: usize) -> Result<Vec<u8>> {
 fn chunk_uncompressed_size(total_size: u64, index: usize) -> u64 {
   let logical_offset = DECMPFS_BLOCK_SIZE.saturating_mul(index as u64);
   (total_size - logical_offset).min(DECMPFS_BLOCK_SIZE)
+}
+
+fn ensure_openable_content_node(node: &ApfsNode) -> Result<()> {
+  match node.record.kind {
+    NamespaceNodeKind::Directory | NamespaceNodeKind::Special => {
+      return Err(Error::InvalidFormat(
+        "apfs file opens require a regular file or symlink inode".to_string(),
+      ));
+    }
+    NamespaceNodeKind::Symlink => {
+      return Err(Error::InvalidFormat(
+        "apfs symlink content is stored in com.apple.fs.symlink".to_string(),
+      ));
+    }
+    NamespaceNodeKind::File => {}
+  }
+
+  if (node.bsd_flags & super::records::SF_DATALESS) != 0 {
+    return Err(Error::InvalidSourceReference(
+      "apfs dataless file content is not locally present".to_string(),
+    ));
+  }
+
+  Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn dataless_nodes_reject_regular_content_opens() {
+    let node = ApfsNode {
+      record: NamespaceNodeRecord::new(NamespaceNodeId::from_u64(1), NamespaceNodeKind::File, 0),
+      private_id: 0,
+      data_size: 0,
+      bsd_flags: crate::filesystems::apfs::records::SF_DATALESS,
+      compressed: false,
+    };
+
+    assert!(matches!(
+      ensure_openable_content_node(&node),
+      Err(Error::InvalidSourceReference(_))
+    ));
+  }
 }
