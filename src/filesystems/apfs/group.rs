@@ -319,6 +319,14 @@ mod tests {
         integrity_meta_oid: 0,
         fext_tree_oid: 0,
         fext_tree_type: 0,
+        doc_id_index_xid: 0,
+        doc_id_index_flags: 0,
+        doc_id_tree_type: 0,
+        doc_id_tree_oid: 0,
+        prev_doc_id_tree_oid: 0,
+        doc_id_fixup_cursor: 0,
+        secondary_root_tree_oid: 0,
+        secondary_root_tree_type: 0,
       },
     )
   }

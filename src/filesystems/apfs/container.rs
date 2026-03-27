@@ -96,6 +96,18 @@ impl ApfsVolumeInfo {
     self.superblock.is_sealed()
   }
 
+  pub fn has_dataless_snapshots(&self) -> bool {
+    self.superblock.has_dataless_snapshots()
+  }
+
+  pub fn has_secondary_fs_root(&self) -> bool {
+    self.superblock.has_secondary_fs_root()
+  }
+
+  pub fn uses_volume_group_system_inode_space(&self) -> bool {
+    self.superblock.uses_volume_group_system_inode_space()
+  }
+
   pub fn is_encrypted(&self) -> bool {
     self.superblock.is_encrypted()
   }
@@ -114,6 +126,10 @@ impl ApfsVolumeInfo {
 
   pub fn fext_tree_oid(&self) -> u64 {
     self.superblock.fext_tree_oid
+  }
+
+  pub fn secondary_root_tree_oid(&self) -> u64 {
+    self.superblock.secondary_root_tree_oid
   }
 
   pub fn integrity_meta_oid(&self) -> u64 {
@@ -156,9 +172,27 @@ impl ApfsVolumeInfo {
       self.is_normalization_insensitive().to_string(),
     )
     .with_tag("sealed", self.is_sealed().to_string())
-    .with_tag("encrypted", self.is_encrypted().to_string());
+    .with_tag("encrypted", self.is_encrypted().to_string())
+    .with_tag(
+      "dataless_snapshots",
+      self.has_dataless_snapshots().to_string(),
+    )
+    .with_tag(
+      "secondary_fs_root",
+      self.has_secondary_fs_root().to_string(),
+    )
+    .with_tag(
+      "volgrp_system_ino_space",
+      self.uses_volume_group_system_inode_space().to_string(),
+    );
     if let Some(group_id) = self.volume_group_id_string() {
       record = record.with_tag("volume_group_id", group_id);
+    }
+    if self.secondary_root_tree_oid() != 0 {
+      record = record.with_tag(
+        "secondary_root_tree_oid",
+        self.secondary_root_tree_oid().to_string(),
+      );
     }
     if !self.name().is_empty() {
       record = record.with_name(self.name().to_string());

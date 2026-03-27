@@ -42,8 +42,12 @@ pub(crate) const CHECKPOINT_AREA_BTREE_FLAG: u32 = 0x8000_0000;
 pub(crate) const OMAP_VAL_DELETED: u32 = 0x0000_0001;
 
 pub(crate) const APFS_INCOMPAT_CASE_INSENSITIVE: u64 = 0x0000_0001;
+pub(crate) const APFS_INCOMPAT_DATALESS_SNAPS: u64 = 0x0000_0002;
 pub(crate) const APFS_INCOMPAT_NORMALIZATION_INSENSITIVE: u64 = 0x0000_0008;
 pub(crate) const APFS_INCOMPAT_SEALED_VOLUME: u64 = 0x0000_0020;
+pub(crate) const APFS_INCOMPAT_SECONDARY_FSROOT: u64 = 0x0000_0100;
+
+pub(crate) const APFS_FEATURE_VOLGRP_SYSTEM_INO_SPACE: u64 = 0x0000_0010;
 
 pub(crate) const APFS_FS_UNENCRYPTED: u64 = 0x0000_0001;
 pub(crate) const APFS_FS_ONEKEY: u64 = 0x0000_0008;
@@ -377,11 +381,19 @@ pub(crate) struct ApfsVolumeSuperblock {
   pub integrity_meta_oid: u64,
   pub fext_tree_oid: u64,
   pub fext_tree_type: u32,
+  pub doc_id_index_xid: u64,
+  pub doc_id_index_flags: u32,
+  pub doc_id_tree_type: u32,
+  pub doc_id_tree_oid: u64,
+  pub prev_doc_id_tree_oid: u64,
+  pub doc_id_fixup_cursor: u64,
+  pub secondary_root_tree_oid: u64,
+  pub secondary_root_tree_type: u32,
 }
 
 impl ApfsVolumeSuperblock {
   pub(crate) fn parse(block: &[u8]) -> Result<Self> {
-    require_len(block, 1044, "apfs volume superblock")?;
+    require_len(block, 1108, "apfs volume superblock")?;
     let header = ApfsObjectHeader::parse(block)?;
     let magic = read_array::<4>(block, 32)?;
     if &magic != APFS_MAGIC {
@@ -417,6 +429,14 @@ impl ApfsVolumeSuperblock {
       integrity_meta_oid: read_u64_le(block, 1024)?,
       fext_tree_oid: read_u64_le(block, 1032)?,
       fext_tree_type: read_u32_le(block, 1040)?,
+      doc_id_index_xid: read_u64_le(block, 1056)?,
+      doc_id_index_flags: read_u32_le(block, 1064)?,
+      doc_id_tree_type: read_u32_le(block, 1068)?,
+      doc_id_tree_oid: read_u64_le(block, 1072)?,
+      prev_doc_id_tree_oid: read_u64_le(block, 1080)?,
+      doc_id_fixup_cursor: read_u64_le(block, 1088)?,
+      secondary_root_tree_oid: read_u64_le(block, 1096)?,
+      secondary_root_tree_type: read_u32_le(block, 1104)?,
     })
   }
 
@@ -445,6 +465,19 @@ impl ApfsVolumeSuperblock {
 
   pub(crate) fn is_sealed(&self) -> bool {
     (self.incompatible_features & APFS_INCOMPAT_SEALED_VOLUME) != 0
+  }
+
+  pub(crate) fn has_dataless_snapshots(&self) -> bool {
+    (self.incompatible_features & APFS_INCOMPAT_DATALESS_SNAPS) != 0
+  }
+
+  pub(crate) fn has_secondary_fs_root(&self) -> bool {
+    (self.incompatible_features & APFS_INCOMPAT_SECONDARY_FSROOT) != 0
+      || self.secondary_root_tree_oid != 0
+  }
+
+  pub(crate) fn uses_volume_group_system_inode_space(&self) -> bool {
+    (self.features & APFS_FEATURE_VOLGRP_SYSTEM_INO_SPACE) != 0
   }
 
   pub(crate) fn is_encrypted(&self) -> bool {
@@ -789,6 +822,8 @@ mod tests {
     assert_eq!(superblock.snap_meta_tree_oid, 88);
     assert_eq!(superblock.role, 0);
     assert_eq!(superblock.volume_name, "TestVolume");
+    assert_eq!(superblock.doc_id_tree_oid, 0);
+    assert_eq!(superblock.secondary_root_tree_oid, 0);
   }
 
   #[test]
@@ -827,5 +862,42 @@ mod tests {
     assert_eq!(metadata.hash_type, APFS_HASH_SHA256);
     assert_eq!(metadata.broken_xid, 123);
     assert_eq!(metadata.root_hash.as_ref(), &[0xAB; 32]);
+  }
+
+  #[test]
+  fn parses_modern_volume_superblock_tail_fields() {
+    let mut block = fixture_bytes("volume_superblock.1");
+    let features = APFS_FEATURE_VOLGRP_SYSTEM_INO_SPACE.to_le_bytes();
+    block[40..48].copy_from_slice(&features);
+    let incompat = (APFS_INCOMPAT_CASE_INSENSITIVE
+      | APFS_INCOMPAT_DATALESS_SNAPS
+      | APFS_INCOMPAT_SECONDARY_FSROOT)
+      .to_le_bytes();
+    block[56..64].copy_from_slice(&incompat);
+    block[1056..1064].copy_from_slice(&55u64.to_le_bytes());
+    block[1064..1068].copy_from_slice(&7u32.to_le_bytes());
+    block[1068..1072].copy_from_slice(&9u32.to_le_bytes());
+    block[1072..1080].copy_from_slice(&100u64.to_le_bytes());
+    block[1080..1088].copy_from_slice(&101u64.to_le_bytes());
+    block[1088..1096].copy_from_slice(&102u64.to_le_bytes());
+    block[1096..1104].copy_from_slice(&103u64.to_le_bytes());
+    block[1104..1108].copy_from_slice(&11u32.to_le_bytes());
+    let checksum = fletcher64(&block[8..]);
+    block[0..8].copy_from_slice(&checksum.to_le_bytes());
+
+    let superblock = ApfsVolumeSuperblock::parse(&block).unwrap();
+    superblock.validate(&block).unwrap();
+
+    assert!(superblock.has_dataless_snapshots());
+    assert!(superblock.has_secondary_fs_root());
+    assert!(superblock.uses_volume_group_system_inode_space());
+    assert_eq!(superblock.doc_id_index_xid, 55);
+    assert_eq!(superblock.doc_id_index_flags, 7);
+    assert_eq!(superblock.doc_id_tree_type, 9);
+    assert_eq!(superblock.doc_id_tree_oid, 100);
+    assert_eq!(superblock.prev_doc_id_tree_oid, 101);
+    assert_eq!(superblock.doc_id_fixup_cursor, 102);
+    assert_eq!(superblock.secondary_root_tree_oid, 103);
+    assert_eq!(superblock.secondary_root_tree_type, 11);
   }
 }
