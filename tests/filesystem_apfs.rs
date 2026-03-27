@@ -144,6 +144,7 @@ fn apfs_opens_through_gpt_stack_from_raw_dmg_fixture() {
 fn apfs_fixture_reads_regular_files_symlinks_and_streams() {
   let file_system = open_gzip_volume("apfs/dissect.apfs/case_insensitive.bin.gz").unwrap();
   let root_id = file_system.root_node_id();
+  assert_eq!(file_system.node(&root_id).unwrap().path, "/");
   let root_entries = file_system.read_dir(&root_id).unwrap();
 
   assert!(root_entries.iter().any(|entry| entry.name == "dir"));
@@ -351,10 +352,10 @@ fn apfs_namespace_lookup_respects_case_and_normalization_rules() {
   ));
 
   let normalized = case_sensitive.resolve_path("nfd_téstfilè").unwrap();
-  assert_eq!(normalized.path, "nfd_téstfilè");
+  assert_eq!(normalized.path, "/nfd_téstfilè");
 
   let micro = case_insensitive.resolve_path("case_folding_Μ").unwrap();
-  assert_eq!(micro.path, "case_folding_µ");
+  assert_eq!(micro.path, "/case_folding_µ");
 
   assert!(matches!(
     case_sensitive.resolve_path("nfkd_¾"),
@@ -370,6 +371,15 @@ fn apfs_hardlinks_resolve_to_the_same_inode() {
   let hardlink = file_system.resolve_path("hardlink").unwrap();
 
   assert_eq!(direct.id, hardlink.id);
+  assert_eq!(
+    file_system.paths(&direct.id).unwrap(),
+    vec!["/dir/file", "/hardlink"]
+  );
+  assert_eq!(
+    file_system.names(&direct.id).unwrap(),
+    vec!["file", "hardlink"]
+  );
+  assert_eq!(file_system.node(&direct.id).unwrap().path, "/dir/file");
 }
 
 #[test]

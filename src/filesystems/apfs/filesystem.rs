@@ -1,7 +1,7 @@
 //! APFS live-volume namespace and stream access.
 
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   io::Read,
   sync::{Arc, Mutex},
 };
@@ -38,6 +38,7 @@ type ApfsNodeMap = Arc<HashMap<u64, Arc<ApfsNode>>>;
 type ApfsChildrenMap = Arc<HashMap<u64, Arc<[NamespaceDirectoryEntry]>>>;
 type ApfsXattrMap = Arc<HashMap<u64, Arc<[ApfsStoredXattr]>>>;
 type ApfsExtentMap = Arc<HashMap<u64, Arc<[ApfsExtent]>>>;
+type ApfsPathMap = Arc<HashMap<u64, Arc<[String]>>>;
 
 const XATTR_DECMPFS_NAME: &str = "com.apple.decmpfs";
 const DECMPFS_MAGIC: &[u8; 4] = b"fpmc";
@@ -122,6 +123,7 @@ pub(crate) struct ApfsVolumeIndex {
   children: ApfsChildrenMap,
   xattrs: ApfsXattrMap,
   extents: ApfsExtentMap,
+  paths: ApfsPathMap,
 }
 
 struct ApfsNode {
@@ -242,6 +244,37 @@ impl ApfsVolume {
         })
       })
       .collect()
+  }
+
+  pub fn paths(&self, node_id: &NamespaceNodeId) -> Result<Vec<String>> {
+    let identifier = decode_node_id(node_id)?;
+    Ok(
+      self
+        .namespace_index()?
+        .paths
+        .get(&identifier)
+        .map_or_else(Vec::new, |paths| paths.iter().cloned().collect()),
+    )
+  }
+
+  pub fn names(&self, node_id: &NamespaceNodeId) -> Result<Vec<String>> {
+    let node = self.lookup_node(node_id)?;
+    let mut names = self
+      .paths(node_id)?
+      .into_iter()
+      .map(|path| {
+        path
+          .rsplit('/')
+          .find(|component| !component.is_empty())
+          .map_or_else(|| node.record.path.clone(), str::to_string)
+      })
+      .collect::<Vec<_>>();
+    if names.is_empty() {
+      names.push(node.record.path.clone());
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
   }
 
   pub fn snapshots(&self) -> Result<Vec<ApfsSnapshotInfo>> {
@@ -515,6 +548,15 @@ impl ApfsVolume {
         })
         .collect::<HashMap<_, _>>(),
     );
+    let paths = Arc::new(
+      build_path_index(&children)
+        .into_iter()
+        .map(|(key, mut value)| {
+          value.sort();
+          (key, Arc::from(value.into_boxed_slice()))
+        })
+        .collect::<HashMap<_, _>>(),
+    );
 
     if !nodes.contains_key(&APFS_ROOT_DIRECTORY_OBJECT_ID) {
       return Err(Error::InvalidFormat(
@@ -527,6 +569,7 @@ impl ApfsVolume {
       children,
       xattrs,
       extents,
+      paths,
     });
     let mut cached = self
       .namespace_index
@@ -698,7 +741,19 @@ impl NamespaceSource for ApfsVolume {
   }
 
   fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
-    Ok(self.lookup_node(node_id)?.record.clone())
+    let identifier = decode_node_id(node_id)?;
+    let index = self.namespace_index()?;
+    let mut record = index
+      .nodes
+      .get(&identifier)
+      .cloned()
+      .ok_or_else(|| Error::NotFound(format!("apfs inode {identifier} was not found")))?
+      .record
+      .clone();
+    if let Some(paths) = index.paths.get(&identifier).and_then(|paths| paths.first()) {
+      record.path = paths.clone();
+    }
+    Ok(record)
   }
 
   fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
@@ -1280,6 +1335,44 @@ fn decode_lzfse_chunk(chunk: &[u8], expected_size: usize) -> Result<Vec<u8>> {
 fn chunk_uncompressed_size(total_size: u64, index: usize) -> u64 {
   let logical_offset = DECMPFS_BLOCK_SIZE.saturating_mul(index as u64);
   (total_size - logical_offset).min(DECMPFS_BLOCK_SIZE)
+}
+
+fn build_path_index(children: &ApfsChildrenMap) -> HashMap<u64, Vec<String>> {
+  fn walk(
+    children: &ApfsChildrenMap, directory_id: u64, current_path: &str,
+    visited_dirs: &mut HashSet<u64>, paths: &mut HashMap<u64, Vec<String>>,
+  ) {
+    if !visited_dirs.insert(directory_id) {
+      return;
+    }
+    let Some(entries) = children.get(&directory_id) else {
+      return;
+    };
+    for entry in entries.iter() {
+      let child_id = decode_node_id(&entry.node_id).unwrap_or_default();
+      let path = if current_path == "/" {
+        format!("/{name}", name = entry.name)
+      } else {
+        format!("{current_path}/{name}", name = entry.name)
+      };
+      paths.entry(child_id).or_default().push(path.clone());
+      if entry.kind == NamespaceNodeKind::Directory {
+        walk(children, child_id, &path, visited_dirs, paths);
+      }
+    }
+  }
+
+  let mut paths = HashMap::new();
+  paths.insert(APFS_ROOT_DIRECTORY_OBJECT_ID, vec!["/".to_string()]);
+  let mut visited_dirs = HashSet::new();
+  walk(
+    children,
+    APFS_ROOT_DIRECTORY_OBJECT_ID,
+    "/",
+    &mut visited_dirs,
+    &mut paths,
+  );
+  paths
 }
 
 fn ensure_openable_content_node(node: &ApfsNode) -> Result<()> {
