@@ -1,6 +1,6 @@
 //! Shared HFS/HFS+ catalog B-tree helpers.
 
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BTreeHeader {
@@ -17,7 +17,7 @@ pub(crate) struct BTreeNodeDescriptor {
   pub record_count: u16,
 }
 
-pub(crate) fn parse_btree_header(source: &dyn DataSource) -> Result<BTreeHeader> {
+pub(crate) fn parse_btree_header(source: &dyn ByteSource) -> Result<BTreeHeader> {
   let header_bytes = source.read_bytes_at(0, 120)?;
   let descriptor = parse_node_descriptor(&header_bytes)?;
   if descriptor.node_type != 1 {
@@ -39,7 +39,7 @@ pub(crate) fn parse_btree_header(source: &dyn DataSource) -> Result<BTreeHeader>
 }
 
 pub(crate) fn read_leaf_records(
-  source: &dyn DataSource, header: &BTreeHeader,
+  source: &dyn ByteSource, header: &BTreeHeader,
 ) -> Result<Vec<Vec<u8>>> {
   let node_size = usize::from(header.node_size);
   let mut records = Vec::new();

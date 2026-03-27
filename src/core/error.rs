@@ -36,6 +36,10 @@ pub enum Error {
   /// A requested item was not present in a parsed structure.
   #[error("not found: {0}")]
   NotFound(String),
+
+  /// The requested operation is not supported by the current format or view.
+  #[error("unsupported: {0}")]
+  Unsupported(String),
 }
 
 /// Result alias used by the crate's core infrastructure.

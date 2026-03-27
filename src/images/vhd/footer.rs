@@ -4,7 +4,7 @@ use super::constants::{
   DEFAULT_SECTOR_SIZE, DISK_TYPE_DIFFERENTIAL, DISK_TYPE_DYNAMIC, DISK_TYPE_FIXED,
   FIXED_DATA_OFFSET, FOOTER_COOKIE, FOOTER_SIZE, VHD_FORMAT_VERSION,
 };
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VhdDiskType {
@@ -31,7 +31,7 @@ pub struct VhdFooter {
 }
 
 impl VhdFooter {
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let size = source.size()?;
     if size < FOOTER_SIZE as u64 {
       return Err(Error::InvalidFormat(

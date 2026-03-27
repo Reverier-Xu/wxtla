@@ -4,18 +4,20 @@ use std::sync::Arc;
 
 use support::{FileDataSource, fixture_path};
 use wxtla::{
-  DataSourceHandle,
-  filesystems::{DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, xfs::XfsDriver},
+  ByteSourceHandle,
+  filesystems::{
+    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceSource, xfs::XfsDriver,
+  },
 };
 
 fn open_fixture_file_system() -> wxtla::Result<wxtla::filesystems::xfs::XfsFileSystem> {
-  let source: DataSourceHandle = Arc::new(FileDataSource::open(fixture_path("xfs/xfs.raw"))?);
+  let source: ByteSourceHandle = Arc::new(FileDataSource::open(fixture_path("xfs/xfs.raw"))?);
   XfsDriver::open(source)
 }
 
 fn child_named(
-  file_system: &dyn FileSystem, directory_id: &FileSystemNodeId, name: &str,
-) -> wxtla::Result<DirectoryEntry> {
+  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
+) -> wxtla::Result<NamespaceDirectoryEntry> {
   file_system
     .read_dir(directory_id)?
     .into_iter()
@@ -30,7 +32,7 @@ fn xfs_fixture_exposes_root_entries_and_directory_children() {
   let root = file_system.node(&root_id).unwrap();
   let root_entries = file_system.read_dir(&root_id).unwrap();
 
-  assert_eq!(root.kind, FileSystemNodeKind::Directory);
+  assert_eq!(root.kind, NamespaceNodeKind::Directory);
   for expected in ["a_directory", "a_link", "passwords.txt"] {
     assert!(
       root_entries.iter().any(|entry| entry.name == expected),
@@ -60,7 +62,7 @@ fn xfs_fixture_reads_files_and_symlink_targets() {
   let another_entry = child_named(&file_system, &directory_entry.node_id, "another_file").unwrap();
 
   let file_data = file_system
-    .open_file(&file_entry.node_id)
+    .open_content(&file_entry.node_id)
     .unwrap()
     .read_all()
     .unwrap();
@@ -70,7 +72,7 @@ fn xfs_fixture_reads_files_and_symlink_targets() {
   );
 
   let another_data = file_system
-    .open_file(&another_entry.node_id)
+    .open_content(&another_entry.node_id)
     .unwrap()
     .read_all()
     .unwrap();
@@ -80,7 +82,7 @@ fn xfs_fixture_reads_files_and_symlink_targets() {
   );
 
   let passwords_data = file_system
-    .open_file(&passwords_entry.node_id)
+    .open_content(&passwords_entry.node_id)
     .unwrap()
     .read_all()
     .unwrap();
@@ -90,7 +92,7 @@ fn xfs_fixture_reads_files_and_symlink_targets() {
 
   assert_eq!(
     file_system.node(&link_entry.node_id).unwrap().kind,
-    FileSystemNodeKind::Symlink
+    NamespaceNodeKind::Symlink
   );
   assert_eq!(
     file_system

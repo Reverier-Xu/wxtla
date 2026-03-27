@@ -8,9 +8,9 @@ use std::{
 
 use super::DESCRIPTOR;
 use crate::{
-  DataSourceHandle, Error, FileDataSource, Result, SourceHints,
+  ByteSourceHandle, Error, FileDataSource, Result, SourceHints,
   archives::{
-    Archive, ArchiveDirectoryEntry, ArchiveEntryId, ArchiveEntryKind, ArchiveEntryRecord,
+    Archive, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
     cache::{ArchiveCachePaths, ensure_cache_space, prepare_archive_cache, reset_extract_dir},
   },
 };
@@ -19,7 +19,7 @@ const ROOT_ENTRY_ID: u64 = 0;
 
 pub struct SevenZipArchive {
   entries: Vec<SevenZipEntry>,
-  path_to_id: HashMap<String, ArchiveEntryId>,
+  path_to_id: HashMap<String, NamespaceNodeId>,
   cache: ArchiveCachePaths,
   total_uncompressed_size: u64,
   locked: bool,
@@ -27,25 +27,25 @@ pub struct SevenZipArchive {
 
 #[derive(Clone)]
 struct SevenZipEntry {
-  record: ArchiveEntryRecord,
-  children: Vec<ArchiveDirectoryEntry>,
+  record: NamespaceNodeRecord,
+  children: Vec<NamespaceDirectoryEntry>,
   extracted_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
 struct SevenZipListingEntry {
   path: String,
-  kind: ArchiveEntryKind,
+  kind: NamespaceNodeKind,
   size: u64,
   encrypted: bool,
 }
 
 impl SevenZipArchive {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let cache = prepare_archive_cache(source.as_ref(), "7z")?;
     let listing = list_archive(&cache.source_path)?;
     let total_uncompressed_size = listing.iter().map(|entry| entry.size).sum();
@@ -64,7 +64,7 @@ impl SevenZipArchive {
     Ok(archive)
   }
 
-  pub fn find_entry_by_path(&self, path: &str) -> Option<ArchiveEntryId> {
+  pub fn find_entry_by_path(&self, path: &str) -> Option<NamespaceNodeId> {
     self.path_to_id.get(path).cloned()
   }
 
@@ -100,7 +100,7 @@ impl SevenZipArchive {
 
   fn refresh_extracted_paths(&mut self) {
     for entry in self.entries.iter_mut().skip(1) {
-      entry.extracted_path = if entry.record.kind == ArchiveEntryKind::File {
+      entry.extracted_path = if entry.record.kind == NamespaceNodeKind::File {
         Some(self.cache.extract_dir.join(&entry.record.path))
       } else {
         None
@@ -108,7 +108,7 @@ impl SevenZipArchive {
     }
   }
 
-  fn entry_ref(&self, entry_id: &ArchiveEntryId) -> Result<&SevenZipEntry> {
+  fn entry_ref(&self, entry_id: &NamespaceNodeId) -> Result<&SevenZipEntry> {
     let index = entry_id_to_index(entry_id)?;
     self
       .entries
@@ -122,17 +122,17 @@ impl Archive for SevenZipArchive {
     DESCRIPTOR
   }
 
-  fn root_entry_id(&self) -> ArchiveEntryId {
-    ArchiveEntryId::from_u64(ROOT_ENTRY_ID)
+  fn root_entry_id(&self) -> NamespaceNodeId {
+    NamespaceNodeId::from_u64(ROOT_ENTRY_ID)
   }
 
-  fn entry(&self, entry_id: &ArchiveEntryId) -> Result<ArchiveEntryRecord> {
+  fn entry(&self, entry_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     Ok(self.entry_ref(entry_id)?.record.clone())
   }
 
-  fn read_dir(&self, directory_id: &ArchiveEntryId) -> Result<Vec<ArchiveDirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let entry = self.entry_ref(directory_id)?;
-    if entry.record.kind != ArchiveEntryKind::Directory {
+    if entry.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::InvalidFormat(
         "7z directory reads require a directory entry".to_string(),
       ));
@@ -140,14 +140,14 @@ impl Archive for SevenZipArchive {
     Ok(entry.children.clone())
   }
 
-  fn open_file(&self, entry_id: &ArchiveEntryId) -> Result<DataSourceHandle> {
+  fn open_file(&self, entry_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     if self.locked {
       return Err(Error::InvalidSourceReference(
         "7z archive is locked; unlock it with a password before opening files".to_string(),
       ));
     }
     let entry = self.entry_ref(entry_id)?;
-    if entry.record.kind != ArchiveEntryKind::File {
+    if entry.record.kind != NamespaceNodeKind::File {
       return Err(Error::InvalidFormat(
         "7z file opens require a regular file entry".to_string(),
       ));
@@ -155,7 +155,7 @@ impl Archive for SevenZipArchive {
     let path = entry.extracted_path.as_ref().ok_or_else(|| {
       Error::InvalidFormat("7z file entry does not have a cached extraction path".to_string())
     })?;
-    Ok(std::sync::Arc::new(FileDataSource::open(path)?) as DataSourceHandle)
+    Ok(std::sync::Arc::new(FileDataSource::open(path)?) as ByteSourceHandle)
   }
 
   fn is_locked(&self) -> bool {
@@ -243,9 +243,9 @@ fn listing_entry_from_map(map: &BTreeMap<String, String>) -> Result<Option<Seven
   Ok(Some(SevenZipListingEntry {
     path: normalized,
     kind: if is_dir {
-      ArchiveEntryKind::Directory
+      NamespaceNodeKind::Directory
     } else {
-      ArchiveEntryKind::File
+      NamespaceNodeKind::File
     },
     size,
     encrypted: map.get("Encrypted").is_some_and(|value| value == "+")
@@ -257,7 +257,7 @@ fn listing_entry_from_map(map: &BTreeMap<String, String>) -> Result<Option<Seven
 
 fn build_tree(
   listing: &[SevenZipListingEntry], extract_root: Option<&Path>,
-) -> Result<(Vec<SevenZipEntry>, HashMap<String, ArchiveEntryId>)> {
+) -> Result<(Vec<SevenZipEntry>, HashMap<String, NamespaceNodeId>)> {
   let mut builders = BTreeMap::<String, SevenZipListingEntry>::new();
   for entry in listing {
     ensure_parent_directories(&mut builders, &entry.path)?;
@@ -267,15 +267,14 @@ fn build_tree(
   let mut path_to_id = HashMap::new();
   let ordered_paths = builders.keys().cloned().collect::<Vec<_>>();
   for (index, path) in ordered_paths.iter().enumerate() {
-    path_to_id.insert(path.clone(), ArchiveEntryId::from_u64(index as u64 + 1));
+    path_to_id.insert(path.clone(), NamespaceNodeId::from_u64(index as u64 + 1));
   }
 
   let mut entries = Vec::with_capacity(ordered_paths.len() + 1);
   entries.push(SevenZipEntry {
-    record: ArchiveEntryRecord::new(
-      ArchiveEntryId::from_u64(ROOT_ENTRY_ID),
-      ArchiveEntryKind::Directory,
-      String::new(),
+    record: NamespaceNodeRecord::new(
+      NamespaceNodeId::from_u64(ROOT_ENTRY_ID),
+      NamespaceNodeKind::Directory,
       0,
     ),
     children: Vec::new(),
@@ -289,10 +288,10 @@ fn build_tree(
       Error::InvalidFormat(format!("missing 7z entry identifier for path: {path}"))
     })?;
     entries.push(SevenZipEntry {
-      record: ArchiveEntryRecord::new(id, entry.kind, path.clone(), entry.size),
+      record: NamespaceNodeRecord::new(id, entry.kind, entry.size).with_path(path.clone()),
       children: Vec::new(),
       extracted_path: extract_root
-        .and_then(|root| (entry.kind == ArchiveEntryKind::File).then(|| root.join(path))),
+        .and_then(|root| (entry.kind == NamespaceNodeKind::File).then(|| root.join(path))),
     });
   }
 
@@ -312,7 +311,7 @@ fn build_tree(
     };
     entries[parent_index]
       .children
-      .push(ArchiveDirectoryEntry::new(name, child_id, child_kind));
+      .push(NamespaceDirectoryEntry::new(name, child_id, child_kind));
   }
   for entry in &mut entries {
     entry
@@ -332,7 +331,7 @@ fn ensure_parent_directories(
       .entry(parent.to_string())
       .or_insert_with(|| SevenZipListingEntry {
         path: parent.to_string(),
-        kind: ArchiveEntryKind::Directory,
+        kind: NamespaceNodeKind::Directory,
         size: 0,
         encrypted: false,
       });
@@ -372,7 +371,7 @@ fn relative_name(path: &str) -> String {
     .map_or_else(|| path.to_string(), |(_, name)| name.to_string())
 }
 
-fn entry_id_to_index(entry_id: &ArchiveEntryId) -> Result<usize> {
+fn entry_id_to_index(entry_id: &NamespaceNodeId) -> Result<usize> {
   let bytes: [u8; 8] = entry_id.as_bytes().try_into().map_err(|_| {
     Error::InvalidFormat("7z archive entry identifiers must be native u64 values".to_string())
   })?;
@@ -385,13 +384,13 @@ mod tests {
   use std::{path::Path, sync::Arc};
 
   use super::*;
-  use crate::DataSource;
+  use crate::ByteSource;
 
   struct MemDataSource {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -408,7 +407,7 @@ mod tests {
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -450,7 +449,9 @@ mod tests {
     .unwrap();
 
     assert_eq!(listing.len(), 2);
-    assert_eq!(listing[0].kind, ArchiveEntryKind::Directory);
+    assert_eq!(listing[0].kind, NamespaceNodeKind::Directory);
     assert!(listing[1].encrypted);
   }
 }
+
+crate::archives::driver::impl_archive_data_source!(SevenZipArchive);

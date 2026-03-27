@@ -9,5 +9,5 @@ pub mod gpt;
 pub mod lvm;
 pub mod mbr;
 
-pub use driver::{VolumeSystem, VolumeSystemDriver};
+pub(crate) use driver::VolumeSystem;
 pub use record::{VolumeRecord, VolumeRole, VolumeSpan};

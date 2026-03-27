@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use super::{constants, guid::VhdxGuid, header::VhdxImageHeader};
-use crate::{DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceCapabilities, ByteSourceHandle, Error, Result};
 
 const LOG_SECTOR_SIZE: u64 = 4 * 1024;
 const LOG_ENTRY_HEADER_SIZE: usize = 64;
@@ -15,8 +15,8 @@ const LOG_DESCRIPTOR_SIGNATURE: u32 = 0x6373_6564;
 const LOG_ZERO_DESCRIPTOR_SIGNATURE: u32 = 0x6F72_657A;
 
 pub(super) fn apply(
-  source: DataSourceHandle, active_header: &VhdxImageHeader, active_header_offset: u64,
-) -> Result<DataSourceHandle> {
+  source: ByteSourceHandle, active_header: &VhdxImageHeader, active_header_offset: u64,
+) -> Result<ByteSourceHandle> {
   if active_header.log_version != 0 {
     return Err(Error::InvalidFormat(
       "vhdx active log uses an unsupported log format version".to_string(),
@@ -51,7 +51,7 @@ pub(super) fn apply(
     source_size,
     replayed_size,
     patches: Arc::from(patches.into_boxed_slice()),
-  }) as DataSourceHandle)
+  }) as ByteSourceHandle)
 }
 
 #[derive(Clone)]
@@ -94,13 +94,13 @@ impl ReplayPatch {
 }
 
 struct VhdxReplayLogDataSource {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   source_size: u64,
   replayed_size: u64,
   patches: Arc<[ReplayPatch]>,
 }
 
-impl DataSource for VhdxReplayLogDataSource {
+impl ByteSource for VhdxReplayLogDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.replayed_size || buf.is_empty() {
       return Ok(0);
@@ -131,7 +131,7 @@ impl DataSource for VhdxReplayLogDataSource {
     Ok(self.replayed_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.source.capabilities()
   }
 
@@ -223,7 +223,7 @@ fn validate_log_bounds(source_size: u64, header: &VhdxImageHeader) -> Result<()>
 }
 
 fn find_active_sequence(
-  source: &dyn DataSource, header: &VhdxImageHeader, source_size: u64,
+  source: &dyn ByteSource, header: &VhdxImageHeader, source_size: u64,
 ) -> Result<ParsedLogSequence> {
   let mut candidate = None::<ParsedLogSequence>;
 
@@ -290,7 +290,7 @@ fn find_active_sequence(
 }
 
 fn parse_log_entry(
-  source: &dyn DataSource, header: &VhdxImageHeader, start: u32,
+  source: &dyn ByteSource, header: &VhdxImageHeader, start: u32,
   expected_previous_sequence: Option<u64>,
 ) -> Result<Option<ParsedLogEntry>> {
   let header_bytes = read_wrapped_bytes(
@@ -447,7 +447,7 @@ fn advance_log_offset(start: u32, entry_length: u32, log_length: u32) -> Result<
 }
 
 fn read_wrapped_bytes(
-  source: &dyn DataSource, log_offset: u64, log_length: u32, start: u32, len: usize,
+  source: &dyn ByteSource, log_offset: u64, log_length: u32, start: u32, len: usize,
 ) -> Result<Vec<u8>> {
   let mut bytes = vec![0u8; len];
   let start = u64::from(start);
@@ -466,7 +466,7 @@ fn read_wrapped_bytes(
 }
 
 fn build_cleared_header_patch(
-  source: &dyn DataSource, source_size: u64, patches: &[ReplayPatch], active_header_offset: u64,
+  source: &dyn ByteSource, source_size: u64, patches: &[ReplayPatch], active_header_offset: u64,
 ) -> Result<ReplayPatch> {
   let mut header_bytes = materialize_range(
     source,
@@ -483,7 +483,7 @@ fn build_cleared_header_patch(
 }
 
 fn materialize_range(
-  source: &dyn DataSource, source_size: u64, patches: &[ReplayPatch], offset: u64, len: usize,
+  source: &dyn ByteSource, source_size: u64, patches: &[ReplayPatch], offset: u64, len: usize,
 ) -> Result<Vec<u8>> {
   let mut bytes = vec![0u8; len];
   if offset < source_size {
@@ -597,7 +597,7 @@ mod tests {
     sector.fill(0x5A);
     source_bytes[header.log_offset as usize..header.log_offset as usize + 8192]
       .copy_from_slice(&single_data_descriptor_entry(log_guid, 0x4000, &sector));
-    let source = Arc::new(BytesDataSource::new(source_bytes)) as DataSourceHandle;
+    let source = Arc::new(BytesDataSource::new(source_bytes)) as ByteSourceHandle;
 
     let replayed = apply(source, &header, ACTIVE_HEADER_OFFSET).unwrap();
     let mut patched = [0u8; 4096];

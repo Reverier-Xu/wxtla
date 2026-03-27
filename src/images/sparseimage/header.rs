@@ -1,6 +1,6 @@
 //! Sparseimage header parsing.
 
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 pub(super) const HEADER_BLOCK_SIZE: usize = 4096;
 const HEADER_SIZE: usize = 64;
@@ -19,7 +19,7 @@ pub struct SparseImageHeader {
 }
 
 impl SparseImageHeader {
-  pub fn read(source: &dyn DataSource) -> Result<(Self, Vec<u8>)> {
+  pub fn read(source: &dyn ByteSource) -> Result<(Self, Vec<u8>)> {
     let block = source.read_bytes_at(0, HEADER_BLOCK_SIZE)?;
     let header = Self::from_bytes(&block)?;
     Ok((header, block))

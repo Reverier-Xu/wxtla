@@ -19,9 +19,9 @@ use super::{
   },
 };
 use crate::{
-  BytesDataSource, DataSourceHandle, Error, Result, SourceHints,
+  ByteSourceHandle, BytesDataSource, Error, Result, SourceHints,
   filesystems::{
-    DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, FileSystemNodeRecord,
+    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
   },
 };
 
@@ -47,28 +47,28 @@ pub struct RefsDataStreamInfo {
 }
 
 struct RefsNode {
-  record: FileSystemNodeRecord,
+  record: NamespaceNodeRecord,
   details: RefsNodeDetails,
-  streams: BTreeMap<Option<String>, DataSourceHandle>,
+  streams: BTreeMap<Option<String>, ByteSourceHandle>,
 }
 
 pub struct RefsFileSystem {
   nodes: HashMap<RefsIdentifier, RefsNode>,
-  children: HashMap<RefsIdentifier, Vec<DirectoryEntry>>,
+  children: HashMap<RefsIdentifier, Vec<NamespaceDirectoryEntry>>,
 }
 
 struct RefsContext {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   volume_header: RefsVolumeHeader,
   object_references: HashMap<u64, RefsBlockReference>,
 }
 
 impl RefsFileSystem {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let volume_header = RefsVolumeHeader::read(source.as_ref())?;
     let superblock_offset = u64::from(volume_header.metadata_block_size) * 30;
     let superblock_bytes = source.read_bytes_at(
@@ -127,7 +127,7 @@ impl RefsFileSystem {
     Ok(Self { nodes, children })
   }
 
-  pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<RefsNodeDetails> {
+  pub fn node_details(&self, node_id: &NamespaceNodeId) -> Result<RefsNodeDetails> {
     let identifier = decode_node_id(node_id)?;
     self
       .nodes
@@ -136,7 +136,7 @@ impl RefsFileSystem {
       .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))
   }
 
-  pub fn data_streams(&self, node_id: &FileSystemNodeId) -> Result<Vec<RefsDataStreamInfo>> {
+  pub fn data_streams(&self, node_id: &NamespaceNodeId) -> Result<Vec<RefsDataStreamInfo>> {
     let identifier = decode_node_id(node_id)?;
     let node = self
       .nodes
@@ -155,8 +155,8 @@ impl RefsFileSystem {
   }
 
   pub fn open_data_stream(
-    &self, node_id: &FileSystemNodeId, name: Option<&str>,
-  ) -> Result<DataSourceHandle> {
+    &self, node_id: &NamespaceNodeId, name: Option<&str>,
+  ) -> Result<ByteSourceHandle> {
     let identifier = decode_node_id(node_id)?;
     let node = self
       .nodes
@@ -175,14 +175,14 @@ impl FileSystem for RefsFileSystem {
     DESCRIPTOR
   }
 
-  fn root_node_id(&self) -> FileSystemNodeId {
+  fn root_node_id(&self) -> NamespaceNodeId {
     encode_node_id(&RefsIdentifier {
       lower: 0,
       upper: ROOT_DIRECTORY_OBJECT_ID,
     })
   }
 
-  fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
+  fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     let identifier = decode_node_id(node_id)?;
     self
       .nodes
@@ -191,27 +191,27 @@ impl FileSystem for RefsFileSystem {
       .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))
   }
 
-  fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let identifier = decode_node_id(directory_id)?;
     let node = self
       .nodes
       .get(&identifier)
       .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))?;
-    if node.record.kind != FileSystemNodeKind::Directory {
+    if node.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::NotFound("refs node is not a directory".to_string()));
     }
 
     Ok(self.children.get(&identifier).cloned().unwrap_or_default())
   }
 
-  fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
+  fn open_file(&self, file_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     self.open_data_stream(file_id, None)
   }
 }
 
 fn build_directory_tree(
   context: &RefsContext, object_identifier: u64, nodes: &mut HashMap<RefsIdentifier, RefsNode>,
-  children: &mut HashMap<RefsIdentifier, Vec<DirectoryEntry>>,
+  children: &mut HashMap<RefsIdentifier, Vec<NamespaceDirectoryEntry>>,
   visited_directories: &mut HashSet<u64>,
 ) -> Result<()> {
   if !visited_directories.insert(object_identifier) {
@@ -225,9 +225,9 @@ fn build_directory_tree(
   nodes
     .entry(directory_id.clone())
     .or_insert_with(|| RefsNode {
-      record: FileSystemNodeRecord::new(
+      record: NamespaceNodeRecord::new(
         encode_node_id(&directory_id),
-        FileSystemNodeKind::Directory,
+        NamespaceNodeKind::Directory,
         0,
       ),
       details: RefsNodeDetails {
@@ -257,8 +257,8 @@ fn build_directory_tree(
 
 fn read_directory_node(
   context: &RefsContext, node: &RefsMinistoreNode, nodes: &mut HashMap<RefsIdentifier, RefsNode>,
-  children: &mut HashMap<RefsIdentifier, Vec<DirectoryEntry>>,
-  visited_directories: &mut HashSet<u64>, directory_entries: &mut Vec<DirectoryEntry>,
+  children: &mut HashMap<RefsIdentifier, Vec<NamespaceDirectoryEntry>>,
+  visited_directories: &mut HashSet<u64>, directory_entries: &mut Vec<NamespaceDirectoryEntry>,
 ) -> Result<()> {
   for record in &node.records {
     if record.key_data.len() >= 2 && super::parser::le_u16(&record.key_data[0..2]) != 0x0030 {
@@ -271,7 +271,7 @@ fn read_directory_node(
       match entry_type {
         1 => {
           let file_node = parse_file_entry(context, record)?;
-          directory_entries.push(DirectoryEntry::new(
+          directory_entries.push(NamespaceDirectoryEntry::new(
             name,
             file_node.record.id.clone(),
             file_node.record.kind,
@@ -287,9 +287,9 @@ fn read_directory_node(
           nodes.insert(
             identifier.clone(),
             RefsNode {
-              record: FileSystemNodeRecord::new(
+              record: NamespaceNodeRecord::new(
                 encode_node_id(&identifier),
-                FileSystemNodeKind::Directory,
+                NamespaceNodeKind::Directory,
                 0,
               ),
               details: RefsNodeDetails {
@@ -302,10 +302,10 @@ fn read_directory_node(
               streams: BTreeMap::new(),
             },
           );
-          directory_entries.push(DirectoryEntry::new(
+          directory_entries.push(NamespaceDirectoryEntry::new(
             name,
             encode_node_id(&identifier),
-            FileSystemNodeKind::Directory,
+            NamespaceNodeKind::Directory,
           ));
           build_directory_tree(
             context,
@@ -357,9 +357,9 @@ fn parse_file_entry(context: &RefsContext, record: &RefsNodeRecord) -> Result<Re
   };
 
   Ok(RefsNode {
-    record: FileSystemNodeRecord::new(
+    record: NamespaceNodeRecord::new(
       encode_node_id(&identifier),
-      FileSystemNodeKind::File,
+      NamespaceNodeKind::File,
       file_values.data_size,
     ),
     details: RefsNodeDetails {
@@ -388,7 +388,7 @@ fn get_object_ministore_tree(
 }
 
 fn build_object_reference_index(
-  source: DataSourceHandle, volume_header: &RefsVolumeHeader, root: &RefsMinistoreNode,
+  source: ByteSourceHandle, volume_header: &RefsVolumeHeader, root: &RefsMinistoreNode,
 ) -> Result<HashMap<u64, RefsBlockReference>> {
   let mut loader = |reference: &RefsBlockReference| {
     read_ministore_node_from_reference(source.clone(), volume_header, reference)
@@ -534,7 +534,7 @@ fn parse_non_resident_attribute_with_context(
 
 fn build_stream_sources(
   context: &RefsContext, attributes: &[RefsAttribute],
-) -> Result<BTreeMap<Option<String>, DataSourceHandle>> {
+) -> Result<BTreeMap<Option<String>, ByteSourceHandle>> {
   let mut grouped = BTreeMap::<Option<String>, Vec<RefsAttribute>>::new();
   for attribute in attributes {
     let key = match attribute.attribute_type {
@@ -556,7 +556,7 @@ fn build_stream_sources(
 
 fn build_stream_source(
   context: &RefsContext, attributes: &[RefsAttribute],
-) -> Result<DataSourceHandle> {
+) -> Result<ByteSourceHandle> {
   let resident = attributes
     .iter()
     .filter_map(|attribute| match &attribute.value {
@@ -589,7 +589,7 @@ fn build_stream_source(
       ));
     }
 
-    return Ok(Arc::new(BytesDataSource::new(data.clone())) as DataSourceHandle);
+    return Ok(Arc::new(BytesDataSource::new(data.clone())) as ByteSourceHandle);
   }
 
   let mut sorted_runs = non_resident
@@ -614,7 +614,7 @@ fn build_stream_source(
     data_size,
     valid_data_size,
     data_runs: Arc::from(sorted_runs.into_boxed_slice()),
-  }) as DataSourceHandle)
+  }) as ByteSourceHandle)
 }
 
 fn collect_leaf_records_from_source(
@@ -655,7 +655,7 @@ where
 }
 
 fn read_checkpoint(
-  source: DataSourceHandle, volume_header: &RefsVolumeHeader, block_number: u64,
+  source: ByteSourceHandle, volume_header: &RefsVolumeHeader, block_number: u64,
 ) -> Result<RefsCheckpoint> {
   let bytes =
     read_metadata_blocks_from_numbers(source.as_ref(), volume_header, &[block_number, 0, 0, 0])?;
@@ -663,7 +663,7 @@ fn read_checkpoint(
 }
 
 fn read_ministore_node_from_reference(
-  source: DataSourceHandle, volume_header: &RefsVolumeHeader, reference: &RefsBlockReference,
+  source: ByteSourceHandle, volume_header: &RefsVolumeHeader, reference: &RefsBlockReference,
 ) -> Result<RefsMinistoreNode> {
   let bytes = read_metadata_blocks_from_reference(source.as_ref(), volume_header, reference)?;
   let header_size = metadata_header_size(volume_header.major_version)?;
@@ -682,14 +682,14 @@ fn parse_object_record_reference(bytes: &[u8], major_version: u8) -> Result<Refs
 }
 
 fn read_metadata_blocks_from_reference(
-  source: &dyn crate::DataSource, volume_header: &RefsVolumeHeader, reference: &RefsBlockReference,
+  source: &dyn crate::ByteSource, volume_header: &RefsVolumeHeader, reference: &RefsBlockReference,
 ) -> Result<Vec<u8>> {
   let present = reference.present_block_numbers().collect::<Vec<_>>();
   read_metadata_blocks_from_slice(source, volume_header, &present)
 }
 
 fn read_metadata_blocks_from_numbers(
-  source: &dyn crate::DataSource, volume_header: &RefsVolumeHeader, block_numbers: &[u64; 4],
+  source: &dyn crate::ByteSource, volume_header: &RefsVolumeHeader, block_numbers: &[u64; 4],
 ) -> Result<Vec<u8>> {
   read_metadata_blocks_from_slice(
     source,
@@ -703,7 +703,7 @@ fn read_metadata_blocks_from_numbers(
 }
 
 fn read_metadata_blocks_from_slice(
-  source: &dyn crate::DataSource, volume_header: &RefsVolumeHeader, block_numbers: &[u64],
+  source: &dyn crate::ByteSource, volume_header: &RefsVolumeHeader, block_numbers: &[u64],
 ) -> Result<Vec<u8>> {
   let present = block_numbers.to_vec();
   if present.is_empty() {
@@ -732,14 +732,14 @@ fn read_metadata_blocks_from_slice(
   Ok(bytes)
 }
 
-fn encode_node_id(identifier: &RefsIdentifier) -> FileSystemNodeId {
+fn encode_node_id(identifier: &RefsIdentifier) -> NamespaceNodeId {
   let mut bytes = Vec::with_capacity(16);
   bytes.extend_from_slice(&identifier.lower.to_le_bytes());
   bytes.extend_from_slice(&identifier.upper.to_le_bytes());
-  FileSystemNodeId::from_bytes(bytes)
+  NamespaceNodeId::from_bytes(bytes)
 }
 
-fn decode_node_id(node_id: &FileSystemNodeId) -> Result<RefsIdentifier> {
+fn decode_node_id(node_id: &NamespaceNodeId) -> Result<RefsIdentifier> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 16 {
     return Err(Error::InvalidSourceReference(
@@ -946,3 +946,5 @@ mod tests {
     assert_eq!(object_references.get(&0x601).unwrap().block_numbers[0], 9);
   }
 }
+
+crate::filesystems::driver::impl_file_system_data_source!(RefsFileSystem);

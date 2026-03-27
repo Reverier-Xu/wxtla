@@ -3,7 +3,7 @@
 use super::constants::{
   DEFAULT_SECTOR_SIZE, DYNAMIC_HEADER_COOKIE, DYNAMIC_HEADER_SIZE, VHD_FORMAT_VERSION,
 };
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VhdParentLocator {
@@ -24,7 +24,7 @@ pub struct VhdDynamicHeader {
 }
 
 impl VhdDynamicHeader {
-  pub fn read(source: &dyn DataSource, offset: u64) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource, offset: u64) -> Result<Self> {
     let data = source.read_bytes_at(offset, DYNAMIC_HEADER_SIZE)?;
     Self::parse(&data)
   }

@@ -10,10 +10,10 @@ use super::{
   boot_sector::{FatBootSector, FatType},
 };
 use crate::{
-  BytesDataSource, DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, Error, Result,
   SourceHints,
   filesystems::{
-    DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, FileSystemNodeRecord,
+    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
   },
 };
 
@@ -23,19 +23,19 @@ const ATTR_DIRECTORY: u8 = 0x10;
 const ATTR_VOLUME_LABEL: u8 = 0x08;
 
 type FatNodeMap = HashMap<u64, Arc<FatNode>>;
-type FatChildrenMap = HashMap<u64, Arc<[DirectoryEntry]>>;
+type FatChildrenMap = HashMap<u64, Arc<[NamespaceDirectoryEntry]>>;
 
 pub struct FatFileSystem {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   boot_sector: FatBootSector,
   fat_table: FatTable,
   volume_label: Option<String>,
   state: Mutex<FatState>,
-  file_sources: Mutex<HashMap<u64, DataSourceHandle>>,
+  file_sources: Mutex<HashMap<u64, ByteSourceHandle>>,
 }
 
 struct FatNode {
-  record: FileSystemNodeRecord,
+  record: NamespaceNodeRecord,
   details: FatNodeDetails,
 }
 
@@ -68,7 +68,7 @@ enum DirectorySource {
 struct FatDirectoryEntryRecord {
   name: String,
   short_name: String,
-  kind: FileSystemNodeKind,
+  kind: NamespaceNodeKind,
   attribute_flags: u8,
   created_time: u16,
   created_date: u16,
@@ -98,7 +98,7 @@ enum FatClusterStatus {
 }
 
 struct FatChainDataSource {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   boot_sector: FatBootSector,
   clusters: Arc<[u32]>,
   cluster_size: usize,
@@ -106,11 +106,11 @@ struct FatChainDataSource {
 }
 
 impl FatFileSystem {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let boot_sector = FatBootSector::read(source.as_ref())?;
     let fat_offset = boot_sector.fat_offset(0)?;
     let fat_size = boot_sector.fat_size_bytes()?;
@@ -126,9 +126,9 @@ impl FatFileSystem {
     state.nodes.insert(
       ROOT_NODE_ID,
       Arc::new(FatNode {
-        record: FileSystemNodeRecord::new(
-          FileSystemNodeId::from_u64(ROOT_NODE_ID),
-          FileSystemNodeKind::Directory,
+        record: NamespaceNodeRecord::new(
+          NamespaceNodeId::from_u64(ROOT_NODE_ID),
+          NamespaceNodeKind::Directory,
           0,
         ),
         details: FatNodeDetails {
@@ -174,11 +174,11 @@ impl FatFileSystem {
     self.volume_label.as_deref()
   }
 
-  pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<FatNodeDetails> {
+  pub fn node_details(&self, node_id: &NamespaceNodeId) -> Result<FatNodeDetails> {
     Ok(self.lookup_node(node_id)?.details.clone())
   }
 
-  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<Arc<FatNode>> {
+  fn lookup_node(&self, node_id: &NamespaceNodeId) -> Result<Arc<FatNode>> {
     let node_id = decode_node_id(node_id)?;
     self
       .state
@@ -190,7 +190,9 @@ impl FatFileSystem {
       .ok_or_else(|| Error::NotFound(format!("fat node {node_id} was not found")))
   }
 
-  fn directory_children(&self, directory_id: u64, node: &FatNode) -> Result<Arc<[DirectoryEntry]>> {
+  fn directory_children(
+    &self, directory_id: u64, node: &FatNode,
+  ) -> Result<Arc<[NamespaceDirectoryEntry]>> {
     if let Some(children) = self
       .state
       .lock()
@@ -242,18 +244,18 @@ impl FileSystem for FatFileSystem {
     DESCRIPTOR
   }
 
-  fn root_node_id(&self) -> FileSystemNodeId {
-    FileSystemNodeId::from_u64(ROOT_NODE_ID)
+  fn root_node_id(&self) -> NamespaceNodeId {
+    NamespaceNodeId::from_u64(ROOT_NODE_ID)
   }
 
-  fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
+  fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     self.lookup_node(node_id).map(|node| node.record.clone())
   }
 
-  fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let node_id = decode_node_id(directory_id)?;
     let node = self.lookup_node(directory_id)?;
-    if node.record.kind != FileSystemNodeKind::Directory {
+    if node.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::NotFound(format!(
         "fat node {node_id} is not a directory"
       )));
@@ -261,10 +263,10 @@ impl FileSystem for FatFileSystem {
     Ok(self.directory_children(node_id, &node)?.to_vec())
   }
 
-  fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
+  fn open_file(&self, file_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let node_id = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
-    if node.record.kind != FileSystemNodeKind::File {
+    if node.record.kind != NamespaceNodeKind::File {
       return Err(Error::NotFound(format!(
         "fat node {node_id} is not a readable file"
       )));
@@ -370,7 +372,7 @@ fn follow_cluster_chain(
 
 fn insert_directory_entries(
   state: &mut FatState, directory_id: u64, entries: Vec<FatDirectoryEntryRecord>,
-) -> Result<Arc<[DirectoryEntry]>> {
+) -> Result<Arc<[NamespaceDirectoryEntry]>> {
   let mut children = Vec::with_capacity(entries.len());
 
   for entry in entries {
@@ -379,7 +381,7 @@ fn insert_directory_entries(
       .next_node_id
       .checked_add(1)
       .ok_or_else(|| Error::InvalidRange("fat node id overflow".to_string()))?;
-    let size = if entry.kind == FileSystemNodeKind::Directory {
+    let size = if entry.kind == NamespaceNodeKind::Directory {
       0
     } else {
       entry.size
@@ -388,7 +390,7 @@ fn insert_directory_entries(
     state.nodes.insert(
       node_id,
       Arc::new(FatNode {
-        record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(node_id), entry.kind, size),
+        record: NamespaceNodeRecord::new(NamespaceNodeId::from_u64(node_id), entry.kind, size),
         details: FatNodeDetails {
           short_name: entry.short_name,
           attribute_flags: entry.attribute_flags,
@@ -402,22 +404,22 @@ fn insert_directory_entries(
         },
       }),
     );
-    children.push(DirectoryEntry::new(
+    children.push(NamespaceDirectoryEntry::new(
       entry.name,
-      FileSystemNodeId::from_u64(node_id),
+      NamespaceNodeId::from_u64(node_id),
       entry.kind,
     ));
   }
 
   children.sort_by(|left, right| left.name.cmp(&right.name));
-  let children = Arc::<[DirectoryEntry]>::from(children.into_boxed_slice());
+  let children = Arc::<[NamespaceDirectoryEntry]>::from(children.into_boxed_slice());
   state.children.insert(directory_id, children.clone());
 
   Ok(children)
 }
 
 fn read_directory(
-  source: &dyn DataSource, boot_sector: &FatBootSector, directory_source: DirectorySource,
+  source: &dyn ByteSource, boot_sector: &FatBootSector, directory_source: DirectorySource,
 ) -> Result<FatDirectoryListing> {
   let bytes = match directory_source {
     DirectorySource::Fixed { offset, size } => source.read_bytes_at(offset, size)?,
@@ -428,7 +430,7 @@ fn read_directory(
 }
 
 fn read_cluster_chain_bytes(
-  source: &dyn DataSource, boot_sector: &FatBootSector, chain: &[u32],
+  source: &dyn ByteSource, boot_sector: &FatBootSector, chain: &[u32],
 ) -> Result<Vec<u8>> {
   let cluster_size = usize::try_from(boot_sector.cluster_size()?)
     .map_err(|_| Error::InvalidRange("fat cluster size is too large".to_string()))?;
@@ -443,12 +445,12 @@ fn read_cluster_chain_bytes(
 }
 
 fn build_file_data_source(
-  source: DataSourceHandle, boot_sector: &FatBootSector, fat_table: &FatTable, start_cluster: u32,
+  source: ByteSourceHandle, boot_sector: &FatBootSector, fat_table: &FatTable, start_cluster: u32,
   size: u64,
-) -> Result<DataSourceHandle> {
+) -> Result<ByteSourceHandle> {
   if size == 0 {
     return Ok(
-      Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as DataSourceHandle,
+      Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as ByteSourceHandle,
     );
   }
 
@@ -461,7 +463,7 @@ fn build_file_data_source(
     cluster_size: usize::try_from(boot_sector.cluster_size()?)
       .map_err(|_| Error::InvalidRange("fat cluster size is too large".to_string()))?,
     size,
-  }) as DataSourceHandle)
+  }) as ByteSourceHandle)
 }
 
 impl FatTable {
@@ -525,7 +527,7 @@ impl FatTable {
   }
 }
 
-impl DataSource for FatChainDataSource {
+impl ByteSource for FatChainDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.size || buf.is_empty() {
       return Ok(0);
@@ -566,7 +568,7 @@ impl DataSource for FatChainDataSource {
     Ok(self.size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.source.capabilities()
   }
 
@@ -627,9 +629,9 @@ fn parse_directory_entries(bytes: &[u8]) -> Result<FatDirectoryListing> {
       name,
       short_name,
       kind: if attributes & ATTR_DIRECTORY != 0 {
-        FileSystemNodeKind::Directory
+        NamespaceNodeKind::Directory
       } else {
-        FileSystemNodeKind::File
+        NamespaceNodeKind::File
       },
       attribute_flags: attributes,
       created_time: le_u16(&slot[14..16]),
@@ -738,7 +740,7 @@ fn decode_short_component(bytes: &[u8], lowercase: bool) -> Result<String> {
   }
 }
 
-fn decode_node_id(node_id: &FileSystemNodeId) -> Result<u64> {
+fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
     return Err(Error::InvalidSourceReference(
@@ -820,7 +822,7 @@ mod tests {
     assert_eq!(listing.entries.len(), 1);
     assert_eq!(listing.entries[0].name, "testdir1");
     assert_eq!(listing.entries[0].short_name, "testdir1");
-    assert_eq!(listing.entries[0].kind, FileSystemNodeKind::Directory);
+    assert_eq!(listing.entries[0].kind, NamespaceNodeKind::Directory);
     assert_eq!(listing.entries[0].attribute_flags, 0x10);
     assert_eq!(listing.entries[0].created_centiseconds, 0x82);
     assert_eq!(listing.entries[0].created_time, 0xA259);
@@ -843,7 +845,7 @@ mod tests {
 
   #[test]
   fn lazily_builds_and_caches_file_sources() {
-    let source: DataSourceHandle = Arc::new(
+    let source: ByteSourceHandle = Arc::new(
       crate::FileDataSource::open(
         Path::new(env!("CARGO_MANIFEST_DIR"))
           .join("formats")
@@ -898,3 +900,5 @@ mod tests {
     assert!(Arc::ptr_eq(&first, &second));
   }
 }
+
+crate::filesystems::driver::impl_file_system_data_source!(FatFileSystem);

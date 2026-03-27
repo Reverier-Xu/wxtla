@@ -9,7 +9,7 @@ use std::{
 
 use sha1_smol::Sha1;
 
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 pub(crate) struct ArchiveCachePaths {
   pub source_path: PathBuf,
@@ -17,7 +17,7 @@ pub(crate) struct ArchiveCachePaths {
 }
 
 pub(crate) fn prepare_archive_cache(
-  source: &dyn DataSource, namespace: &str,
+  source: &dyn ByteSource, namespace: &str,
 ) -> Result<ArchiveCachePaths> {
   let root = cache_root()?.join(namespace);
   fs::create_dir_all(&root)?;

@@ -4,12 +4,13 @@ use std::sync::Arc;
 
 use super::{DESCRIPTOR, header::SparseImageHeader, parser::parse};
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
   SourceHints, images::Image,
 };
 
+#[allow(dead_code)]
 pub struct SparseImage {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   header: SparseImageHeader,
   media_size: u64,
   band_size: u64,
@@ -18,11 +19,11 @@ pub struct SparseImage {
 }
 
 impl SparseImage {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let parsed = parse(source.clone())?;
 
     Ok(Self {
@@ -44,7 +45,7 @@ impl SparseImage {
   }
 }
 
-impl DataSource for SparseImage {
+impl ByteSource for SparseImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.media_size || buf.is_empty() {
       return Ok(0);
@@ -96,9 +97,9 @@ impl DataSource for SparseImage {
     Ok(self.media_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     let preferred_chunk_size = usize::try_from(self.band_size).unwrap_or(1024 * 1024);
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
       .with_preferred_chunk_size(preferred_chunk_size)
   }
 
@@ -135,7 +136,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -152,7 +153,7 @@ mod tests {
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -222,3 +223,5 @@ mod tests {
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
 }
+
+crate::images::driver::impl_image_data_source!(SparseImage);

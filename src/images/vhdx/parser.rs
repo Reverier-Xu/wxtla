@@ -8,10 +8,10 @@ use super::{
   log_replay,
   metadata::{VhdxDiskType, VhdxMetadata},
 };
-use crate::{DataSource, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceHandle, Error, Result};
 
 pub(super) struct ParsedVhdx {
-  pub source: DataSourceHandle,
+  pub source: ByteSourceHandle,
   pub image_header: VhdxImageHeader,
   pub metadata: VhdxMetadata,
   pub block_allocation_table: VhdxBatLayout,
@@ -50,7 +50,7 @@ pub(super) enum VhdxSectorBitmapState {
   Present,
 }
 
-pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedVhdx> {
+pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedVhdx> {
   validate_file_identifier(source.as_ref())?;
   let active_header = read_active_image_header(source.as_ref())?;
   let source = log_replay::apply(source, &active_header.0, active_header.1)?;
@@ -164,7 +164,7 @@ pub(super) fn sector_bitmap_state(entry: u64) -> Result<VhdxSectorBitmapState> {
   }
 }
 
-fn read_active_image_header(source: &dyn DataSource) -> Result<(VhdxImageHeader, u64)> {
+fn read_active_image_header(source: &dyn ByteSource) -> Result<(VhdxImageHeader, u64)> {
   let primary = VhdxImageHeader::read(source, constants::PRIMARY_IMAGE_HEADER_OFFSET);
   let secondary = VhdxImageHeader::read(source, constants::SECONDARY_IMAGE_HEADER_OFFSET);
 
@@ -182,7 +182,7 @@ fn read_active_image_header(source: &dyn DataSource) -> Result<(VhdxImageHeader,
   }
 }
 
-fn read_region_table_pair(source: &dyn DataSource) -> Result<VhdxRegionTable> {
+fn read_region_table_pair(source: &dyn ByteSource) -> Result<VhdxRegionTable> {
   let primary = VhdxRegionTable::read(source, constants::PRIMARY_REGION_TABLE_OFFSET);
   let secondary = VhdxRegionTable::read(source, constants::SECONDARY_REGION_TABLE_OFFSET);
 
@@ -314,7 +314,7 @@ fn read_bat_layout(bat_region: &VhdxRegionTableEntry, layout: &BatLayout) -> Res
 }
 
 fn validate_bat_entries(
-  source: &dyn DataSource, bat: &VhdxBatLayout, metadata: &VhdxMetadata, source_size: u64,
+  source: &dyn ByteSource, bat: &VhdxBatLayout, metadata: &VhdxMetadata, source_size: u64,
   layout: &BatLayout,
 ) -> Result<()> {
   let mut chunks_with_partial_blocks = HashSet::new();
@@ -427,7 +427,7 @@ fn validate_bat_entries(
 }
 
 pub(super) fn read_bat_entry(
-  source: &dyn DataSource, bat: &VhdxBatLayout, index: usize,
+  source: &dyn ByteSource, bat: &VhdxBatLayout, index: usize,
 ) -> Result<u64> {
   if index >= bat.entry_count {
     return Err(Error::InvalidFormat(format!(

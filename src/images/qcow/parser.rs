@@ -11,7 +11,7 @@ use super::{
   snapshot::QcowSnapshot,
   validation::{validate_cluster_alignment, validate_header_layout, validate_range},
 };
-use crate::{DataSource, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceHandle, Error, Result};
 
 /// Parsed QCOW metadata required to open an image surface.
 pub struct ParsedQcow {
@@ -32,7 +32,7 @@ pub struct ParsedQcow {
 }
 
 /// Parse a QCOW image source.
-pub fn parse(source: DataSourceHandle) -> Result<ParsedQcow> {
+pub fn parse(source: ByteSourceHandle) -> Result<ParsedQcow> {
   let header = QcowHeader::read(source.as_ref())?;
   validate_supported_features(&header)?;
   validate_header_layout(source.as_ref(), &header)?;
@@ -96,7 +96,7 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
   Ok(())
 }
 
-fn read_backing_file_name(source: &dyn DataSource, header: &QcowHeader) -> Result<Option<String>> {
+fn read_backing_file_name(source: &dyn ByteSource, header: &QcowHeader) -> Result<Option<String>> {
   if header.backing_file_size == 0 {
     return Ok(None);
   }
@@ -112,7 +112,7 @@ fn read_backing_file_name(source: &dyn DataSource, header: &QcowHeader) -> Resul
   Ok(Some(backing_file_name))
 }
 
-fn read_l1_table(source: &dyn DataSource, header: &QcowHeader) -> Result<Arc<[u64]>> {
+fn read_l1_table(source: &dyn ByteSource, header: &QcowHeader) -> Result<Arc<[u64]>> {
   let entry_count = usize::try_from(header.l1_entry_count)
     .map_err(|_| Error::InvalidRange("qcow l1 entry count is too large".to_string()))?;
   let table_bytes = entry_count
@@ -159,7 +159,7 @@ fn read_l1_table(source: &dyn DataSource, header: &QcowHeader) -> Result<Arc<[u6
 }
 
 fn read_header_extensions(
-  source: &dyn DataSource, header: &QcowHeader,
+  source: &dyn ByteSource, header: &QcowHeader,
 ) -> Result<Vec<QcowHeaderExtension>> {
   let mut start = u64::from(header.header_size);
   if header.backing_file_size != 0 {
@@ -216,7 +216,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -232,7 +232,7 @@ mod tests {
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -290,7 +290,7 @@ mod tests {
 
   #[test]
   fn rejects_misaligned_l2_offsets() {
-    let source: DataSourceHandle = Arc::new(MemDataSource {
+    let source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_invalid_v3_qcow(0x40001, 1),
     });
 
@@ -301,7 +301,7 @@ mod tests {
 
   #[test]
   fn rejects_missing_refcount_clusters_in_qcow2() {
-    let source: DataSourceHandle = Arc::new(MemDataSource {
+    let source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_invalid_v3_qcow(0x40000, 0),
     });
 

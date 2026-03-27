@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use crate::{
-  DataSource, DataSourceHandle, Error, Result,
-  filesystems::{DirectoryEntry, FileSystemNodeId, FileSystemNodeKind},
+  ByteSource, ByteSourceHandle, Error, Result,
+  filesystems::{NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind},
 };
 
 const ATTRIBUTE_TYPE_FILE_NAME: u32 = 0x0000_0030;
@@ -45,15 +45,15 @@ struct NtfsIndexFileNameKey {
 
 #[derive(Clone, Copy)]
 struct NtfsIndexAllocation<'a> {
-  source: Option<&'a dyn DataSource>,
+  source: Option<&'a dyn ByteSource>,
   cluster_size: u64,
   index_record_size: u32,
 }
 
 pub(crate) fn read_directory_index_entries(
-  root_data: &[u8], allocation_source: Option<DataSourceHandle>, cluster_size: u64,
-  lookup_kind: &mut impl FnMut(u64) -> Result<FileSystemNodeKind>,
-) -> Result<Vec<DirectoryEntry>> {
+  root_data: &[u8], allocation_source: Option<ByteSourceHandle>, cluster_size: u64,
+  lookup_kind: &mut impl FnMut(u64) -> Result<NamespaceNodeKind>,
+) -> Result<Vec<NamespaceDirectoryEntry>> {
   let root_header = parse_index_root_header(root_data)?;
   if root_header.attribute_type != ATTRIBUTE_TYPE_FILE_NAME {
     return Err(Error::InvalidFormat(format!(
@@ -82,8 +82,8 @@ pub(crate) fn read_directory_index_entries(
 
 fn collect_directory_entries_from_node(
   data: &[u8], node_offset: usize, allocation: NtfsIndexAllocation<'_>,
-  visited_subnodes: &mut HashSet<u64>, entries: &mut Vec<DirectoryEntry>,
-  lookup_kind: &mut impl FnMut(u64) -> Result<FileSystemNodeKind>,
+  visited_subnodes: &mut HashSet<u64>, entries: &mut Vec<NamespaceDirectoryEntry>,
+  lookup_kind: &mut impl FnMut(u64) -> Result<NamespaceNodeKind>,
 ) -> Result<()> {
   let node_header = parse_index_node_header(data, node_offset)?;
   let mut entry_offset = node_offset
@@ -162,9 +162,9 @@ fn collect_directory_entries_from_node(
     if file_name.namespace != 2 && file_name.name != "." && file_name.name != ".." {
       let record_number = decode_file_reference(&entry.file_reference.to_le_bytes());
       let kind = lookup_kind(record_number)?;
-      entries.push(DirectoryEntry::new(
+      entries.push(NamespaceDirectoryEntry::new(
         file_name.name,
-        FileSystemNodeId::from_u64(record_number),
+        NamespaceNodeId::from_u64(record_number),
         kind,
       ));
     }
@@ -176,7 +176,7 @@ fn collect_directory_entries_from_node(
 }
 
 fn read_index_record(
-  source: &dyn DataSource, child_vcn: u64, cluster_size: u64, index_record_size: u32,
+  source: &dyn ByteSource, child_vcn: u64, cluster_size: u64, index_record_size: u32,
 ) -> Result<Vec<u8>> {
   let offset = child_vcn
     .checked_mul(cluster_size)
@@ -415,12 +415,12 @@ mod tests {
     );
 
     let entries =
-      read_directory_index_entries(&root, None, 4096, &mut |_| Ok(FileSystemNodeKind::File))
+      read_directory_index_entries(&root, None, 4096, &mut |_| Ok(NamespaceNodeKind::File))
         .unwrap();
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "child.txt");
-    assert_eq!(entries[0].kind, FileSystemNodeKind::File);
+    assert_eq!(entries[0].kind, NamespaceNodeKind::File);
   }
 
   #[test]
@@ -443,10 +443,10 @@ mod tests {
       ],
       false,
       4096,
-    ))) as DataSourceHandle;
+    ))) as ByteSourceHandle;
 
     let entries = read_directory_index_entries(&root, Some(allocation), 4096, &mut |_| {
-      Ok(FileSystemNodeKind::File)
+      Ok(NamespaceNodeKind::File)
     })
     .unwrap();
 

@@ -1,7 +1,7 @@
 //! GPT header parsing.
 
 use super::{constants, guid::GptGuid};
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Parsed GPT header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +32,7 @@ pub struct GptHeader {
 
 impl GptHeader {
   /// Read a GPT header from the given LBA.
-  pub fn read(source: &dyn DataSource, block_size: u32, lba: u64) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource, block_size: u32, lba: u64) -> Result<Self> {
     let offset = lba
       .checked_mul(u64::from(block_size))
       .ok_or_else(|| Error::InvalidRange("gpt header offset overflow".to_string()))?;

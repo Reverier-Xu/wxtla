@@ -1,7 +1,7 @@
 //! VMDK COWD sparse extent header parsing.
 
 use super::constants;
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Parsed VMDK COWD sparse extent header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub struct VmdkCowdHeader {
 }
 
 impl VmdkCowdHeader {
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let data = source.read_bytes_at(0, constants::COWD_HEADER_SIZE)?;
     Self::from_bytes(&data)
   }

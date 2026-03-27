@@ -12,12 +12,12 @@ use super::{
   },
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, Error, Result,
   volumes::{VolumeRecord, VolumeRole, VolumeSpan, VolumeSystem},
 };
 
 pub struct LvmVolumeSystem {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   label: PhysicalVolumeLabel,
   current_pv_name: String,
   current_pv_pe_start: Option<u64>,
@@ -25,13 +25,13 @@ pub struct LvmVolumeSystem {
   vg_name: String,
   logical_volumes: Vec<MetadataLogicalVolume>,
   logical_volume_infos: OnceLock<Vec<LvmLogicalVolumeInfo>>,
-  volume_sources: Mutex<HashMap<usize, DataSourceHandle>>,
+  volume_sources: Mutex<HashMap<usize, ByteSourceHandle>>,
   volumes: Vec<VolumeRecord>,
 }
 
 impl LvmVolumeSystem {
   pub(super) fn new(
-    source: DataSourceHandle, label: PhysicalVolumeLabel, current_pv_name: String,
+    source: ByteSourceHandle, label: PhysicalVolumeLabel, current_pv_name: String,
     current_pv_pe_start: Option<u64>, vg_name: String, extent_size_bytes: u64,
     logical_volumes: Vec<MetadataLogicalVolume>,
   ) -> Result<Self> {
@@ -86,22 +86,16 @@ impl LvmVolumeSystem {
         .collect()
     })
   }
-}
 
-impl VolumeSystem for LvmVolumeSystem {
-  fn descriptor(&self) -> crate::FormatDescriptor {
-    DESCRIPTOR
-  }
-
-  fn block_size(&self) -> u32 {
+  pub fn block_size(&self) -> u32 {
     u32::try_from(self.extent_size_bytes).unwrap_or(512)
   }
 
-  fn volumes(&self) -> &[VolumeRecord] {
+  pub fn volumes(&self) -> &[VolumeRecord] {
     &self.volumes
   }
 
-  fn open_volume(&self, index: usize) -> Result<DataSourceHandle> {
+  pub fn open_volume(&self, index: usize) -> Result<ByteSourceHandle> {
     if let Some(cached) = self
       .volume_sources
       .lock()
@@ -134,7 +128,7 @@ impl VolumeSystem for LvmVolumeSystem {
       source: self.source.clone(),
       chunks,
       size,
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
 
     let mut cached = self
       .volume_sources
@@ -149,8 +143,26 @@ impl VolumeSystem for LvmVolumeSystem {
   }
 }
 
+impl VolumeSystem for LvmVolumeSystem {
+  fn descriptor(&self) -> crate::FormatDescriptor {
+    DESCRIPTOR
+  }
+
+  fn block_size(&self) -> u32 {
+    self.block_size()
+  }
+
+  fn volumes(&self) -> &[VolumeRecord] {
+    self.volumes()
+  }
+
+  fn open_volume(&self, index: usize) -> Result<ByteSourceHandle> {
+    self.open_volume(index)
+  }
+}
+
 struct LvmLogicalVolumeSource {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   chunks: Vec<LvmChunk>,
   size: u64,
 }
@@ -179,7 +191,7 @@ impl LvmLogicalVolumeSource {
   }
 }
 
-impl DataSource for LvmLogicalVolumeSource {
+impl ByteSource for LvmLogicalVolumeSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.size || buf.is_empty() {
       return Ok(0);
@@ -222,7 +234,7 @@ impl DataSource for LvmLogicalVolumeSource {
     Ok(self.size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.source.capabilities()
   }
 
@@ -293,3 +305,5 @@ mod tests {
     assert_eq!(&out, b"CD\0\0\0\0WX");
   }
 }
+
+crate::volumes::driver::impl_volume_system_data_source!(LvmVolumeSystem);

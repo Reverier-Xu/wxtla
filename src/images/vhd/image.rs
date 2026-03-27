@@ -11,7 +11,7 @@ use super::{
   parser::{ParsedVhd, VhdBatLayout, parse},
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
   SourceHints, images::Image,
 };
 
@@ -21,18 +21,18 @@ const BITMAP_CACHE_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 const BLOCK_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct VhdImage {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   footer: VhdFooter,
   dynamic_header: Option<VhdDynamicHeader>,
   bat: VhdBatLayout,
   parent_locator_paths: Arc<[String]>,
-  parent_image: Option<DataSourceHandle>,
+  parent_image: Option<ByteSourceHandle>,
   bitmap_cache: VhdCache<Vec<u8>>,
   block_cache: VhdCache<Vec<u8>>,
 }
 
 impl VhdImage {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     let parsed = parse(source.clone())?;
     if parsed.footer.disk_type == VhdDiskType::Differential {
       return Err(Error::InvalidSourceReference(
@@ -42,7 +42,7 @@ impl VhdImage {
     Self::from_parsed(source, parsed, None)
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let parsed = parse(source.clone())?;
     let parent_image = if parsed.footer.disk_type == VhdDiskType::Differential {
       let resolver = _hints.resolver().ok_or_else(|| {
@@ -75,7 +75,7 @@ impl VhdImage {
         SourceHints::new()
           .with_resolver(resolver)
           .with_source_identity(&crate::SourceIdentity::new(parent_path)),
-      )?) as DataSourceHandle)
+      )?) as ByteSourceHandle)
     } else {
       None
     };
@@ -84,7 +84,7 @@ impl VhdImage {
   }
 
   fn from_parsed(
-    source: DataSourceHandle, parsed: ParsedVhd, parent_image: Option<DataSourceHandle>,
+    source: ByteSourceHandle, parsed: ParsedVhd, parent_image: Option<ByteSourceHandle>,
   ) -> Result<Self> {
     let (bitmap_cache_capacity, block_cache_capacity) = if let Some(header) = &parsed.dynamic_header
     {
@@ -213,7 +213,7 @@ fn bounded_cache_capacity(entry_size: usize, byte_budget: usize, max_entries: us
   (byte_budget / entry_size).max(1).min(max_entries)
 }
 
-impl DataSource for VhdImage {
+impl ByteSource for VhdImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.footer.current_size || buf.is_empty() {
       return Ok(0);
@@ -308,8 +308,8 @@ impl DataSource for VhdImage {
     Ok(self.footer.current_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    let mut capabilities = DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap);
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    let mut capabilities = ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap);
     if let Some(header) = &self.dynamic_header
       && let Ok(size) = usize::try_from(header.block_size)
     {
@@ -346,7 +346,7 @@ impl Image for VhdImage {
 
 fn resolve_parent_candidate(
   resolver: &dyn crate::RelatedSourceResolver, identity: &crate::SourceIdentity, candidate: &str,
-) -> Result<Option<(DataSourceHandle, crate::RelatedPathBuf)>> {
+) -> Result<Option<(ByteSourceHandle, crate::RelatedPathBuf)>> {
   if let Ok(relative) = crate::RelatedPathBuf::from_relative_path(candidate)
     && let Some(parent) = identity.logical_path().parent()
   {
@@ -382,7 +382,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -399,16 +399,16 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -492,3 +492,5 @@ mod tests {
     assert_eq!(&ntfs_oem, b"NTFS    ");
   }
 }
+
+crate::images::driver::impl_image_data_source!(VhdImage);

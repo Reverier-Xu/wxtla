@@ -1,10 +1,7 @@
 //! EWF driver open flow.
 
 use super::{DESCRIPTOR, image::EwfImage};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  images::{Image, ImageDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 /// Driver for Expert Witness Compression Format images.
 #[derive(Debug, Default, Clone, Copy)]
@@ -17,23 +14,25 @@ impl EwfDriver {
   }
 
   /// Open an EWF image from a single segment source.
-  pub fn open(source: DataSourceHandle) -> Result<EwfImage> {
+  pub fn open(source: ByteSourceHandle) -> Result<EwfImage> {
     EwfImage::open(source)
   }
 
   /// Open an EWF image using source hints for multi-segment resolution.
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<EwfImage> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<EwfImage> {
     EwfImage::open_with_hints(source, hints)
   }
 }
 
-impl ImageDriver for EwfDriver {
+impl Driver for EwfDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Image>> {
-    Ok(Box::new(Self::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(Self::open_with_hints(source, options.hints)?))
   }
 }
 
@@ -46,7 +45,7 @@ mod tests {
 
   use super::*;
   use crate::{
-    DataSource, RelatedSourceRequest, RelatedSourceResolver, SourceIdentity,
+    ByteSource, RelatedSourceRequest, RelatedSourceResolver, SourceIdentity,
     images::ewf::constants::{
       E01_VOLUME_DATA_SIZE, FILE_HEADER_MAGIC, FILE_HEADER_MAGIC_LVF, S01_VOLUME_DATA_SIZE,
       SECTION_DESCRIPTOR_SIZE,
@@ -57,7 +56,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -74,11 +73,11 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
@@ -131,18 +130,18 @@ mod tests {
           "images/demo.E01".to_string(),
           Arc::new(MemDataSource {
             data: segment1.clone(),
-          }) as DataSourceHandle,
+          }) as ByteSourceHandle,
         ),
         (
           "images/demo.E02".to_string(),
           Arc::new(MemDataSource {
             data: segment2.clone(),
-          }) as DataSourceHandle,
+          }) as ByteSourceHandle,
         ),
       ]),
     };
     let identity = SourceIdentity::from_relative_path("images/demo.E01").unwrap();
-    let source: DataSourceHandle = Arc::new(MemDataSource { data: segment1 });
+    let source: ByteSourceHandle = Arc::new(MemDataSource { data: segment1 });
     let image = EwfDriver::open_with_hints(
       source,
       SourceHints::new()
@@ -193,18 +192,18 @@ mod tests {
           "images/demo.E01".to_string(),
           Arc::new(MemDataSource {
             data: segment1.clone(),
-          }) as DataSourceHandle,
+          }) as ByteSourceHandle,
         ),
         (
           "images/demo.E02".to_string(),
           Arc::new(MemDataSource {
             data: segment2.clone(),
-          }) as DataSourceHandle,
+          }) as ByteSourceHandle,
         ),
       ]),
     };
     let identity = SourceIdentity::from_relative_path("images/demo.E02").unwrap();
-    let source: DataSourceHandle = Arc::new(MemDataSource { data: segment2 });
+    let source: ByteSourceHandle = Arc::new(MemDataSource { data: segment2 });
     let image = EwfDriver::open_with_hints(
       source,
       SourceHints::new()
@@ -233,7 +232,7 @@ mod tests {
       payload: vec![],
       zero_sized: true,
     });
-    let source: DataSourceHandle = Arc::new(MemDataSource {
+    let source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_segment(1, FILE_HEADER_MAGIC_LVF, sections),
     });
 
@@ -255,7 +254,7 @@ mod tests {
       (compress_chunk(&chunk0), true),
       (compress_chunk(&chunk1), true),
     ]);
-    let source: DataSourceHandle = Arc::new(MemDataSource {
+    let source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_segment(
         1,
         FILE_HEADER_MAGIC,

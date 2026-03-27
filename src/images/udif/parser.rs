@@ -8,7 +8,7 @@ use super::{
   block_map::{ParsedBlockMaps, UdifCompressionMethod, UdifRange, parse_block_maps},
   trailer::{TRAILER_SIZE, UdifTrailer},
 };
-use crate::{DataSource, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceHandle, Error, Result};
 
 pub(super) struct ParsedUdif {
   pub trailer: UdifTrailer,
@@ -18,7 +18,7 @@ pub(super) struct ParsedUdif {
   pub has_sparse_ranges: bool,
 }
 
-pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedUdif> {
+pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedUdif> {
   let source_size = source.size()?;
   let trailer = UdifTrailer::read(source.as_ref())?;
   validate_trailer_bounds(source_size, &trailer)?;
@@ -94,7 +94,7 @@ fn validate_trailer_bounds(source_size: u64, trailer: &UdifTrailer) -> Result<()
   Ok(())
 }
 
-fn verify_data_fork_checksum(source: &dyn DataSource, trailer: &UdifTrailer) -> Result<()> {
+fn verify_data_fork_checksum(source: &dyn ByteSource, trailer: &UdifTrailer) -> Result<()> {
   let Some(expected_crc32) = trailer.stored_data_crc32() else {
     return Ok(());
   };

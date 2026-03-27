@@ -1,6 +1,6 @@
 //! NTFS boot-sector parsing and validation.
 
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 pub(crate) const BOOT_SECTOR_SIZE: usize = 512;
 pub(crate) const NTFS_OEM_ID: &[u8; 8] = b"NTFS    ";
@@ -18,7 +18,7 @@ pub struct NtfsBootSector {
 }
 
 impl NtfsBootSector {
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let bytes = source.read_bytes_at(0, BOOT_SECTOR_SIZE)?;
     Self::from_bytes(&bytes)
   }

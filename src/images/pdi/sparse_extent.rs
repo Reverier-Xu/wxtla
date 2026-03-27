@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{DataSourceHandle, Error, Result};
+use crate::{ByteSourceHandle, Error, Result};
 
 const SIGNATURE1: &[u8; 16] = b"WithoutFreeSpace";
 const SIGNATURE2: &[u8; 16] = b"WithouFreSpacExt";
@@ -12,7 +12,7 @@ const SECTOR_SIZE: u64 = 512;
 
 #[derive(Clone)]
 pub struct PdiSparseExtent {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   pub block_size: u64,
   pub extent_size: u64,
   bat: Arc<[u32]>,
@@ -20,7 +20,7 @@ pub struct PdiSparseExtent {
 
 impl PdiSparseExtent {
   pub fn open(
-    source: DataSourceHandle, extent_sector_count: u64, expected_block_size_sectors: u32,
+    source: ByteSourceHandle, extent_sector_count: u64, expected_block_size_sectors: u32,
   ) -> Result<Self> {
     let header = source.read_bytes_at(0, HEADER_SIZE)?;
     if &header[0..16] != SIGNATURE1 && &header[0..16] != SIGNATURE2 {
@@ -194,13 +194,13 @@ mod tests {
   use std::sync::Arc;
 
   use super::*;
-  use crate::DataSource;
+  use crate::ByteSource;
 
   struct MemDataSource {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -236,7 +236,7 @@ mod tests {
     let extent = PdiSparseExtent::open(
       Arc::new(MemDataSource {
         data: synthetic_sparse_extent(),
-      }) as DataSourceHandle,
+      }) as ByteSourceHandle,
       2,
       1,
     )

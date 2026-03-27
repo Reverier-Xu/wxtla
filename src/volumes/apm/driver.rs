@@ -1,10 +1,7 @@
 //! APM driver open flow.
 
 use super::{DESCRIPTOR, parser, system::ApmVolumeSystem};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  volumes::{VolumeSystem, VolumeSystemDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result};
 
 /// Driver for the Apple Partition Map scheme.
 #[derive(Debug, Default, Clone, Copy)]
@@ -17,19 +14,19 @@ impl ApmDriver {
   }
 
   /// Open an APM source.
-  pub fn open(source: DataSourceHandle) -> Result<ApmVolumeSystem> {
+  pub fn open(source: ByteSourceHandle) -> Result<ApmVolumeSystem> {
     parser::open(source)
   }
 }
 
-impl VolumeSystemDriver for ApmDriver {
+impl Driver for ApmDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
   fn open(
-    &self, source: DataSourceHandle, _hints: SourceHints<'_>,
-  ) -> Result<Box<dyn VolumeSystem>> {
+    &self, source: ByteSourceHandle, _options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
     Ok(Box::new(Self::open(source)?))
   }
 }
@@ -40,7 +37,7 @@ mod tests {
 
   use super::*;
   use crate::{
-    DataSource, Error,
+    ByteSource, Error,
     volumes::{VolumeRole, apm::type_identifiers},
   };
 
@@ -59,7 +56,7 @@ mod tests {
     }
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -75,11 +72,11 @@ mod tests {
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     Arc::new(MemDataSource::from_fixture(relative_path))
   }
 
-  fn synthetic_source(bytes: Vec<u8>) -> DataSourceHandle {
+  fn synthetic_source(bytes: Vec<u8>) -> ByteSourceHandle {
     Arc::new(MemDataSource { data: bytes })
   }
 

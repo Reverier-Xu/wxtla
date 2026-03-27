@@ -4,7 +4,7 @@ use super::{
   dynamic_header::VhdDynamicHeader,
   footer::{VhdDiskType, VhdFooter},
 };
-use crate::{DataSource, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceHandle, Error, Result};
 
 pub struct ParsedVhd {
   pub footer: VhdFooter,
@@ -19,7 +19,7 @@ pub struct VhdBatLayout {
   pub entry_count: u32,
 }
 
-pub fn parse(source: DataSourceHandle) -> Result<ParsedVhd> {
+pub fn parse(source: ByteSourceHandle) -> Result<ParsedVhd> {
   let footer = VhdFooter::read(source.as_ref())?;
   match footer.disk_type {
     VhdDiskType::Fixed => Ok(ParsedVhd {
@@ -43,7 +43,7 @@ pub fn parse(source: DataSourceHandle) -> Result<ParsedVhd> {
 }
 
 fn read_parent_locator_paths(
-  source: &dyn DataSource, header: &VhdDynamicHeader,
+  source: &dyn ByteSource, header: &VhdDynamicHeader,
 ) -> Result<Vec<String>> {
   let mut paths = Vec::new();
   for locator in &header.parent_locators {
@@ -82,7 +82,7 @@ fn decode_utf16_le_string(data: &[u8]) -> Result<String> {
     .map_err(|_| Error::InvalidFormat("vhd parent locator string is not valid UTF-16".to_string()))
 }
 
-fn read_bat(source: &dyn DataSource, header: &VhdDynamicHeader) -> Result<VhdBatLayout> {
+fn read_bat(source: &dyn ByteSource, header: &VhdDynamicHeader) -> Result<VhdBatLayout> {
   let entry_count = usize::try_from(header.block_count)
     .map_err(|_| Error::InvalidRange("vhd BAT entry count is too large".to_string()))?;
   let table_bytes = entry_count

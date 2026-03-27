@@ -1,10 +1,7 @@
 //! 7z driver open flow.
 
 use super::{DESCRIPTOR, archive::SevenZipArchive};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  archives::{Archive, ArchiveDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SevenZipDriver;
@@ -14,23 +11,27 @@ impl SevenZipDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<SevenZipArchive> {
+  pub fn open(source: ByteSourceHandle) -> Result<SevenZipArchive> {
     SevenZipArchive::open(source)
   }
 
   pub fn open_with_hints(
-    source: DataSourceHandle, hints: SourceHints<'_>,
+    source: ByteSourceHandle, hints: SourceHints<'_>,
   ) -> Result<SevenZipArchive> {
     SevenZipArchive::open_with_hints(source, hints)
   }
 }
-
-impl ArchiveDriver for SevenZipDriver {
+impl Driver for SevenZipDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Archive>> {
-    Ok(Box::new(SevenZipArchive::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(SevenZipArchive::open_with_hints(
+      source,
+      options.hints,
+    )?))
   }
 }

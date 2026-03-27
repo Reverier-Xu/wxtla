@@ -7,10 +7,10 @@ use sha1_smol::Sha1;
 
 use super::{DESCRIPTOR, IMAGE_HEADER_SIGNATURE, MARGIN_SIZE, SEGMENT_MARGIN_SIGNATURE};
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
   SourceHints,
   archives::{
-    Archive, ArchiveDirectoryEntry, ArchiveEntryId, ArchiveEntryKind, ArchiveEntryRecord,
+    Archive, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
   },
 };
 
@@ -28,8 +28,8 @@ pub struct AdfArchive {
 
 #[derive(Clone)]
 struct AdfEntry {
-  record: ArchiveEntryRecord,
-  children: Vec<ArchiveDirectoryEntry>,
+  record: NamespaceNodeRecord,
+  children: Vec<NamespaceDirectoryEntry>,
   content: Option<Arc<[u8]>>,
 }
 
@@ -51,11 +51,11 @@ struct JoinedReader<'a> {
 }
 
 impl AdfArchive {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let joined = read_segments(source, hints)?;
     let footer_base = joined
       .joined
@@ -112,10 +112,9 @@ impl AdfArchive {
     }
 
     let mut entries = vec![AdfEntry {
-      record: ArchiveEntryRecord::new(
-        ArchiveEntryId::from_u64(ROOT_ENTRY_ID),
-        ArchiveEntryKind::Directory,
-        String::new(),
+      record: NamespaceNodeRecord::new(
+        NamespaceNodeId::from_u64(ROOT_ENTRY_ID),
+        NamespaceNodeKind::Directory,
         0,
       ),
       children: Vec::new(),
@@ -179,25 +178,25 @@ impl AdfArchive {
         reader.read_bytes(value_length, true)?;
       }
 
-      let entry_id = ArchiveEntryId::from_u64(entries.len() as u64);
+      let entry_id = NamespaceNodeId::from_u64(entries.len() as u64);
       let kind = match item_type {
-        0 => ArchiveEntryKind::File,
-        5 => ArchiveEntryKind::Directory,
-        _ => ArchiveEntryKind::Special,
+        0 => NamespaceNodeKind::File,
+        5 => NamespaceNodeKind::Directory,
+        _ => NamespaceNodeKind::Special,
       };
       entries[parent_id as usize]
         .children
-        .push(ArchiveDirectoryEntry::new(
+        .push(NamespaceDirectoryEntry::new(
           name.clone(),
           entry_id.clone(),
           kind,
         ));
-      if kind == ArchiveEntryKind::Directory {
+      if kind == NamespaceNodeKind::Directory {
         folder_map.insert(block_start as u64, entry_id.clone());
       }
 
       entries.push(AdfEntry {
-        record: ArchiveEntryRecord::new(entry_id, kind, path, size),
+        record: NamespaceNodeRecord::new(entry_id, kind, size).with_path(path),
         children: Vec::new(),
         content,
       });
@@ -228,7 +227,7 @@ impl AdfArchive {
     &self.sha1_checksum
   }
 
-  pub fn find_entry_by_path(&self, path: &str) -> Option<ArchiveEntryId> {
+  pub fn find_entry_by_path(&self, path: &str) -> Option<NamespaceNodeId> {
     self
       .entries
       .iter()
@@ -242,17 +241,17 @@ impl Archive for AdfArchive {
     DESCRIPTOR
   }
 
-  fn root_entry_id(&self) -> ArchiveEntryId {
-    ArchiveEntryId::from_u64(ROOT_ENTRY_ID)
+  fn root_entry_id(&self) -> NamespaceNodeId {
+    NamespaceNodeId::from_u64(ROOT_ENTRY_ID)
   }
 
-  fn entry(&self, entry_id: &ArchiveEntryId) -> Result<ArchiveEntryRecord> {
+  fn entry(&self, entry_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     Ok(self.entry_ref(entry_id)?.record.clone())
   }
 
-  fn read_dir(&self, directory_id: &ArchiveEntryId) -> Result<Vec<ArchiveDirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let entry = self.entry_ref(directory_id)?;
-    if entry.record.kind != ArchiveEntryKind::Directory {
+    if entry.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::InvalidFormat(
         "ad1 directory reads require a directory entry".to_string(),
       ));
@@ -260,9 +259,9 @@ impl Archive for AdfArchive {
     Ok(entry.children.clone())
   }
 
-  fn open_file(&self, entry_id: &ArchiveEntryId) -> Result<DataSourceHandle> {
+  fn open_file(&self, entry_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let entry = self.entry_ref(entry_id)?;
-    if entry.record.kind != ArchiveEntryKind::File {
+    if entry.record.kind != NamespaceNodeKind::File {
       return Err(Error::InvalidFormat(
         "ad1 file opens require a regular file entry".to_string(),
       ));
@@ -270,12 +269,12 @@ impl Archive for AdfArchive {
     let content = entry.content.clone().ok_or_else(|| {
       Error::InvalidFormat("ad1 file entries must carry content bytes".to_string())
     })?;
-    Ok(Arc::new(BytesDataSource { data: content }) as DataSourceHandle)
+    Ok(Arc::new(BytesDataSource { data: content }) as ByteSourceHandle)
   }
 }
 
 impl AdfArchive {
-  fn entry_ref(&self, entry_id: &ArchiveEntryId) -> Result<&AdfEntry> {
+  fn entry_ref(&self, entry_id: &NamespaceNodeId) -> Result<&AdfEntry> {
     let index = usize::try_from(entry_id_to_u64(entry_id)?)
       .map_err(|_| Error::InvalidRange("ad1 entry index is too large".to_string()))?;
     self.entries.get(index).ok_or_else(|| {
@@ -287,7 +286,7 @@ impl AdfArchive {
   }
 }
 
-fn read_segments(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<SegmentPayload> {
+fn read_segments(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<SegmentPayload> {
   let first_margin = source.read_bytes_at(0, MARGIN_SIZE)?;
   let first = Ad1Margin::from_bytes(&first_margin)?;
   if first.segment_number != 1 {
@@ -423,7 +422,7 @@ fn read_i64_le(data: &[u8]) -> Result<i64> {
   })?))
 }
 
-fn entry_id_to_u64(entry_id: &ArchiveEntryId) -> Result<u64> {
+fn entry_id_to_u64(entry_id: &NamespaceNodeId) -> Result<u64> {
   let bytes: [u8; 8] = entry_id.as_bytes().try_into().map_err(|_| {
     Error::InvalidFormat("ad1 archive entry identifiers must be native u64 values".to_string())
   })?;
@@ -485,7 +484,7 @@ struct BytesDataSource {
   data: Arc<[u8]>,
 }
 
-impl DataSource for BytesDataSource {
+impl ByteSource for BytesDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     let offset = usize::try_from(offset)
       .map_err(|_| Error::InvalidRange("ad1 file offset is too large".to_string()))?;
@@ -501,8 +500,8 @@ impl DataSource for BytesDataSource {
     Ok(self.data.len() as u64)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
   }
 
   fn telemetry_name(&self) -> &'static str {
@@ -541,7 +540,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -559,16 +558,16 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &crate::RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &crate::RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -676,3 +675,5 @@ mod tests {
     assert!(matches!(result, Err(Error::NotFound(_))));
   }
 }
+
+crate::archives::driver::impl_archive_data_source!(AdfArchive);

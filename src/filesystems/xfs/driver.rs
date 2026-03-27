@@ -1,8 +1,5 @@
 use super::{DESCRIPTOR, filesystem::XfsFileSystem};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  filesystems::{FileSystem, FileSystemDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct XfsDriver;
@@ -12,17 +9,22 @@ impl XfsDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<XfsFileSystem> {
+  pub fn open(source: ByteSourceHandle) -> Result<XfsFileSystem> {
     XfsFileSystem::open(source)
   }
 }
 
-impl FileSystemDriver for XfsDriver {
+impl Driver for XfsDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn FileSystem>> {
-    Ok(Box::new(XfsFileSystem::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(XfsFileSystem::open_with_hints(
+      source,
+      options.hints,
+    )?))
   }
 }

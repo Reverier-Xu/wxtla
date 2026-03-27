@@ -7,9 +7,9 @@ use std::{
 
 use super::DESCRIPTOR;
 use crate::{
-  DataSourceHandle, Error, Result, SliceDataSource, SourceHints,
+  ByteSourceHandle, Error, Result, SliceDataSource, SourceHints,
   archives::{
-    Archive, ArchiveDirectoryEntry, ArchiveEntryId, ArchiveEntryKind, ArchiveEntryRecord,
+    Archive, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
   },
 };
 
@@ -30,15 +30,15 @@ const TYPE_GNU_LONG_NAME: u8 = b'L';
 const TYPE_GNU_LONG_LINK: u8 = b'K';
 
 pub struct TarArchive {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   entries: Vec<TarEntry>,
-  path_to_id: HashMap<String, ArchiveEntryId>,
+  path_to_id: HashMap<String, NamespaceNodeId>,
 }
 
 #[derive(Clone)]
 struct TarEntry {
-  record: ArchiveEntryRecord,
-  children: Vec<ArchiveDirectoryEntry>,
+  record: NamespaceNodeRecord,
+  children: Vec<NamespaceDirectoryEntry>,
   data: TarEntryData,
 }
 
@@ -51,7 +51,7 @@ enum TarEntryData {
 
 #[derive(Clone)]
 struct TarEntryBuilder {
-  kind: ArchiveEntryKind,
+  kind: NamespaceNodeKind,
   size: u64,
   data: TarEntryData,
 }
@@ -66,11 +66,11 @@ pub(crate) struct TarHeader {
 }
 
 impl TarArchive {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let source_size = source.size()?;
     let mut offset = 0u64;
     let mut pending_long_name = None::<String>;
@@ -151,7 +151,7 @@ impl TarArchive {
             .unwrap_or(header.size);
 
           let kind = classify_kind(header.typeflag);
-          let is_dir = kind == ArchiveEntryKind::Directory;
+          let is_dir = kind == NamespaceNodeKind::Directory;
           path = normalize_path(&path, is_dir)?;
           link_name = normalize_link_path(&link_name)?;
           if path.is_empty() {
@@ -199,15 +199,14 @@ impl TarArchive {
     let mut ordered_paths = builders.keys().cloned().collect::<Vec<_>>();
     ordered_paths.sort();
     for (index, path) in ordered_paths.iter().enumerate() {
-      path_to_id.insert(path.clone(), ArchiveEntryId::from_u64(index as u64 + 1));
+      path_to_id.insert(path.clone(), NamespaceNodeId::from_u64(index as u64 + 1));
     }
 
     let mut entries = Vec::with_capacity(ordered_paths.len() + 1);
     entries.push(TarEntry {
-      record: ArchiveEntryRecord::new(
-        ArchiveEntryId::from_u64(ROOT_ENTRY_ID),
-        ArchiveEntryKind::Directory,
-        String::new(),
+      record: NamespaceNodeRecord::new(
+        NamespaceNodeId::from_u64(ROOT_ENTRY_ID),
+        NamespaceNodeKind::Directory,
         0,
       ),
       children: Vec::new(),
@@ -222,7 +221,7 @@ impl TarArchive {
         Error::InvalidFormat(format!("missing tar entry identifier for path: {path}"))
       })?;
       entries.push(TarEntry {
-        record: ArchiveEntryRecord::new(id, builder.kind, path.clone(), builder.size),
+        record: NamespaceNodeRecord::new(id, builder.kind, builder.size).with_path(path.clone()),
         children: Vec::new(),
         data: builder.data.clone(),
       });
@@ -247,7 +246,7 @@ impl TarArchive {
       };
       entries[parent_index]
         .children
-        .push(ArchiveDirectoryEntry::new(name, child_id, child_kind));
+        .push(NamespaceDirectoryEntry::new(name, child_id, child_kind));
     }
     for entry in &mut entries {
       entry
@@ -262,11 +261,11 @@ impl TarArchive {
     })
   }
 
-  pub fn find_entry_by_path(&self, path: &str) -> Option<ArchiveEntryId> {
+  pub fn find_entry_by_path(&self, path: &str) -> Option<NamespaceNodeId> {
     self.path_to_id.get(path).cloned()
   }
 
-  fn entry_ref(&self, entry_id: &ArchiveEntryId) -> Result<&TarEntry> {
+  fn entry_ref(&self, entry_id: &NamespaceNodeId) -> Result<&TarEntry> {
     let index = entry_id_to_index(entry_id)?;
     self
       .entries
@@ -275,8 +274,8 @@ impl TarArchive {
   }
 
   fn open_file_resolved(
-    &self, entry_id: &ArchiveEntryId, seen: &mut HashSet<usize>,
-  ) -> Result<DataSourceHandle> {
+    &self, entry_id: &NamespaceNodeId, seen: &mut HashSet<usize>,
+  ) -> Result<ByteSourceHandle> {
     let index = entry_id_to_index(entry_id)?;
     if !seen.insert(index) {
       return Err(Error::InvalidFormat(
@@ -286,7 +285,7 @@ impl TarArchive {
     let entry = self.entry_ref(entry_id)?;
     match &entry.data {
       TarEntryData::File { offset, size } => {
-        Ok(Arc::new(SliceDataSource::new(self.source.clone(), *offset, *size)) as DataSourceHandle)
+        Ok(Arc::new(SliceDataSource::new(self.source.clone(), *offset, *size)) as ByteSourceHandle)
       }
       TarEntryData::HardLink { target_path } => {
         let target = self
@@ -307,17 +306,17 @@ impl Archive for TarArchive {
     DESCRIPTOR
   }
 
-  fn root_entry_id(&self) -> ArchiveEntryId {
-    ArchiveEntryId::from_u64(ROOT_ENTRY_ID)
+  fn root_entry_id(&self) -> NamespaceNodeId {
+    NamespaceNodeId::from_u64(ROOT_ENTRY_ID)
   }
 
-  fn entry(&self, entry_id: &ArchiveEntryId) -> Result<ArchiveEntryRecord> {
+  fn entry(&self, entry_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     Ok(self.entry_ref(entry_id)?.record.clone())
   }
 
-  fn read_dir(&self, directory_id: &ArchiveEntryId) -> Result<Vec<ArchiveDirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let entry = self.entry_ref(directory_id)?;
-    if entry.record.kind != ArchiveEntryKind::Directory {
+    if entry.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::InvalidFormat(
         "tar directory reads require a directory entry".to_string(),
       ));
@@ -325,9 +324,9 @@ impl Archive for TarArchive {
     Ok(entry.children.clone())
   }
 
-  fn open_file(&self, entry_id: &ArchiveEntryId) -> Result<DataSourceHandle> {
+  fn open_file(&self, entry_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let entry = self.entry_ref(entry_id)?;
-    if !matches!(entry.record.kind, ArchiveEntryKind::File) {
+    if !matches!(entry.record.kind, NamespaceNodeKind::File) {
       return Err(Error::InvalidFormat(
         "tar file opens require a regular file or hard link entry".to_string(),
       ));
@@ -418,13 +417,13 @@ fn parse_pax_records(data: &[u8]) -> Result<BTreeMap<String, String>> {
   Ok(records)
 }
 
-fn classify_kind(typeflag: u8) -> ArchiveEntryKind {
+fn classify_kind(typeflag: u8) -> NamespaceNodeKind {
   match typeflag {
-    0 | TYPE_FILE | TYPE_CONTIGUOUS | TYPE_HARD_LINK => ArchiveEntryKind::File,
-    TYPE_DIR => ArchiveEntryKind::Directory,
-    TYPE_SYMLINK => ArchiveEntryKind::Symlink,
-    TYPE_CHAR | TYPE_BLOCK | TYPE_FIFO => ArchiveEntryKind::Special,
-    _ => ArchiveEntryKind::Special,
+    0 | TYPE_FILE | TYPE_CONTIGUOUS | TYPE_HARD_LINK => NamespaceNodeKind::File,
+    TYPE_DIR => NamespaceNodeKind::Directory,
+    TYPE_SYMLINK => NamespaceNodeKind::Symlink,
+    TYPE_CHAR | TYPE_BLOCK | TYPE_FIFO => NamespaceNodeKind::Special,
+    _ => NamespaceNodeKind::Special,
   }
 }
 
@@ -506,11 +505,11 @@ fn ensure_parent_directories(
     let entry = builders
       .entry(parent.to_string())
       .or_insert_with(|| TarEntryBuilder {
-        kind: ArchiveEntryKind::Directory,
+        kind: NamespaceNodeKind::Directory,
         size: 0,
         data: TarEntryData::None,
       });
-    if entry.kind != ArchiveEntryKind::Directory {
+    if entry.kind != NamespaceNodeKind::Directory {
       return Err(Error::InvalidFormat(
         "tar parent path collides with a non-directory entry".to_string(),
       ));
@@ -530,7 +529,7 @@ fn relative_name(path: &str) -> String {
     .map_or_else(|| path.to_string(), |(_, name)| name.to_string())
 }
 
-fn entry_id_to_index(entry_id: &ArchiveEntryId) -> Result<usize> {
+fn entry_id_to_index(entry_id: &NamespaceNodeId) -> Result<usize> {
   let bytes: [u8; 8] = entry_id.as_bytes().try_into().map_err(|_| {
     Error::InvalidFormat("tar archive entry identifiers must be native u64 values".to_string())
   })?;
@@ -556,13 +555,13 @@ mod tests {
   use std::{path::Path, sync::Arc};
 
   use super::*;
-  use crate::DataSource;
+  use crate::ByteSource;
 
   struct MemDataSource {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -579,7 +578,7 @@ mod tests {
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -670,7 +669,7 @@ mod tests {
     let root = archive.read_dir(&archive.root_entry_id()).unwrap();
     assert_eq!(root.len(), 2);
     assert_eq!(root[0].name, "dir");
-    assert_eq!(root[1].kind, ArchiveEntryKind::Symlink);
+    assert_eq!(root[1].kind, NamespaceNodeKind::Symlink);
 
     let hello_id = archive.find_entry_by_path("dir/hello.txt").unwrap();
     let hello_data = archive.open_file(&hello_id).unwrap().read_all().unwrap();
@@ -681,7 +680,7 @@ mod tests {
   fn synthesizes_missing_parent_directories() {
     let archive = TarArchive::open(Arc::new(MemDataSource {
       data: synthetic_tar([("a/b/c.txt".to_string(), TYPE_FILE, b"nested".to_vec(), None)]),
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
     .unwrap();
 
     let root = archive.read_dir(&archive.root_entry_id()).unwrap();
@@ -712,7 +711,7 @@ mod tests {
     ]);
     let archive = TarArchive::open(Arc::new(MemDataSource {
       data: archive_bytes,
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
     .unwrap();
 
     let file_id = archive.find_entry_by_path(long_path).unwrap();
@@ -746,7 +745,7 @@ mod tests {
     ]);
     let archive = TarArchive::open(Arc::new(MemDataSource {
       data: archive_bytes,
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
     .unwrap();
 
     let file_id = archive.find_entry_by_path(long_path).unwrap();
@@ -764,8 +763,10 @@ mod tests {
 
     let result = TarArchive::open(Arc::new(MemDataSource {
       data: archive_bytes,
-    }) as DataSourceHandle);
+    }) as ByteSourceHandle);
 
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
 }
+
+crate::archives::driver::impl_archive_data_source!(TarArchive);

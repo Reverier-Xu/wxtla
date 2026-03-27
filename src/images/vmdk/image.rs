@@ -17,7 +17,7 @@ use super::{
   },
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, RelatedPathBuf,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, RelatedPathBuf,
   RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SliceDataSource,
   SourceHints, SourceIdentity, images::Image,
 };
@@ -25,6 +25,7 @@ use crate::{
 const MAX_GRAIN_CACHE_ENTRIES: usize = 64;
 const GRAIN_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
+#[allow(dead_code)]
 pub struct VmdkImage {
   descriptor: VmdkDescriptor,
   size: u64,
@@ -40,11 +41,11 @@ enum VmdkBackend {
 }
 
 struct VmdkSparseBackend {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   header: VmdkSparseHeader,
   grain_directory: Arc<[u32]>,
   grain_cache: VmdkCache<Vec<u8>>,
-  parent_source: Option<DataSourceHandle>,
+  parent_source: Option<ByteSourceHandle>,
 }
 
 struct VmdkDescriptorBackend {
@@ -52,10 +53,10 @@ struct VmdkDescriptorBackend {
 }
 
 struct VmdkCowdBackend {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   header: VmdkCowdHeader,
   grain_directory: Arc<[u32]>,
-  parent_source: Option<DataSourceHandle>,
+  parent_source: Option<ByteSourceHandle>,
 }
 
 struct VmdkResolvedExtent {
@@ -65,16 +66,16 @@ struct VmdkResolvedExtent {
 }
 
 enum VmdkResolvedExtentKind {
-  Source(DataSourceHandle),
+  Source(ByteSourceHandle),
   Zero,
 }
 
 impl VmdkImage {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     if is_sparse_extent(source.as_ref())? {
       let parsed = parse_sparse_extent(source.clone())?;
       let descriptor = parsed.embedded_descriptor.clone().ok_or_else(|| {
@@ -109,8 +110,8 @@ impl VmdkImage {
   }
 
   fn from_sparse_parts(
-    source: DataSourceHandle, header: VmdkSparseHeader, grain_directory: Arc<[u32]>,
-    descriptor: VmdkDescriptor, parent_source: Option<DataSourceHandle>,
+    source: ByteSourceHandle, header: VmdkSparseHeader, grain_directory: Arc<[u32]>,
+    descriptor: VmdkDescriptor, parent_source: Option<ByteSourceHandle>,
   ) -> Result<Self> {
     let has_backing_chain = parent_source.is_some();
     let grain_cache_capacity = bounded_cache_capacity(
@@ -136,7 +137,7 @@ impl VmdkImage {
   }
 
   fn from_cowd_parsed(
-    source: DataSourceHandle, parsed: ParsedCowdVmdk, parent_source: Option<DataSourceHandle>,
+    source: ByteSourceHandle, parsed: ParsedCowdVmdk, parent_source: Option<ByteSourceHandle>,
   ) -> Result<Self> {
     let size = parsed.header.virtual_size_bytes()?;
     let descriptor = VmdkDescriptor {
@@ -202,7 +203,7 @@ impl VmdkImage {
           parent.clone(),
           guest_offset,
           extent_size,
-        )) as DataSourceHandle
+        )) as ByteSourceHandle
       });
       let kind = match extent.extent_type {
         VmdkExtentType::Zero => {
@@ -608,7 +609,7 @@ impl VmdkImage {
   }
 }
 
-impl DataSource for VmdkImage {
+impl ByteSource for VmdkImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     match &self.backend {
       VmdkBackend::Sparse(backend) => Self::read_sparse_at(backend, offset, self.size, buf),
@@ -621,7 +622,7 @@ impl DataSource for VmdkImage {
     Ok(self.size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     let preferred_chunk_size = match &self.backend {
       VmdkBackend::Sparse(backend) => {
         usize::try_from(backend.header.grain_size_bytes().unwrap_or(64 * 1024)).unwrap_or(64 * 1024)
@@ -631,7 +632,7 @@ impl DataSource for VmdkImage {
       }
       VmdkBackend::Descriptor(_) => 64 * 1024,
     };
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
       .with_preferred_chunk_size(preferred_chunk_size)
   }
 
@@ -662,18 +663,18 @@ impl Image for VmdkImage {
   }
 }
 
-fn is_sparse_extent(source: &dyn DataSource) -> Result<bool> {
+fn is_sparse_extent(source: &dyn ByteSource) -> Result<bool> {
   let mut magic = [0u8; 4];
   Ok(source.read_at(0, &mut magic)? == magic.len() && &magic == constants::SPARSE_HEADER_MAGIC)
 }
 
-fn is_cowd_extent(source: &dyn DataSource) -> Result<bool> {
+fn is_cowd_extent(source: &dyn ByteSource) -> Result<bool> {
   let mut magic = [0u8; 4];
   Ok(source.read_at(0, &mut magic)? == magic.len() && &magic == constants::COWD_HEADER_MAGIC)
 }
 
 fn fill_from_parent_or_zero(
-  parent_source: Option<&DataSourceHandle>, offset: u64, buf: &mut [u8],
+  parent_source: Option<&ByteSourceHandle>, offset: u64, buf: &mut [u8],
 ) -> Result<()> {
   if let Some(parent_source) = parent_source {
     parent_source.read_exact_at(offset, buf)?;
@@ -760,7 +761,7 @@ fn validate_monolithic_sparse_descriptor(
 
 fn resolve_descriptor_parent_source(
   descriptor: &VmdkDescriptor, hints: SourceHints<'_>,
-) -> Result<Option<DataSourceHandle>> {
+) -> Result<Option<ByteSourceHandle>> {
   let has_parent =
     descriptor.parent_content_id.is_some() || descriptor.parent_file_name_hint.is_some();
   if !has_parent {
@@ -789,12 +790,12 @@ fn resolve_descriptor_parent_source(
     descriptor.parent_content_id,
   )?;
 
-  Ok(Some(parent_image as DataSourceHandle))
+  Ok(Some(parent_image as ByteSourceHandle))
 }
 
 fn resolve_cowd_parent_source(
   header: &VmdkCowdHeader, hints: SourceHints<'_>,
-) -> Result<Option<DataSourceHandle>> {
+) -> Result<Option<ByteSourceHandle>> {
   if header.parent_generation == 0 && header.parent_path.is_empty() {
     return Ok(None);
   }
@@ -823,7 +824,7 @@ fn resolve_cowd_parent_source(
   };
   let parent_image = resolve_parent_image(resolver, identity, parent_hint, expected)?;
 
-  Ok(Some(parent_image as DataSourceHandle))
+  Ok(Some(parent_image as ByteSourceHandle))
 }
 
 fn resolve_flat_extent(
@@ -856,13 +857,13 @@ fn resolve_flat_extent(
   }
 
   Ok(VmdkResolvedExtentKind::Source(
-    Arc::new(SliceDataSource::new(source, base_offset, extent_size)) as DataSourceHandle,
+    Arc::new(SliceDataSource::new(source, base_offset, extent_size)) as ByteSourceHandle,
   ))
 }
 
 fn resolve_sparse_extent(
   extent: &VmdkDescriptorExtent, resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity,
-  parent_source: Option<DataSourceHandle>,
+  parent_source: Option<ByteSourceHandle>,
 ) -> Result<VmdkResolvedExtentKind> {
   if extent.start_sector != 0 {
     return Err(Error::InvalidFormat(
@@ -908,13 +909,13 @@ fn resolve_sparse_extent(
     parent_source,
   )?;
   Ok(VmdkResolvedExtentKind::Source(
-    Arc::new(image) as DataSourceHandle
+    Arc::new(image) as ByteSourceHandle
   ))
 }
 
 fn resolve_vmfs_sparse_extent(
   extent: &VmdkDescriptorExtent, resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity,
-  parent_source: Option<DataSourceHandle>,
+  parent_source: Option<ByteSourceHandle>,
 ) -> Result<VmdkResolvedExtentKind> {
   if extent.start_sector != 0 {
     return Err(Error::InvalidFormat(
@@ -941,7 +942,7 @@ fn resolve_vmfs_sparse_extent(
   }
   let image = VmdkImage::from_cowd_parsed(source, parsed, parent_source)?;
   Ok(VmdkResolvedExtentKind::Source(
-    Arc::new(image) as DataSourceHandle
+    Arc::new(image) as ByteSourceHandle
   ))
 }
 
@@ -1001,7 +1002,7 @@ fn resolve_parent_image(
 
 fn resolve_extent_source(
   resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity, extent_name: &str,
-) -> Result<Option<(DataSourceHandle, RelatedPathBuf)>> {
+) -> Result<Option<(ByteSourceHandle, RelatedPathBuf)>> {
   resolve_named_source(
     resolver,
     identity,
@@ -1013,7 +1014,7 @@ fn resolve_extent_source(
 fn resolve_named_source(
   resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity, name: &str,
   purpose: RelatedSourcePurpose,
-) -> Result<Option<(DataSourceHandle, RelatedPathBuf)>> {
+) -> Result<Option<(ByteSourceHandle, RelatedPathBuf)>> {
   if let Ok(relative) = RelatedPathBuf::from_relative_path(name)
     && let Some(parent) = identity.logical_path().parent()
   {
@@ -1045,7 +1046,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -1063,16 +1064,16 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -1186,10 +1187,10 @@ mod tests {
 
   fn build_sparse_descriptor_file(
     file_name: &str, create_type: &str, content_id: u32, parent: Option<(&str, u32)>,
-  ) -> DataSourceHandle {
+  ) -> ByteSourceHandle {
     Arc::new(MemDataSource {
       data: build_sparse_descriptor_text(file_name, create_type, content_id, parent),
-    }) as DataSourceHandle
+    }) as ByteSourceHandle
   }
 
   fn build_cowd_bytes(
@@ -1247,7 +1248,7 @@ mod tests {
     image
   }
 
-  fn build_cowd_descriptor_file(content_id: u32, parent: Option<(&str, u32)>) -> DataSourceHandle {
+  fn build_cowd_descriptor_file(content_id: u32, parent: Option<(&str, u32)>) -> ByteSourceHandle {
     Arc::new(MemDataSource {
       data: format!(
         "# Disk DescriptorFile\nversion=1\nCID={content_id:08x}\nparentCID={}\ncreateType=\"vmfsSparse\"\n{}\n# Extent description\nRW {} VMFSSPARSE \"child.cowd\"\n\n# The Disk Data Base\n#DDB\n",
@@ -1258,7 +1259,7 @@ mod tests {
         TEST_CAPACITY_SECTORS,
       )
       .into_bytes(),
-    }) as DataSourceHandle
+    }) as ByteSourceHandle
   }
 
   fn build_streamoptimized_sparse_bytes(
@@ -1368,7 +1369,7 @@ mod tests {
   fn reads_streamoptimized_sparse_with_markers_and_footer() {
     let stream = Arc::new(MemDataSource {
       data: build_streamoptimized_sparse_bytes("stream.vmdk", 0x1234_5678, test_grain(b'T')),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
 
     let image = VmdkImage::open(stream).unwrap();
     let header = image.header().unwrap();
@@ -1493,10 +1494,10 @@ createType="vmfsrdmp"
 RW 1 VMFSPASSTHROUGHRAWDEVICEMAP "part.bin" 0
 "#
       .to_vec(),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let extent = Arc::new(MemDataSource {
       data: vec![b'R'; 512],
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([("vmdk/part.bin".to_string(), extent)]),
     };
@@ -1527,13 +1528,13 @@ RW 1 ZERO
 RW 1 FLAT "part2.bin" 0
 "#
       .to_vec(),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let part1 = Arc::new(MemDataSource {
       data: vec![b'A'; 512],
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let part2 = Arc::new(MemDataSource {
       data: vec![b'B'; 512],
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([
         ("vmdk/part1.bin".to_string(), part1),
@@ -1571,13 +1572,13 @@ NOACCESS 1 ZERO
 RW 1 FLAT "part2.bin" 0
 "#
       .to_vec(),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let part1 = Arc::new(MemDataSource {
       data: vec![b'A'; 512],
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let part2 = Arc::new(MemDataSource {
       data: vec![b'B'; 512],
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([
         ("vmdk/part1.bin".to_string(), part1),
@@ -1612,7 +1613,7 @@ RW 1 FLAT "part2.bin" 0
         None,
         [Some(test_grain(b'P')), Some(test_grain(b'Q'))],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let child = Arc::new(MemDataSource {
       data: build_sparse_extent_bytes(
         "child.vmdk",
@@ -1622,7 +1623,7 @@ RW 1 FLAT "part2.bin" 0
         Some(("parent.vmdk", 0x1111_1111)),
         [Some(test_grain(b'C')), None],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([("vmdk/parent.vmdk".to_string(), parent)]),
     };
@@ -1654,7 +1655,7 @@ RW 1 FLAT "part2.bin" 0
         None,
         [Some(test_grain(b'A')), Some(test_grain(b'B'))],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let child_extent = Arc::new(MemDataSource {
       data: build_sparse_extent_bytes(
         "child-s001.vmdk",
@@ -1664,7 +1665,7 @@ RW 1 FLAT "part2.bin" 0
         None,
         [None, Some(test_grain(b'S'))],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let descriptor = build_sparse_descriptor_file(
       "child-s001.vmdk",
       "twoGbMaxExtentSparse",
@@ -1706,14 +1707,14 @@ RW 1 FLAT "part2.bin" 0
         None,
         [Some(test_grain(b'R')), Some(test_grain(b'S'))],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let child = Arc::new(MemDataSource {
       data: build_cowd_bytes(
         0x6666_6666,
         Some(("parent.cowd", 0x5555_5555)),
         [Some(test_grain(b'C')), None],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([("vmdk/parent.cowd".to_string(), parent)]),
     };
@@ -1742,10 +1743,10 @@ RW 1 FLAT "part2.bin" 0
         None,
         [Some(test_grain(b'P')), Some(test_grain(b'Q'))],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let child_extent = Arc::new(MemDataSource {
       data: build_cowd_bytes(0x8888_8888, None, [None, Some(test_grain(b'Z'))]),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let descriptor = build_cowd_descriptor_file(0x8888_8888, Some(("parent.cowd", 0x7777_7777)));
     let resolver = Resolver {
       files: HashMap::from([
@@ -1808,7 +1809,7 @@ RW 1 FLAT "part2.bin" 0
         None,
         [Some(test_grain(b'P')), Some(test_grain(b'Q'))],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let child = Arc::new(MemDataSource {
       data: build_sparse_extent_bytes(
         "child.vmdk",
@@ -1818,7 +1819,7 @@ RW 1 FLAT "part2.bin" 0
         Some(("parent.vmdk", 0x9999_9999)),
         [Some(test_grain(b'C')), None],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([("vmdk/parent.vmdk".to_string(), parent)]),
     };
@@ -1858,14 +1859,14 @@ RW 1 FLAT "part2.bin" 0
         None,
         [Some(test_grain(b'P')), Some(test_grain(b'Q'))],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let child = Arc::new(MemDataSource {
       data: build_cowd_bytes(
         0xCDCD_CCCD,
         Some(("parent.cowd", 0x1111_1111)),
         [Some(test_grain(b'C')), None],
       ),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([("vmdk/parent.cowd".to_string(), parent)]),
     };
@@ -1881,3 +1882,5 @@ RW 1 FLAT "part2.bin" 0
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
 }
+
+crate::images::driver::impl_image_data_source!(VmdkImage);

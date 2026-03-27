@@ -2,10 +2,10 @@
 
 use std::{fmt, sync::Arc};
 
-use super::{DataSource, Error, Result};
+use super::{ByteSource, Error, Result};
 
 /// Shared handle to a data source.
-pub type DataSourceHandle = Arc<dyn DataSource>;
+pub type ByteSourceHandle = Arc<dyn ByteSource>;
 
 /// Lexical relative path used to look up parser-related sources.
 ///
@@ -286,7 +286,7 @@ impl RelatedSourceRequest {
 /// Adapter interface for resolving parser-related sources.
 pub trait RelatedSourceResolver: Send + Sync {
   /// Resolve a parser-related source within the resolver's own scope.
-  fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>>;
+  fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>>;
 
   /// Return a stable label for tracing and diagnostics.
   fn telemetry_name(&self) -> &'static str {

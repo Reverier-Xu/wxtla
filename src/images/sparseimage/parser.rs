@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use super::header::{HEADER_BLOCK_SIZE, SparseImageHeader};
-use crate::{DataSourceHandle, Error, Result};
+use crate::{ByteSourceHandle, Error, Result};
 
 pub(super) struct ParsedSparseImage {
   pub header: SparseImageHeader,
@@ -13,7 +13,7 @@ pub(super) struct ParsedSparseImage {
   pub has_sparse_bands: bool,
 }
 
-pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedSparseImage> {
+pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedSparseImage> {
   let source_size = source.size()?;
   let (header, header_block) = SparseImageHeader::read(source.as_ref())?;
   let media_size = header.media_size()?;

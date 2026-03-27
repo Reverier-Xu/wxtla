@@ -13,7 +13,7 @@ use super::{Error, Result};
 ///
 /// This trait is intentionally path-agnostic. Host path discovery and related
 /// resource resolution belong in adapter layers above the parser core.
-pub trait DataSource: Send + Sync {
+pub trait ByteSource: Send + Sync {
   /// Read bytes starting at `offset` into `buf`.
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize>;
 
@@ -21,8 +21,8 @@ pub trait DataSource: Send + Sync {
   fn size(&self) -> Result<u64>;
 
   /// Describe the backend's read behavior.
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::default()
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::default()
   }
 
   /// Return a stable label for tracing and diagnostics.
@@ -90,7 +90,7 @@ impl BytesDataSource {
   }
 }
 
-impl DataSource for BytesDataSource {
+impl ByteSource for BytesDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     let Ok(offset) = usize::try_from(offset) else {
       return Ok(0);
@@ -108,8 +108,8 @@ impl DataSource for BytesDataSource {
     Ok(self.bytes.len() as u64)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
   }
 
   fn telemetry_name(&self) -> &'static str {
@@ -132,7 +132,7 @@ impl FileDataSource {
   }
 }
 
-impl DataSource for FileDataSource {
+impl ByteSource for FileDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     read_file_at(&self.file, offset, buf)
   }
@@ -141,8 +141,8 @@ impl DataSource for FileDataSource {
     Ok(self.size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
   }
 
   fn telemetry_name(&self) -> &'static str {
@@ -175,7 +175,7 @@ fn read_file_at(file: &File, offset: u64, buf: &mut [u8]) -> Result<usize> {
 
 /// Whether the backing source can serve reads concurrently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataSourceReadConcurrency {
+pub enum ByteSourceReadConcurrency {
   /// The backend has not declared its concurrency model.
   Unknown,
   /// Reads are effectively serialized by the backend.
@@ -186,7 +186,7 @@ pub enum DataSourceReadConcurrency {
 
 /// Relative cost of moving between offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataSourceSeekCost {
+pub enum ByteSourceSeekCost {
   /// The backend has not declared its seek characteristics.
   Unknown,
   /// Seeking is cheap enough to treat reads as random-access friendly.
@@ -197,19 +197,19 @@ pub enum DataSourceSeekCost {
 
 /// Backend capabilities that inform concurrent readers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DataSourceCapabilities {
+pub struct ByteSourceCapabilities {
   /// Whether the backend can satisfy reads in parallel.
-  pub read_concurrency: DataSourceReadConcurrency,
+  pub read_concurrency: ByteSourceReadConcurrency,
   /// Whether frequent offset changes are cheap.
-  pub seek_cost: DataSourceSeekCost,
+  pub seek_cost: ByteSourceSeekCost,
   /// Optional chunk-size hint for high-throughput callers.
   pub preferred_chunk_size: Option<usize>,
 }
 
-impl DataSourceCapabilities {
+impl ByteSourceCapabilities {
   /// Construct a capability descriptor.
   pub const fn new(
-    read_concurrency: DataSourceReadConcurrency, seek_cost: DataSourceSeekCost,
+    read_concurrency: ByteSourceReadConcurrency, seek_cost: ByteSourceSeekCost,
   ) -> Self {
     Self {
       read_concurrency,
@@ -219,13 +219,13 @@ impl DataSourceCapabilities {
   }
 
   /// Construct capabilities for a serialized backend.
-  pub const fn serialized(seek_cost: DataSourceSeekCost) -> Self {
-    Self::new(DataSourceReadConcurrency::Serialized, seek_cost)
+  pub const fn serialized(seek_cost: ByteSourceSeekCost) -> Self {
+    Self::new(ByteSourceReadConcurrency::Serialized, seek_cost)
   }
 
   /// Construct capabilities for a concurrent backend.
-  pub const fn concurrent(seek_cost: DataSourceSeekCost) -> Self {
-    Self::new(DataSourceReadConcurrency::Concurrent, seek_cost)
+  pub const fn concurrent(seek_cost: ByteSourceSeekCost) -> Self {
+    Self::new(ByteSourceReadConcurrency::Concurrent, seek_cost)
   }
 
   /// Attach an optional preferred chunk size.
@@ -235,24 +235,24 @@ impl DataSourceCapabilities {
   }
 }
 
-impl Default for DataSourceCapabilities {
+impl Default for ByteSourceCapabilities {
   fn default() -> Self {
     Self::new(
-      DataSourceReadConcurrency::Unknown,
-      DataSourceSeekCost::Unknown,
+      ByteSourceReadConcurrency::Unknown,
+      ByteSourceSeekCost::Unknown,
     )
   }
 }
 
 /// Shared statistics handle for observed read activity.
 #[derive(Debug, Clone, Default)]
-pub struct DataSourceReadStats {
+pub struct ByteSourceReadStats {
   inner: Arc<Mutex<DataSourceReadStatsState>>,
 }
 
 /// Immutable read statistics snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DataSourceReadStatsSnapshot {
+pub struct ByteSourceReadStatsSnapshot {
   /// Number of read requests issued.
   pub read_count: u64,
   /// Total bytes returned across all reads.
@@ -285,7 +285,7 @@ struct DataSourceReadStatsState {
   last_len: usize,
 }
 
-impl DataSourceReadStats {
+impl ByteSourceReadStats {
   fn record_read(&self, offset: u64, len: usize, started_at: Instant) {
     let mut state = self
       .inner
@@ -311,7 +311,7 @@ impl DataSourceReadStats {
   }
 
   /// Capture the current statistics snapshot.
-  pub fn snapshot(&self) -> DataSourceReadStatsSnapshot {
+  pub fn snapshot(&self) -> ByteSourceReadStatsSnapshot {
     let state = self
       .inner
       .lock()
@@ -328,7 +328,7 @@ impl DataSourceReadStats {
       state.total_read_micros / u128::from(state.read_count)
     };
 
-    DataSourceReadStatsSnapshot {
+    ByteSourceReadStatsSnapshot {
       read_count: state.read_count,
       read_bytes: state.read_bytes,
       average_read_size,
@@ -344,26 +344,26 @@ impl DataSourceReadStats {
 
 /// Wrapper that records read statistics while delegating to another source.
 pub struct ObservedDataSource {
-  inner: Arc<dyn DataSource>,
-  stats: DataSourceReadStats,
+  inner: Arc<dyn ByteSource>,
+  stats: ByteSourceReadStats,
 }
 
 impl ObservedDataSource {
   /// Wrap a source with read-observation metrics.
-  pub fn new(inner: Arc<dyn DataSource>) -> Self {
+  pub fn new(inner: Arc<dyn ByteSource>) -> Self {
     Self {
       inner,
-      stats: DataSourceReadStats::default(),
+      stats: ByteSourceReadStats::default(),
     }
   }
 
   /// Access the shared statistics handle.
-  pub fn stats(&self) -> DataSourceReadStats {
+  pub fn stats(&self) -> ByteSourceReadStats {
     self.stats.clone()
   }
 }
 
-impl DataSource for ObservedDataSource {
+impl ByteSource for ObservedDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     let started_at = Instant::now();
     let read = self.inner.read_at(offset, buf)?;
@@ -375,7 +375,7 @@ impl DataSource for ObservedDataSource {
     self.inner.size()
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.inner.capabilities()
   }
 
@@ -384,19 +384,19 @@ impl DataSource for ObservedDataSource {
   }
 }
 
-/// Thin wrapper that turns an `Arc<dyn DataSource>` back into a `DataSource`.
+/// Thin wrapper that turns an `Arc<dyn ByteSource>` back into a `ByteSource`.
 pub struct SharedDataSource {
-  inner: Arc<dyn DataSource>,
+  inner: Arc<dyn ByteSource>,
 }
 
 impl SharedDataSource {
   /// Wrap a shared source for trait-object handoff.
-  pub fn new(inner: Arc<dyn DataSource>) -> Self {
+  pub fn new(inner: Arc<dyn ByteSource>) -> Self {
     Self { inner }
   }
 }
 
-impl DataSource for SharedDataSource {
+impl ByteSource for SharedDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     self.inner.read_at(offset, buf)
   }
@@ -405,7 +405,7 @@ impl DataSource for SharedDataSource {
     self.inner.size()
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.inner.capabilities()
   }
 
@@ -416,14 +416,14 @@ impl DataSource for SharedDataSource {
 
 /// Windowed view into a sub-range of another source.
 pub struct SliceDataSource {
-  inner: Arc<dyn DataSource>,
+  inner: Arc<dyn ByteSource>,
   base_offset: u64,
   size: u64,
 }
 
 impl SliceDataSource {
   /// Create a slice backed by `inner[base_offset..base_offset + size]`.
-  pub fn new(inner: Arc<dyn DataSource>, base_offset: u64, size: u64) -> Self {
+  pub fn new(inner: Arc<dyn ByteSource>, base_offset: u64, size: u64) -> Self {
     Self {
       inner,
       base_offset,
@@ -432,7 +432,7 @@ impl SliceDataSource {
   }
 }
 
-impl DataSource for SliceDataSource {
+impl ByteSource for SliceDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.size || buf.is_empty() {
       return Ok(0);
@@ -452,7 +452,7 @@ impl DataSource for SliceDataSource {
     Ok(self.size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.inner.capabilities()
   }
 
@@ -466,13 +466,13 @@ const PROBE_CACHE_LIMIT: u64 = 64 * 1024;
 
 /// Small-window cache for repeated probe reads near the start of a source.
 pub struct ProbeCachedDataSource<'a> {
-  inner: &'a dyn DataSource,
+  inner: &'a dyn ByteSource,
   windows: RwLock<HashMap<u64, Arc<[u8]>>>,
 }
 
 impl<'a> ProbeCachedDataSource<'a> {
   /// Wrap a source with a probe-oriented cache.
-  pub fn new(inner: &'a dyn DataSource) -> Self {
+  pub fn new(inner: &'a dyn ByteSource) -> Self {
     Self {
       inner,
       windows: RwLock::new(HashMap::new()),
@@ -514,7 +514,7 @@ impl<'a> ProbeCachedDataSource<'a> {
   }
 }
 
-impl DataSource for ProbeCachedDataSource<'_> {
+impl ByteSource for ProbeCachedDataSource<'_> {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if !Self::cacheable(offset, buf.len()) {
       return self.inner.read_at(offset, buf);
@@ -548,7 +548,7 @@ impl DataSource for ProbeCachedDataSource<'_> {
     self.inner.size()
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.inner.capabilities()
   }
 
@@ -567,7 +567,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -583,8 +583,8 @@ mod tests {
       Ok(self.data.len() as u64)
     }
 
-    fn capabilities(&self) -> DataSourceCapabilities {
-      DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap).with_preferred_chunk_size(4096)
+    fn capabilities(&self) -> ByteSourceCapabilities {
+      ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap).with_preferred_chunk_size(4096)
     }
   }
 
@@ -609,7 +609,7 @@ mod tests {
 
   #[test]
   fn observed_data_source_tracks_requested_read_patterns() {
-    let source: Arc<dyn DataSource> = Arc::new(MemDataSource {
+    let source: Arc<dyn ByteSource> = Arc::new(MemDataSource {
       data: b"abcdefghijklmnopqrstuvwxyz".to_vec(),
     });
     let observed = ObservedDataSource::new(source);
@@ -634,20 +634,20 @@ mod tests {
 
   #[test]
   fn observed_data_source_forwards_capabilities() {
-    let source: Arc<dyn DataSource> = Arc::new(MemDataSource {
+    let source: Arc<dyn ByteSource> = Arc::new(MemDataSource {
       data: b"capabilities".to_vec(),
     });
     let observed = ObservedDataSource::new(source);
 
     assert_eq!(
       observed.capabilities(),
-      DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap).with_preferred_chunk_size(4096)
+      ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap).with_preferred_chunk_size(4096)
     );
   }
 
   #[test]
   fn shared_data_source_forwards_reads() {
-    let source: Arc<dyn DataSource> = Arc::new(MemDataSource {
+    let source: Arc<dyn ByteSource> = Arc::new(MemDataSource {
       data: b"shared".to_vec(),
     });
     let shared = SharedDataSource::new(source);
@@ -660,7 +660,7 @@ mod tests {
 
   #[test]
   fn slice_data_source_reads_from_the_requested_window() {
-    let source: Arc<dyn DataSource> = Arc::new(MemDataSource {
+    let source: Arc<dyn ByteSource> = Arc::new(MemDataSource {
       data: b"abcdefghijklmnopqrstuvwxyz".to_vec(),
     });
     let slice = SliceDataSource::new(source, 5, 7);
@@ -677,14 +677,14 @@ mod tests {
 
   #[test]
   fn slice_data_source_forwards_capabilities() {
-    let source: Arc<dyn DataSource> = Arc::new(MemDataSource {
+    let source: Arc<dyn ByteSource> = Arc::new(MemDataSource {
       data: b"capabilities".to_vec(),
     });
     let slice = SliceDataSource::new(source, 2, 5);
 
     assert_eq!(
       slice.capabilities(),
-      DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap).with_preferred_chunk_size(4096)
+      ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap).with_preferred_chunk_size(4096)
     );
   }
 
@@ -695,7 +695,7 @@ mod tests {
       reads: Arc<AtomicUsize>,
     }
 
-    impl DataSource for CountingDataSource {
+    impl ByteSource for CountingDataSource {
       fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         self.reads.fetch_add(1, Ordering::Relaxed);
         let offset = offset as usize;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{
   constants, cowd_header::VmdkCowdHeader, descriptor::VmdkDescriptor, header::VmdkSparseHeader,
 };
-use crate::{DataSource, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceHandle, Error, Result};
 
 pub(super) struct ParsedSparseExtent {
   pub header: VmdkSparseHeader,
@@ -18,7 +18,7 @@ pub(super) struct ParsedCowdVmdk {
   pub grain_directory: Arc<[u32]>,
 }
 
-pub(super) fn parse_sparse_extent(source: DataSourceHandle) -> Result<ParsedSparseExtent> {
+pub(super) fn parse_sparse_extent(source: ByteSourceHandle) -> Result<ParsedSparseExtent> {
   let source_size = source.size()?;
   let header = VmdkSparseHeader::read(source.as_ref())?;
   if header.has_compressed_grains() && header.compression_method == 0 {
@@ -47,7 +47,7 @@ pub(super) fn parse_sparse_extent(source: DataSourceHandle) -> Result<ParsedSpar
   })
 }
 
-pub(super) fn parse_cowd(source: DataSourceHandle) -> Result<ParsedCowdVmdk> {
+pub(super) fn parse_cowd(source: ByteSourceHandle) -> Result<ParsedCowdVmdk> {
   let source_size = source.size()?;
   let header = VmdkCowdHeader::read(source.as_ref())?;
   let grain_directory = read_cowd_grain_directory(source.as_ref(), &header, source_size)?;
@@ -74,7 +74,7 @@ pub(super) fn cowd_grain_table_entry_count() -> u64 {
 }
 
 fn read_descriptor(
-  source: &dyn DataSource, header: VmdkSparseHeader, source_size: u64,
+  source: &dyn ByteSource, header: VmdkSparseHeader, source_size: u64,
 ) -> Result<VmdkDescriptor> {
   let descriptor_offset = header
     .descriptor_start_sector
@@ -101,7 +101,7 @@ fn read_descriptor(
   VmdkDescriptor::from_bytes(&descriptor_bytes)
 }
 fn read_grain_directory(
-  source: &dyn DataSource, header: VmdkSparseHeader, source_size: u64,
+  source: &dyn ByteSource, header: VmdkSparseHeader, source_size: u64,
 ) -> Result<Arc<[u32]>> {
   let directory_start_sector = header.active_grain_directory_start_sector();
   if directory_start_sector == constants::GD_AT_END {
@@ -171,7 +171,7 @@ fn read_grain_directory(
 }
 
 fn resolve_directory_header(
-  source: &dyn DataSource, source_size: u64, header: VmdkSparseHeader,
+  source: &dyn ByteSource, source_size: u64, header: VmdkSparseHeader,
 ) -> Result<VmdkSparseHeader> {
   if !header.uses_gd_at_end() {
     return Ok(header);
@@ -206,7 +206,7 @@ fn resolve_directory_header(
 }
 
 fn read_cowd_grain_directory(
-  source: &dyn DataSource, header: &VmdkCowdHeader, source_size: u64,
+  source: &dyn ByteSource, header: &VmdkCowdHeader, source_size: u64,
 ) -> Result<Arc<[u32]>> {
   let grain_size = header.grain_size_bytes()?;
   let directory_coverage = cowd_grain_table_entry_count()

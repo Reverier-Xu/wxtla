@@ -18,21 +18,21 @@ use super::{
   snapshot::QcowSnapshot,
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, RelatedPathBuf,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, RelatedPathBuf,
   RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SourceHints,
   SourceIdentity, images::Image,
 };
 
 /// Read-only QCOW image surface.
 pub struct QcowImage {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   header: QcowHeader,
   virtual_size: u64,
   backing_file_name: Option<String>,
   backing_file_format: Option<String>,
   external_data_path: Option<String>,
-  backing_image: Option<DataSourceHandle>,
-  external_data_source: Option<DataSourceHandle>,
+  backing_image: Option<ByteSourceHandle>,
+  external_data_source: Option<ByteSourceHandle>,
   header_extensions: Arc<[QcowHeaderExtension]>,
   snapshots: Arc<[QcowSnapshot]>,
   l1_table: Arc<[u64]>,
@@ -60,7 +60,7 @@ enum ParsedL2Entry {
 
 impl QcowImage {
   /// Open a QCOW image from a single-file source.
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     let parsed = parse(source.clone())?;
     if parsed.header.uses_external_data_file() {
       return Err(Error::InvalidSourceReference(
@@ -71,7 +71,7 @@ impl QcowImage {
   }
 
   /// Open a QCOW image using source hints.
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let parsed = parse(source.clone())?;
     let backing_image = if let Some(backing_file_name) = parsed.backing_file_name.as_deref() {
       let resolver = hints.resolver().ok_or_else(|| {
@@ -102,7 +102,7 @@ impl QcowImage {
         SourceHints::new()
           .with_resolver(resolver)
           .with_source_identity(&backing_identity),
-      )?) as DataSourceHandle)
+      )?) as ByteSourceHandle)
     } else {
       None
     };
@@ -151,8 +151,8 @@ impl QcowImage {
   }
 
   fn from_parsed(
-    source: DataSourceHandle, parsed: ParsedQcow, backing_image: Option<DataSourceHandle>,
-    external_data_source: Option<DataSourceHandle>, l1_table_override: Option<Arc<[u64]>>,
+    source: ByteSourceHandle, parsed: ParsedQcow, backing_image: Option<ByteSourceHandle>,
+    external_data_source: Option<ByteSourceHandle>, l1_table_override: Option<Arc<[u64]>>,
     virtual_size_override: Option<u64>,
   ) -> Result<Self> {
     Ok(Self {
@@ -510,7 +510,7 @@ impl QcowImage {
   }
 }
 
-impl DataSource for QcowImage {
+impl ByteSource for QcowImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.virtual_size || buf.is_empty() {
       return Ok(0);
@@ -620,8 +620,8 @@ impl DataSource for QcowImage {
     Ok(self.virtual_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    let mut capabilities = DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap);
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    let mut capabilities = ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap);
     if let Ok(cluster_size) = self.cluster_size()
       && let Ok(cluster_size) = usize::try_from(cluster_size)
     {
@@ -652,7 +652,7 @@ impl Image for QcowImage {
 fn resolve_named_source(
   resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity, name: &str,
   purpose: RelatedSourcePurpose,
-) -> Result<Option<(DataSourceHandle, RelatedPathBuf)>> {
+) -> Result<Option<(ByteSourceHandle, RelatedPathBuf)>> {
   if let Ok(relative) = RelatedPathBuf::from_relative_path(name)
     && let Some(parent) = identity.logical_path().parent()
   {
@@ -684,7 +684,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -701,16 +701,16 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -758,10 +758,10 @@ mod tests {
   #[test]
   fn reads_from_a_backing_file_when_overlay_clusters_are_unallocated() {
     let base_data = repeat_byte(0xAB, 65_536);
-    let base_source: DataSourceHandle = Arc::new(MemDataSource {
+    let base_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_synthetic_qcow(Some(&base_data), None),
     });
-    let overlay_source: DataSourceHandle = Arc::new(MemDataSource {
+    let overlay_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_synthetic_qcow(None, Some("base.qcow2")),
     });
     let resolver = Resolver {
@@ -785,10 +785,10 @@ mod tests {
   fn overlay_clusters_override_backing_file_data() {
     let base_data = repeat_byte(0x10, 65_536);
     let overlay_data = repeat_byte(0xEF, 65_536);
-    let base_source: DataSourceHandle = Arc::new(MemDataSource {
+    let base_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_synthetic_qcow(Some(&base_data), None),
     });
-    let overlay_source: DataSourceHandle = Arc::new(MemDataSource {
+    let overlay_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_synthetic_qcow(Some(&overlay_data), Some("base.qcow2")),
     });
     let resolver = Resolver {
@@ -810,10 +810,10 @@ mod tests {
   #[test]
   fn resolves_relative_backing_file_paths() {
     let base_data = repeat_byte(0x3C, 65_536);
-    let base_source: DataSourceHandle = Arc::new(MemDataSource {
+    let base_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_synthetic_qcow(Some(&base_data), None),
     });
-    let overlay_source: DataSourceHandle = Arc::new(MemDataSource {
+    let overlay_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_synthetic_qcow(None, Some("../base/base.qcow2")),
     });
     let resolver = Resolver {
@@ -893,10 +893,10 @@ mod tests {
   #[test]
   fn reads_from_external_data_files() {
     let external_cluster = repeat_byte(0xCC, 65_536);
-    let metadata_source: DataSourceHandle = Arc::new(MemDataSource {
+    let metadata_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_synthetic_qcow_external_data("disk.raw"),
     });
-    let external_source: DataSourceHandle = Arc::new(MemDataSource {
+    let external_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: external_cluster.clone(),
     });
     let resolver = Resolver {
@@ -919,10 +919,10 @@ mod tests {
   #[test]
   fn resolves_relative_external_data_paths() {
     let external_cluster = repeat_byte(0x5A, 65_536);
-    let metadata_source: DataSourceHandle = Arc::new(MemDataSource {
+    let metadata_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: build_synthetic_qcow_external_data("../data/disk.raw"),
     });
-    let external_source: DataSourceHandle = Arc::new(MemDataSource {
+    let external_source: ByteSourceHandle = Arc::new(MemDataSource {
       data: external_cluster.clone(),
     });
     let resolver = Resolver {
@@ -1296,3 +1296,5 @@ mod tests {
     data
   }
 }
+
+crate::images::driver::impl_image_data_source!(QcowImage);

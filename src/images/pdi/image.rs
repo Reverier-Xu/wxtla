@@ -13,13 +13,14 @@ use super::{
   sparse_extent::PdiSparseExtent,
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, RelatedPathBuf,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, RelatedPathBuf,
   RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SourceHints,
   SourceIdentity, images::Image,
 };
 
 const FIXED_SECTOR_SIZE: u64 = 512;
 
+#[allow(dead_code)]
 pub struct PdiImage {
   active_layer: Arc<PdiLayer>,
   media_size: u64,
@@ -42,18 +43,18 @@ struct PdiLayerExtent {
 }
 
 enum PdiLayerStorage {
-  Raw(DataSourceHandle),
+  Raw(ByteSourceHandle),
   Sparse(PdiSparseExtent),
 }
 
 impl PdiImage {
-  pub fn open(_source: DataSourceHandle) -> Result<Self> {
+  pub fn open(_source: ByteSourceHandle) -> Result<Self> {
     Err(Error::InvalidSourceReference(
       "pdi images require source hints, a resolver, and a source identity".to_string(),
     ))
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let resolver = hints.resolver().ok_or_else(|| {
       Error::InvalidSourceReference("pdi images require a related-source resolver".to_string())
     })?;
@@ -89,7 +90,7 @@ impl PdiImage {
   }
 }
 
-impl DataSource for PdiImage {
+impl ByteSource for PdiImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     self.active_layer.read_at(offset, buf)
   }
@@ -98,8 +99,8 @@ impl DataSource for PdiImage {
     Ok(self.media_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
       .with_preferred_chunk_size(64 * 1024)
   }
 
@@ -419,7 +420,7 @@ fn fill_from_parent_or_zero(
   Ok(())
 }
 
-impl DataSource for PdiLayer {
+impl ByteSource for PdiLayer {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     self.read_layer_at(offset, buf)
   }
@@ -428,8 +429,8 @@ impl DataSource for PdiLayer {
     Ok(self.media_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
       .with_preferred_chunk_size(64 * 1024)
   }
 
@@ -441,7 +442,7 @@ impl DataSource for PdiLayer {
 fn resolve_named_source(
   resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity, name: &str,
   purpose: RelatedSourcePurpose,
-) -> Result<Option<(DataSourceHandle, RelatedPathBuf)>> {
+) -> Result<Option<(ByteSourceHandle, RelatedPathBuf)>> {
   if let Ok(relative) = RelatedPathBuf::from_relative_path(name)
     && let Some(parent) = identity.logical_path().parent()
   {
@@ -470,7 +471,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -488,16 +489,16 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -533,13 +534,13 @@ mod tests {
     )
   }
 
-  fn plain_extent(fill: u8) -> DataSourceHandle {
+  fn plain_extent(fill: u8) -> ByteSourceHandle {
     Arc::new(MemDataSource {
       data: vec![fill; 2048],
     })
   }
 
-  fn sparse_extent(first_block: Option<u8>, second_block: Option<u8>) -> DataSourceHandle {
+  fn sparse_extent(first_block: Option<u8>, second_block: Option<u8>) -> ByteSourceHandle {
     let mut data = vec![0u8; 2560];
     data[0..16].copy_from_slice(b"WithoutFreeSpace");
     data[16..20].copy_from_slice(&2u32.to_le_bytes());
@@ -605,7 +606,7 @@ mod tests {
         &[("11111111-1111-1111-1111-111111111111", None)],
       )
       .into_bytes(),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([("bundle/disk.raw".to_string(), plain_extent(0x5A))]),
     };
@@ -654,7 +655,7 @@ mod tests {
         ],
       )
       .into_bytes(),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::from([
         (
@@ -733,7 +734,7 @@ mod tests {
         ],
       )
       .into_bytes(),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
     let resolver = Resolver {
       files: HashMap::new(),
     };
@@ -749,3 +750,5 @@ mod tests {
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
 }
+
+crate::images::driver::impl_image_data_source!(PdiImage);

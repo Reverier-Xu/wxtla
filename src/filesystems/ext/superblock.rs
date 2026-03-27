@@ -1,6 +1,6 @@
 //! ext-family superblock and group-descriptor parsing.
 
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 pub(crate) const SUPERBLOCK_OFFSET: u64 = 1024;
 pub(crate) const SUPERBLOCK_SIZE: usize = 1024;
@@ -37,7 +37,7 @@ pub struct ExtGroupDescriptor {
 }
 
 impl ExtSuperblock {
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let bytes = source.read_bytes_at(SUPERBLOCK_OFFSET, SUPERBLOCK_SIZE)?;
     Self::from_bytes(&bytes)
   }
@@ -156,7 +156,7 @@ impl ExtSuperblock {
 }
 
 pub(crate) fn read_group_descriptors(
-  source: &dyn DataSource, superblock: &ExtSuperblock,
+  source: &dyn ByteSource, superblock: &ExtSuperblock,
 ) -> Result<Vec<ExtGroupDescriptor>> {
   let descriptor_size = usize::from(superblock.descriptor_size);
   let group_count = usize::try_from(superblock.group_count())

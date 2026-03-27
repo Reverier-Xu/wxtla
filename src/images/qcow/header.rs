@@ -6,7 +6,7 @@ use super::constants::{
   QCOW_V2_HEADER_SIZE, QCOW_V3_HEADER_MIN_SIZE, QCOW_V3_HEADER_WITH_COMPRESSION, QCOW_VERSION_1,
   QCOW_VERSION_2, QCOW_VERSION_3, SUPPORTED_CLUSTER_BITS, SUPPORTED_REFCOUNT_ORDER,
 };
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Parsed QCOW2/3 header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +53,7 @@ pub struct QcowHeader {
 
 impl QcowHeader {
   /// Read a QCOW header from the start of a source.
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let prefix = source.read_bytes_at(0, QCOW_V3_HEADER_WITH_COMPRESSION)?;
     Self::parse(&prefix)
   }

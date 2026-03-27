@@ -1,6 +1,6 @@
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
-pub(super) fn read_fully_at(source: &dyn DataSource, offset: u64, buf: &mut [u8]) -> Result<()> {
+pub(super) fn read_fully_at(source: &dyn ByteSource, offset: u64, buf: &mut [u8]) -> Result<()> {
   source.read_exact_at(offset, buf)
 }
 

@@ -1,9 +1,10 @@
-//! Core image-driver interfaces.
+//! Internal image helpers shared by concrete image drivers.
 
-use crate::{DataSource, DataSourceHandle, FormatDescriptor, Result, SourceHints};
+use crate::{ByteSource, DataSource, FormatDescriptor};
 
-/// Read-only logical image surface exposed by an image driver.
-pub trait Image: DataSource {
+/// Internal read-only logical image surface exposed by a concrete image type.
+#[allow(dead_code)]
+pub(crate) trait Image: ByteSource {
   /// Return the format descriptor for this opened image.
   fn descriptor(&self) -> FormatDescriptor;
 
@@ -26,13 +27,58 @@ pub trait Image: DataSource {
   fn has_backing_chain(&self) -> bool {
     false
   }
+
+  /// Enumerate child views exposed by the image.
+  fn views(&self) -> crate::Result<Vec<crate::DataViewRecord>> {
+    Ok(Vec::new())
+  }
+
+  /// Open a child view exposed by the image.
+  fn open_view(
+    &self, selector: &crate::DataViewSelector<'_>, options: crate::OpenOptions<'_>,
+  ) -> crate::Result<Box<dyn DataSource>> {
+    let _ = (selector, options);
+    Err(crate::Error::Unsupported(format!(
+      "{} does not expose image child views",
+      self.descriptor().id
+    )))
+  }
 }
 
-/// Opens a specific image format into a concurrent logical image surface.
-pub trait ImageDriver: Send + Sync {
-  /// Return the format descriptor handled by this driver.
-  fn descriptor(&self) -> FormatDescriptor;
+macro_rules! impl_image_data_source {
+  ($ty:ty) => {
+    impl crate::DataSource for $ty {
+      fn descriptor(&self) -> crate::FormatDescriptor {
+        crate::images::driver::Image::descriptor(self)
+      }
 
-  /// Open the image format from the provided byte source.
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Image>>;
+      fn facets(&self) -> crate::DataSourceFacets {
+        let facets = crate::DataSourceFacets::bytes();
+        if crate::images::driver::Image::views(self)
+          .map(|views| !views.is_empty())
+          .unwrap_or(false)
+        {
+          facets.with_views()
+        } else {
+          facets
+        }
+      }
+
+      fn byte_source(&self) -> Option<&dyn crate::ByteSource> {
+        Some(self)
+      }
+
+      fn views(&self) -> crate::Result<Vec<crate::DataViewRecord>> {
+        crate::images::driver::Image::views(self)
+      }
+
+      fn open_view(
+        &self, selector: &crate::DataViewSelector<'_>, options: crate::OpenOptions<'_>,
+      ) -> crate::Result<Box<dyn crate::DataSource>> {
+        crate::images::driver::Image::open_view(self, selector, options)
+      }
+    }
+  };
 }
+
+pub(crate) use impl_image_data_source;

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use super::{
-  DataSource, DataSourceHandle, ProbeCachedDataSource, RelatedPathBuf, RelatedSourcePurpose,
+  ByteSource, ByteSourceHandle, ProbeCachedDataSource, RelatedPathBuf, RelatedSourcePurpose,
   RelatedSourceRequest, RelatedSourceResolver, Result, SourceIdentity,
 };
 
@@ -212,7 +212,7 @@ pub type ProbeOptions<'a> = SourceHints<'a>;
 
 /// Shared probe helper that provides cached small-window reads.
 pub struct ProbeContext<'a> {
-  source: &'a dyn DataSource,
+  source: &'a dyn ByteSource,
   cached: ProbeCachedDataSource<'a>,
   options: SourceHints<'a>,
 }
@@ -226,19 +226,19 @@ impl<'a> ProbeContext<'a> {
   /// let context = ProbeContext::new(source);
   /// let header = context.header(512)?;
   /// ```
-  pub fn new(source: &'a dyn DataSource) -> Self {
+  pub fn new(source: &'a dyn ByteSource) -> Self {
     Self::with_options(source, SourceHints::new())
   }
 
   /// Create a new probe context around a source and related-source resolver.
   pub fn with_resolver(
-    source: &'a dyn DataSource, resolver: &'a dyn RelatedSourceResolver,
+    source: &'a dyn ByteSource, resolver: &'a dyn RelatedSourceResolver,
   ) -> Self {
     Self::with_options(source, SourceHints::new().with_resolver(resolver))
   }
 
   /// Create a new probe context from explicit options.
-  pub fn with_options(source: &'a dyn DataSource, options: SourceHints<'a>) -> Self {
+  pub fn with_options(source: &'a dyn ByteSource, options: SourceHints<'a>) -> Self {
     Self {
       source,
       cached: ProbeCachedDataSource::new(source),
@@ -247,7 +247,7 @@ impl<'a> ProbeContext<'a> {
   }
 
   /// Access the underlying source.
-  pub fn source(&self) -> &'a dyn DataSource {
+  pub fn source(&self) -> &'a dyn ByteSource {
     self.source
   }
 
@@ -294,7 +294,7 @@ impl<'a> ProbeContext<'a> {
   /// Resolve a parser-related source within the resolver scope.
   pub fn resolve_related(
     &self, request: &RelatedSourceRequest,
-  ) -> Result<Option<DataSourceHandle>> {
+  ) -> Result<Option<ByteSourceHandle>> {
     match self.options.resolver {
       Some(resolver) => resolver.resolve(request),
       None => Ok(None),
@@ -304,7 +304,7 @@ impl<'a> ProbeContext<'a> {
   /// Resolve a parser-related source from a lexical path string.
   pub fn resolve_related_path(
     &self, purpose: RelatedSourcePurpose, path: &str,
-  ) -> Result<Option<DataSourceHandle>> {
+  ) -> Result<Option<ByteSourceHandle>> {
     let path = RelatedPathBuf::from_relative_path(path)?;
     self.resolve_related(&RelatedSourceRequest::new(purpose, path))
   }
@@ -353,20 +353,20 @@ impl ProbeRegistry {
   }
 
   /// Probe all registered formats and return the ordered report.
-  pub fn probe_all(&self, source: &dyn DataSource) -> Result<ProbeReport> {
+  pub fn probe_all(&self, source: &dyn ByteSource) -> Result<ProbeReport> {
     self.probe_all_with_options(source, SourceHints::new())
   }
 
   /// Probe all registered formats with a related-source resolver.
   pub fn probe_all_with_resolver(
-    &self, source: &dyn DataSource, resolver: &dyn RelatedSourceResolver,
+    &self, source: &dyn ByteSource, resolver: &dyn RelatedSourceResolver,
   ) -> Result<ProbeReport> {
     self.probe_all_with_options(source, SourceHints::new().with_resolver(resolver))
   }
 
   /// Probe all registered formats with explicit probe options.
   pub fn probe_all_with_options(
-    &self, source: &dyn DataSource, options: SourceHints<'_>,
+    &self, source: &dyn ByteSource, options: SourceHints<'_>,
   ) -> Result<ProbeReport> {
     let context = ProbeContext::with_options(source, options);
     self.probe_all_with_context(&context)
@@ -398,20 +398,20 @@ impl ProbeRegistry {
   }
 
   /// Return the best probe match for a source, if any.
-  pub fn probe_best(&self, source: &dyn DataSource) -> Result<Option<ProbeMatch>> {
+  pub fn probe_best(&self, source: &dyn ByteSource) -> Result<Option<ProbeMatch>> {
     Ok(self.probe_all(source)?.best_match())
   }
 
   /// Return the best probe match for a source, if any, using a resolver.
   pub fn probe_best_with_resolver(
-    &self, source: &dyn DataSource, resolver: &dyn RelatedSourceResolver,
+    &self, source: &dyn ByteSource, resolver: &dyn RelatedSourceResolver,
   ) -> Result<Option<ProbeMatch>> {
     Ok(self.probe_all_with_resolver(source, resolver)?.best_match())
   }
 
   /// Return the best probe match for a source, if any, using explicit options.
   pub fn probe_best_with_options(
-    &self, source: &dyn DataSource, options: SourceHints<'_>,
+    &self, source: &dyn ByteSource, options: SourceHints<'_>,
   ) -> Result<Option<ProbeMatch>> {
     Ok(self.probe_all_with_options(source, options)?.best_match())
   }
@@ -425,7 +425,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -468,7 +468,7 @@ mod tests {
   struct RejectingResolver;
 
   impl RelatedSourceResolver for RejectingResolver {
-    fn resolve(&self, _request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, _request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(None)
     }
   }

@@ -1,10 +1,7 @@
 //! PDI driver open flow.
 
 use super::{DESCRIPTOR, image::PdiImage};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  images::{Image, ImageDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PdiDriver;
@@ -14,21 +11,23 @@ impl PdiDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<PdiImage> {
+  pub fn open(source: ByteSourceHandle) -> Result<PdiImage> {
     PdiImage::open(source)
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<PdiImage> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<PdiImage> {
     PdiImage::open_with_hints(source, hints)
   }
 }
 
-impl ImageDriver for PdiDriver {
+impl Driver for PdiDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Image>> {
-    Ok(Box::new(PdiImage::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(PdiImage::open_with_hints(source, options.hints)?))
   }
 }

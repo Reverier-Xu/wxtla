@@ -1,10 +1,7 @@
 use super::{
   DESCRIPTOR, model::resolve_pv_pe_start, parser::parse_lvm_image, system::LvmVolumeSystem,
 };
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  volumes::{VolumeSystem, VolumeSystemDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LvmDriver;
@@ -14,12 +11,12 @@ impl LvmDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<LvmVolumeSystem> {
+  pub fn open(source: ByteSourceHandle) -> Result<LvmVolumeSystem> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
   pub fn open_with_hints(
-    source: DataSourceHandle, _hints: SourceHints<'_>,
+    source: ByteSourceHandle, _hints: SourceHints<'_>,
   ) -> Result<LvmVolumeSystem> {
     let parsed = parse_lvm_image(source.as_ref())?;
     let current_pv_pe_start =
@@ -48,15 +45,15 @@ impl LvmDriver {
   }
 }
 
-impl VolumeSystemDriver for LvmDriver {
+impl Driver for LvmDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
   fn open(
-    &self, source: DataSourceHandle, hints: SourceHints<'_>,
-  ) -> Result<Box<dyn VolumeSystem>> {
-    Ok(Box::new(Self::open_with_hints(source, hints)?))
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(Self::open_with_hints(source, options.hints)?))
   }
 }
 
@@ -65,13 +62,13 @@ mod tests {
   use std::{cmp::min, sync::Arc};
 
   use super::*;
-  use crate::{DataSource, volumes::lvm::checksum};
+  use crate::{ByteSource, volumes::lvm::checksum};
 
   struct MemoryDataSource {
     bytes: Vec<u8>,
   }
 
-  impl DataSource for MemoryDataSource {
+  impl ByteSource for MemoryDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.bytes.len() {
@@ -94,7 +91,7 @@ mod tests {
       &[(0x10000, b"ABCD"), (0x11000, b"WXYZ")],
     );
     let system =
-      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as ByteSourceHandle).unwrap();
 
     assert_eq!(system.vg_name(), "vg0");
     assert_eq!(system.volumes().len(), 1);
@@ -118,7 +115,7 @@ mod tests {
     );
 
     let system =
-      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as ByteSourceHandle).unwrap();
     let source = system.open_volume(0).unwrap();
 
     let mut second = [0u8; 4];
@@ -164,7 +161,7 @@ vg0 {
     image[0x11800..0x12000].fill(b'D');
 
     let system =
-      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as ByteSourceHandle).unwrap();
     let source = system.open_volume(0).unwrap();
     let data = source.read_all().unwrap();
 
@@ -218,7 +215,7 @@ vg0 {
     );
 
     let system =
-      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as ByteSourceHandle).unwrap();
     assert_eq!(system.volumes().len(), 1);
     assert_eq!(system.volumes()[0].name.as_deref(), Some("lv0"));
   }
@@ -262,7 +259,7 @@ vg0 {
     );
 
     let system =
-      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as ByteSourceHandle).unwrap();
     assert_eq!(system.volumes().len(), 1);
     assert_eq!(system.volumes()[0].name.as_deref(), Some("lv0"));
   }
@@ -306,7 +303,7 @@ vg0 {
     );
 
     let system =
-      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as ByteSourceHandle).unwrap();
     assert_eq!(system.volumes().len(), 1);
     assert_eq!(system.volumes()[0].name.as_deref(), Some("lv0"));
   }
@@ -347,7 +344,7 @@ vg0 {
     );
 
     let system =
-      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as ByteSourceHandle).unwrap();
 
     assert_eq!(system.volumes().len(), 1);
     assert_eq!(system.volumes()[0].name.as_deref(), Some("lv0"));
@@ -360,7 +357,7 @@ vg0 {
       &[(0x10000, b"ABCD"), (0x11000, b"WXYZ")],
     );
     let system =
-      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as DataSourceHandle).unwrap();
+      LvmDriver::open(Arc::new(MemoryDataSource { bytes: image }) as ByteSourceHandle).unwrap();
 
     let first = system.open_volume(0).unwrap();
     let second = system.open_volume(0).unwrap();

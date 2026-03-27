@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use super::parser::RefsDataRun;
-use crate::{DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceCapabilities, ByteSourceHandle, Error, Result};
 
 pub(crate) struct RefsDataRunsDataSource {
-  pub(crate) source: DataSourceHandle,
+  pub(crate) source: ByteSourceHandle,
   pub(crate) metadata_block_size: u64,
   pub(crate) data_size: u64,
   pub(crate) valid_data_size: u64,
@@ -28,7 +28,7 @@ impl RefsDataRunsDataSource {
   }
 }
 
-impl DataSource for RefsDataRunsDataSource {
+impl ByteSource for RefsDataRunsDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.data_size || buf.is_empty() {
       return Ok(0);
@@ -81,7 +81,7 @@ impl DataSource for RefsDataRunsDataSource {
     Ok(self.data_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.source.capabilities()
   }
 }

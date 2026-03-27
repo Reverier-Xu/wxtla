@@ -72,7 +72,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl crate::DataSource for MemDataSource {
+  impl crate::ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {

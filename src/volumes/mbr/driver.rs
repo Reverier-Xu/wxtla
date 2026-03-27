@@ -1,10 +1,7 @@
 //! MBR driver open flow.
 
 use super::{DESCRIPTOR, parser, system::MbrVolumeSystem};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  volumes::{VolumeSystem, VolumeSystemDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result};
 
 /// Driver for the Master Boot Record partitioning scheme.
 #[derive(Debug, Default, Clone, Copy)]
@@ -17,26 +14,26 @@ impl MbrDriver {
   }
 
   /// Open an MBR source using inferred bytes-per-sector semantics.
-  pub fn open(source: DataSourceHandle) -> Result<MbrVolumeSystem> {
+  pub fn open(source: ByteSourceHandle) -> Result<MbrVolumeSystem> {
     parser::open(source)
   }
 
   /// Open an MBR source using an explicit bytes-per-sector value.
   pub fn open_with_sector_size(
-    source: DataSourceHandle, bytes_per_sector: u32,
+    source: ByteSourceHandle, bytes_per_sector: u32,
   ) -> Result<MbrVolumeSystem> {
     parser::open_with_sector_size(source, bytes_per_sector)
   }
 }
 
-impl VolumeSystemDriver for MbrDriver {
+impl Driver for MbrDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
   fn open(
-    &self, source: DataSourceHandle, _hints: SourceHints<'_>,
-  ) -> Result<Box<dyn VolumeSystem>> {
+    &self, source: ByteSourceHandle, _options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
     Ok(Box::new(Self::open(source)?))
   }
 }
@@ -46,7 +43,7 @@ mod tests {
   use std::{path::Path, sync::Arc};
 
   use super::*;
-  use crate::{DataSource, Error, Result, volumes::VolumeRole};
+  use crate::{ByteSource, Error, Result, volumes::VolumeRole};
 
   struct MemDataSource {
     data: Vec<u8>,
@@ -63,7 +60,7 @@ mod tests {
     }
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -79,11 +76,11 @@ mod tests {
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     Arc::new(MemDataSource::from_fixture(relative_path))
   }
 
-  fn synthetic_source(bytes: Vec<u8>) -> DataSourceHandle {
+  fn synthetic_source(bytes: Vec<u8>) -> ByteSourceHandle {
     Arc::new(MemDataSource { data: bytes })
   }
 

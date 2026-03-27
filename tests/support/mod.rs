@@ -7,7 +7,7 @@ use std::{
 };
 
 use wxtla::{
-  DataSource, DataSourceHandle, RelatedSourceRequest, RelatedSourceResolver, Result, SourceIdentity,
+  ByteSource, ByteSourceHandle, RelatedSourceRequest, RelatedSourceResolver, Result, SourceIdentity,
 };
 
 pub fn fixture_path(relative: impl AsRef<Path>) -> PathBuf {
@@ -48,7 +48,7 @@ impl FixtureResolver {
 }
 
 impl RelatedSourceResolver for FixtureResolver {
-  fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+  fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
     let mut path = self.root.clone();
     for component in request.path.components() {
       path.push(component);
@@ -66,7 +66,7 @@ impl RelatedSourceResolver for FixtureResolver {
   }
 }
 
-impl DataSource for FileDataSource {
+impl ByteSource for FileDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     read_file_at(&self.file, offset, buf)
   }

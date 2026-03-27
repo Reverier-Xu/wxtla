@@ -7,7 +7,7 @@ use std::{
 
 use super::{DESCRIPTOR, parser::parse_info_plist};
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, RelatedPathBuf,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, RelatedPathBuf,
   RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SourceHints,
   images::Image,
 };
@@ -27,7 +27,7 @@ enum SparseBundleBands {
 
 #[derive(Clone)]
 struct SparseBundleBand {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   size: u64,
 }
 
@@ -44,13 +44,13 @@ struct SparseBundleBandCacheState {
 }
 
 impl SparseBundleImage {
-  pub fn open(_source: DataSourceHandle) -> Result<Self> {
+  pub fn open(_source: ByteSourceHandle) -> Result<Self> {
     Err(Error::InvalidSourceReference(
       "sparsebundle images require source hints, a resolver, and a source identity".to_string(),
     ))
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let source_identity = hints.source_identity().ok_or_else(|| {
       Error::InvalidSourceReference(
         "sparsebundle images require a source identity hint".to_string(),
@@ -178,7 +178,7 @@ impl SparseBundleLazyBands {
   }
 }
 
-impl DataSource for SparseBundleImage {
+impl ByteSource for SparseBundleImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.media_size || buf.is_empty() {
       return Ok(0);
@@ -233,9 +233,9 @@ impl DataSource for SparseBundleImage {
     Ok(self.media_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     let preferred_chunk_size = usize::try_from(self.band_size).unwrap_or(8 * 1024 * 1024);
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
       .with_preferred_chunk_size(preferred_chunk_size)
   }
 
@@ -280,7 +280,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -298,28 +298,28 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   struct CountingResolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
     calls: AtomicUsize,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
   impl RelatedSourceResolver for CountingResolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       self.calls.fetch_add(1, Ordering::Relaxed);
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -332,13 +332,13 @@ mod tests {
     format!("{:x}", md5::compute(data))
   }
 
-  fn sparsebundle_info_plist(band_size: u64, media_size: u64) -> DataSourceHandle {
+  fn sparsebundle_info_plist(band_size: u64, media_size: u64) -> ByteSourceHandle {
     Arc::new(MemDataSource {
       data: format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n<key>band-size</key><integer>{band_size}</integer>\n<key>bundle-backingstore-version</key><integer>1</integer>\n<key>diskimage-bundle-type</key><string>com.apple.diskimage.sparsebundle</string>\n<key>size</key><integer>{media_size}</integer>\n</dict>\n</plist>"
       )
       .into_bytes(),
-    }) as DataSourceHandle
+    }) as ByteSourceHandle
   }
 
   #[test]
@@ -400,7 +400,7 @@ mod tests {
         "bundle/bands/0".to_string(),
         Arc::new(MemDataSource {
           data: vec![0xA5; 1024],
-        }) as DataSourceHandle,
+        }) as ByteSourceHandle,
       )]),
     };
     let identity = SourceIdentity::from_relative_path("bundle/Info.plist").unwrap();
@@ -424,7 +424,7 @@ mod tests {
         "bundle/bands/0".to_string(),
         Arc::new(MemDataSource {
           data: vec![0xA5; 1024],
-        }) as DataSourceHandle,
+        }) as ByteSourceHandle,
       )]),
       calls: AtomicUsize::new(0),
     });
@@ -463,3 +463,5 @@ mod tests {
     assert!(matches!(result, Err(Error::InvalidSourceReference(_))));
   }
 }
+
+crate::images::driver::impl_image_data_source!(SparseBundleImage);

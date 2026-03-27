@@ -10,10 +10,10 @@ use super::{
   btree::{parse_btree_header, read_leaf_records},
 };
 use crate::{
-  BytesDataSource, DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, Error, Result,
   SourceHints,
   filesystems::{
-    DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, FileSystemNodeRecord,
+    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
   },
 };
 
@@ -34,7 +34,7 @@ const HFSX_SIGNATURE: &[u8; 2] = b"HX";
 const HFS_PLUS_HARD_LINK_FLAG: u16 = 0x0020;
 
 type HfsNodeMap = Arc<HashMap<u64, Arc<HfsNode>>>;
-type HfsChildrenMap = Arc<HashMap<u64, Arc<[DirectoryEntry]>>>;
+type HfsChildrenMap = Arc<HashMap<u64, Arc<[NamespaceDirectoryEntry]>>>;
 type HfsAttributeMap = Arc<HashMap<u64, Arc<[HfsExtendedAttribute]>>>;
 
 const HFS_PLUS_XATTR_INLINE_RECORD: u32 = 0x0000_0010;
@@ -43,7 +43,7 @@ const HFS_PLUS_XATTR_EXTENTS_RECORD: u32 = 0x0000_0030;
 
 pub struct HfsFileSystem {
   descriptor: crate::FormatDescriptor,
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   allocation_block_size: u32,
   allocation_base_offset: u64,
   catalog_kind: HfsCatalogKind,
@@ -66,7 +66,7 @@ struct HfsCatalogIndex {
 
 #[derive(Clone)]
 struct HfsNode {
-  record: FileSystemNodeRecord,
+  record: NamespaceNodeRecord,
   fork: Option<HfsFork>,
   resource_fork: Option<HfsFork>,
   hard_link_target: Option<u32>,
@@ -92,7 +92,7 @@ struct HfsExtent {
 }
 
 struct HfsForkDataSource {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   allocation_block_size: u32,
   allocation_base_offset: u64,
   fork: HfsFork,
@@ -110,7 +110,7 @@ struct HfsNodeInsert {
   cnid: u32,
   parent_id: u32,
   name: String,
-  kind: FileSystemNodeKind,
+  kind: NamespaceNodeKind,
   fork: Option<HfsFork>,
   resource_fork: Option<HfsFork>,
   hard_link_target: Option<u32>,
@@ -130,11 +130,11 @@ struct HfsPlusAttributeKey {
 }
 
 impl HfsFileSystem {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let signature = source.read_bytes_at(1024, 2)?;
     if signature == HFS_SIGNATURE {
       Self::open_hfs(source)
@@ -147,7 +147,7 @@ impl HfsFileSystem {
     }
   }
 
-  fn open_hfs(source: DataSourceHandle) -> Result<Self> {
+  fn open_hfs(source: ByteSourceHandle) -> Result<Self> {
     let mdb = source.read_bytes_at(1024, 162)?;
     let allocation_block_size = be_u32(&mdb[20..24]);
     let allocation_base_offset = u64::from(be_u16(&mdb[28..30])) * u64::from(allocation_block_size);
@@ -170,7 +170,7 @@ impl HfsFileSystem {
     })
   }
 
-  fn open_hfs_plus(source: DataSourceHandle, _is_hfsx: bool) -> Result<Self> {
+  fn open_hfs_plus(source: ByteSourceHandle, _is_hfsx: bool) -> Result<Self> {
     let header = source.read_bytes_at(1024, 512)?;
     let allocation_block_size = be_u32(&header[40..44]);
     let catalog_fork = parse_hfs_plus_fork(&header[272..352])?;
@@ -189,10 +189,10 @@ impl HfsFileSystem {
     })
   }
 
-  fn build_data_source(&self, fork: &HfsFork) -> Result<DataSourceHandle> {
+  fn build_data_source(&self, fork: &HfsFork) -> Result<ByteSourceHandle> {
     if fork.logical_size == 0 {
       return Ok(
-        Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as DataSourceHandle,
+        Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as ByteSourceHandle,
       );
     }
     Ok(Arc::new(HfsForkDataSource {
@@ -200,13 +200,13 @@ impl HfsFileSystem {
       allocation_block_size: self.allocation_block_size,
       allocation_base_offset: self.allocation_base_offset,
       fork: fork.clone(),
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
   }
 
-  pub fn symlink_target(&self, node_id: &FileSystemNodeId) -> Result<Option<String>> {
+  pub fn symlink_target(&self, node_id: &NamespaceNodeId) -> Result<Option<String>> {
     let raw_node_id = decode_node_id(node_id)?;
     let node = self.lookup_node(node_id)?;
-    if node.record.kind != FileSystemNodeKind::Symlink {
+    if node.record.kind != NamespaceNodeKind::Symlink {
       return Ok(None);
     }
 
@@ -219,7 +219,7 @@ impl HfsFileSystem {
     Ok(Some(String::from_utf8_lossy(&data).to_string()))
   }
 
-  pub fn open_resource_fork(&self, node_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
+  pub fn open_resource_fork(&self, node_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let raw_node_id = decode_node_id(node_id)?;
     let node = self.lookup_node(node_id)?;
     let resource_fork = node.resource_fork.as_ref().ok_or_else(|| {
@@ -231,7 +231,7 @@ impl HfsFileSystem {
   }
 
   pub fn extended_attributes(
-    &self, node_id: &FileSystemNodeId,
+    &self, node_id: &NamespaceNodeId,
   ) -> Result<Vec<HfsExtendedAttribute>> {
     let node_id = decode_node_id(node_id)?;
     let Some(attributes) = self.extended_attribute_index()? else {
@@ -245,7 +245,7 @@ impl HfsFileSystem {
     )
   }
 
-  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<Arc<HfsNode>> {
+  fn lookup_node(&self, node_id: &NamespaceNodeId) -> Result<Arc<HfsNode>> {
     let node_id = decode_node_id(node_id)?;
     self
       .catalog_index()?
@@ -330,18 +330,18 @@ impl FileSystem for HfsFileSystem {
     self.descriptor
   }
 
-  fn root_node_id(&self) -> FileSystemNodeId {
-    FileSystemNodeId::from_u64(u64::from(ROOT_CNID))
+  fn root_node_id(&self) -> NamespaceNodeId {
+    NamespaceNodeId::from_u64(u64::from(ROOT_CNID))
   }
 
-  fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
+  fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     self.lookup_node(node_id).map(|node| node.record.clone())
   }
 
-  fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let node_id = decode_node_id(directory_id)?;
     let node = self.lookup_node(directory_id)?;
-    if node.record.kind != FileSystemNodeKind::Directory {
+    if node.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::NotFound(format!(
         "hfs node {node_id} is not a directory"
       )));
@@ -355,10 +355,10 @@ impl FileSystem for HfsFileSystem {
     )
   }
 
-  fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
+  fn open_file(&self, file_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let node_id = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
-    if node.record.kind != FileSystemNodeKind::File {
+    if node.record.kind != NamespaceNodeKind::File {
       return Err(Error::NotFound(format!(
         "hfs node {node_id} is not a readable file"
       )));
@@ -371,7 +371,7 @@ impl FileSystem for HfsFileSystem {
   }
 }
 
-impl DataSource for HfsForkDataSource {
+impl ByteSource for HfsForkDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.fork.logical_size || buf.is_empty() {
       return Ok(0);
@@ -422,7 +422,7 @@ impl DataSource for HfsForkDataSource {
     Ok(self.fork.logical_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.source.capabilities()
   }
 
@@ -432,7 +432,7 @@ impl DataSource for HfsForkDataSource {
 }
 
 fn build_hfs_catalog_index(
-  source: DataSourceHandle, allocation_block_size: u32, allocation_base_offset: u64,
+  source: ByteSourceHandle, allocation_block_size: u32, allocation_base_offset: u64,
   catalog_fork: &HfsFork,
 ) -> Result<HfsCatalogIndex> {
   let catalog_source = HfsForkDataSource {
@@ -450,9 +450,9 @@ fn build_hfs_catalog_index(
     .nodes
     .entry(u64::from(ROOT_CNID))
     .or_insert(HfsNode {
-      record: FileSystemNodeRecord::new(
-        FileSystemNodeId::from_u64(u64::from(ROOT_CNID)),
-        FileSystemNodeKind::Directory,
+      record: NamespaceNodeRecord::new(
+        NamespaceNodeId::from_u64(u64::from(ROOT_CNID)),
+        NamespaceNodeKind::Directory,
         0,
       ),
       fork: None,
@@ -464,7 +464,7 @@ fn build_hfs_catalog_index(
 }
 
 fn build_hfs_plus_catalog_index(
-  source: DataSourceHandle, allocation_block_size: u32, catalog_fork: &HfsFork,
+  source: ByteSourceHandle, allocation_block_size: u32, catalog_fork: &HfsFork,
 ) -> Result<HfsCatalogIndex> {
   let catalog_source = HfsForkDataSource {
     source,
@@ -515,9 +515,9 @@ fn build_hfs_plus_catalog_index(
     .nodes
     .entry(u64::from(ROOT_CNID))
     .or_insert(HfsNode {
-      record: FileSystemNodeRecord::new(
-        FileSystemNodeId::from_u64(u64::from(ROOT_CNID)),
-        FileSystemNodeKind::Directory,
+      record: NamespaceNodeRecord::new(
+        NamespaceNodeId::from_u64(u64::from(ROOT_CNID)),
+        NamespaceNodeKind::Directory,
         0,
       ),
       fork: None,
@@ -580,7 +580,7 @@ fn parse_hfs_catalog_record(record: &[u8], builder: &mut HfsBuilder) -> Result<(
           cnid,
           parent_id,
           name,
-          kind: FileSystemNodeKind::Directory,
+          kind: NamespaceNodeKind::Directory,
           fork: None,
           resource_fork: None,
           hard_link_target: None,
@@ -607,7 +607,7 @@ fn parse_hfs_catalog_record(record: &[u8], builder: &mut HfsBuilder) -> Result<(
           cnid,
           parent_id,
           name,
-          kind: FileSystemNodeKind::File,
+          kind: NamespaceNodeKind::File,
           fork: Some(data_fork),
           resource_fork: Some(resource_fork),
           hard_link_target: None,
@@ -700,8 +700,8 @@ fn insert_node(builder: &mut HfsBuilder, node: HfsNodeInsert) {
   builder.nodes.insert(
     u64::from(node.cnid),
     HfsNode {
-      record: FileSystemNodeRecord::new(
-        FileSystemNodeId::from_u64(u64::from(node.cnid)),
+      record: NamespaceNodeRecord::new(
+        NamespaceNodeId::from_u64(u64::from(node.cnid)),
         node.kind,
         node.fork.as_ref().map_or(0, |fork| fork.logical_size),
       ),
@@ -714,8 +714,8 @@ fn insert_node(builder: &mut HfsBuilder, node: HfsNodeInsert) {
 
 fn build_children(
   builder: &HfsBuilder, hide_metadata_dir: Option<u32>,
-) -> HashMap<u64, Vec<DirectoryEntry>> {
-  let mut children = HashMap::<u64, Vec<DirectoryEntry>>::new();
+) -> HashMap<u64, Vec<NamespaceDirectoryEntry>> {
+  let mut children = HashMap::<u64, Vec<NamespaceDirectoryEntry>>::new();
   for (node_id, parent_id) in &builder.parents {
     if *node_id == u64::from(ROOT_CNID) {
       continue;
@@ -735,7 +735,7 @@ fn build_children(
     children
       .entry(u64::from(*parent_id))
       .or_default()
-      .push(DirectoryEntry::new(
+      .push(NamespaceDirectoryEntry::new(
         name.clone(),
         node.record.id.clone(),
         node.record.kind,
@@ -748,7 +748,7 @@ fn build_children(
 }
 
 fn parse_hfs_plus_attributes(
-  source: DataSourceHandle, allocation_block_size: u32, fork: &HfsFork,
+  source: ByteSourceHandle, allocation_block_size: u32, fork: &HfsFork,
 ) -> Result<HashMap<u64, Arc<[HfsExtendedAttribute]>>> {
   let attributes_source = HfsForkDataSource {
     source,
@@ -1018,17 +1018,17 @@ fn decode_hfs_plus_name(bytes: &[u8]) -> Result<String> {
   decode_utf16be_string(bytes, true)
 }
 
-fn kind_from_mode(mode: u16) -> FileSystemNodeKind {
+fn kind_from_mode(mode: u16) -> NamespaceNodeKind {
   match mode & MODE_TYPE_MASK {
-    MODE_DIRECTORY => FileSystemNodeKind::Directory,
-    MODE_SYMLINK => FileSystemNodeKind::Symlink,
-    MODE_REGULAR => FileSystemNodeKind::File,
-    MODE_FIFO | MODE_CHAR_DEVICE | MODE_BLOCK_DEVICE | MODE_SOCKET => FileSystemNodeKind::Special,
-    _ => FileSystemNodeKind::File,
+    MODE_DIRECTORY => NamespaceNodeKind::Directory,
+    MODE_SYMLINK => NamespaceNodeKind::Symlink,
+    MODE_REGULAR => NamespaceNodeKind::File,
+    MODE_FIFO | MODE_CHAR_DEVICE | MODE_BLOCK_DEVICE | MODE_SOCKET => NamespaceNodeKind::Special,
+    _ => NamespaceNodeKind::File,
   }
 }
 
-fn decode_node_id(node_id: &FileSystemNodeId) -> Result<u64> {
+fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
     return Err(Error::InvalidSourceReference(
@@ -1213,3 +1213,5 @@ mod tests {
       .collect::<Vec<_>>()
   }
 }
+
+crate::filesystems::driver::impl_file_system_data_source!(HfsFileSystem);

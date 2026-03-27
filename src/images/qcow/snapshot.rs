@@ -31,7 +31,7 @@ pub struct QcowSnapshot {
 
 impl QcowSnapshot {
   /// Parse a sequence of snapshot headers from the qcow snapshot table region.
-  pub fn parse_many(source: &dyn crate::DataSource, header: &QcowHeader) -> Result<Vec<Self>> {
+  pub fn parse_many(source: &dyn crate::ByteSource, header: &QcowHeader) -> Result<Vec<Self>> {
     if header.snapshot_count == 0 {
       return Ok(Vec::new());
     }
@@ -49,7 +49,7 @@ impl QcowSnapshot {
     Ok(snapshots)
   }
 
-  fn read_one(source: &dyn crate::DataSource, offset: u64) -> Result<Self> {
+  fn read_one(source: &dyn crate::ByteSource, offset: u64) -> Result<Self> {
     let fixed = source.read_bytes_at(offset, 40)?;
     let l1_table_offset = read_u64_be(&fixed, 0)?;
     let l1_entry_count = read_u32_be(&fixed, 8)?;
@@ -124,7 +124,7 @@ fn parse_snapshot_extra_data(
 }
 
 fn read_snapshot_l1_table(
-  source: &dyn crate::DataSource, offset: u64, entry_count: u32,
+  source: &dyn crate::ByteSource, offset: u64, entry_count: u32,
 ) -> Result<Arc<[u64]>> {
   let size = usize::try_from(u64::from(entry_count) * 8)
     .map_err(|_| Error::InvalidRange("qcow snapshot l1 table size is too large".to_string()))?;
@@ -143,7 +143,7 @@ fn read_snapshot_l1_table(
 }
 
 fn read_utf8_string(
-  source: &dyn crate::DataSource, offset: u64, len: usize, label: &str,
+  source: &dyn crate::ByteSource, offset: u64, len: usize, label: &str,
 ) -> Result<String> {
   let data = source.read_bytes_at(offset, len)?;
   String::from_utf8(data).map_err(|_| Error::InvalidFormat(format!("{label} is not valid UTF-8")))

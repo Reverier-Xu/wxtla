@@ -1,10 +1,7 @@
 //! HFS driver open flow.
 
 use super::{DESCRIPTOR, filesystem::HfsFileSystem};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  filesystems::{FileSystem, FileSystemDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HfsDriver;
@@ -14,23 +11,27 @@ impl HfsDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<HfsFileSystem> {
+  pub fn open(source: ByteSourceHandle) -> Result<HfsFileSystem> {
     HfsFileSystem::open(source)
   }
 
   pub fn open_with_hints(
-    source: DataSourceHandle, hints: SourceHints<'_>,
+    source: ByteSourceHandle, hints: SourceHints<'_>,
   ) -> Result<HfsFileSystem> {
     HfsFileSystem::open_with_hints(source, hints)
   }
 }
-
-impl FileSystemDriver for HfsDriver {
+impl Driver for HfsDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn FileSystem>> {
-    Ok(Box::new(HfsFileSystem::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(HfsFileSystem::open_with_hints(
+      source,
+      options.hints,
+    )?))
   }
 }

@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use support::{FileDataSource, fixture_path};
 use wxtla::{
-  DataSourceHandle, DataSourceReadStats, ObservedDataSource,
-  filesystems::{DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, ext::ExtDriver},
+  ByteSourceHandle, ByteSourceReadStats, ObservedDataSource,
+  filesystems::{
+    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceSource, ext::ExtDriver,
+  },
 };
 
 const INITIAL_SPARSE_SUFFIX: &[u8] = b"File with an initial sparse extent\n";
@@ -14,25 +16,25 @@ const TRAILING_SPARSE_PREFIX: &[u8] = b"File with a trailing sparse extent\n";
 fn open_fixture_file_system(
   relative_path: &str,
 ) -> wxtla::Result<wxtla::filesystems::ext::ExtFileSystem> {
-  let source: DataSourceHandle = Arc::new(FileDataSource::open(fixture_path(relative_path))?);
+  let source: ByteSourceHandle = Arc::new(FileDataSource::open(fixture_path(relative_path))?);
   ExtDriver::open(source)
 }
 
 fn open_observed_fixture_file_system(
   relative_path: &str,
-) -> wxtla::Result<(wxtla::filesystems::ext::ExtFileSystem, DataSourceReadStats)> {
+) -> wxtla::Result<(wxtla::filesystems::ext::ExtFileSystem, ByteSourceReadStats)> {
   let observed = Arc::new(ObservedDataSource::new(Arc::new(FileDataSource::open(
     fixture_path(relative_path),
   )?)));
   let stats = observed.stats();
-  let source: DataSourceHandle = observed;
+  let source: ByteSourceHandle = observed;
 
   Ok((ExtDriver::open(source)?, stats))
 }
 
 fn child_named(
-  file_system: &dyn FileSystem, directory_id: &FileSystemNodeId, name: &str,
-) -> wxtla::Result<DirectoryEntry> {
+  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
+) -> wxtla::Result<NamespaceDirectoryEntry> {
   file_system
     .read_dir(directory_id)?
     .into_iter()
@@ -78,12 +80,12 @@ fn ext_fixtures_expose_root_entries_and_node_kinds() {
     let directory_symlink = child_named(&file_system, &root_id, "directory_symboliclink1").unwrap();
     assert_eq!(
       file_system.node(&file_symlink.node_id).unwrap().kind,
-      FileSystemNodeKind::Symlink,
+      NamespaceNodeKind::Symlink,
       "fixture: {relative_path}"
     );
     assert_eq!(
       file_system.node(&directory_symlink.node_id).unwrap().kind,
-      FileSystemNodeKind::Symlink,
+      NamespaceNodeKind::Symlink,
       "fixture: {relative_path}"
     );
 
@@ -120,7 +122,7 @@ fn ext_fixtures_read_regular_files_and_hardlinks() {
     );
     assert_eq!(
       file_system
-        .open_file(&testfile_entry.node_id)
+        .open_content(&testfile_entry.node_id)
         .unwrap()
         .read_all()
         .unwrap(),
@@ -129,7 +131,7 @@ fn ext_fixtures_read_regular_files_and_hardlinks() {
     );
     assert_eq!(
       file_system
-        .open_file(&hardlink_entry.node_id)
+        .open_content(&hardlink_entry.node_id)
         .unwrap()
         .read_all()
         .unwrap(),
@@ -138,7 +140,7 @@ fn ext_fixtures_read_regular_files_and_hardlinks() {
     );
 
     let license_data = file_system
-      .open_file(&license_entry.node_id)
+      .open_content(&license_entry.node_id)
       .unwrap()
       .read_all()
       .unwrap();
@@ -286,7 +288,7 @@ fn ext_fixtures_preserve_sparse_ranges() {
       child_named(&file_system, &testdir_entry.node_id, "trailing_sparse1").unwrap();
 
     let initial_data = file_system
-      .open_file(&initial_sparse.node_id)
+      .open_content(&initial_sparse.node_id)
       .unwrap()
       .read_all()
       .unwrap();
@@ -302,7 +304,7 @@ fn ext_fixtures_preserve_sparse_ranges() {
     );
 
     let trailing_data = file_system
-      .open_file(&trailing_sparse.node_id)
+      .open_content(&trailing_sparse.node_id)
       .unwrap()
       .read_all()
       .unwrap();

@@ -2,7 +2,7 @@ use super::{
   constants::{SB_MAGIC, SECONDARY_FEATURE_FILETYPE, XFS_MAX_INODE_NUMBER},
   io::{be_u16, be_u32, be_u64, read_exact_at},
 };
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 #[derive(Clone, Debug)]
 pub(crate) struct XfsSuperblock {
@@ -21,7 +21,7 @@ pub(crate) struct XfsSuperblock {
 }
 
 impl XfsSuperblock {
-  pub(crate) fn read(source: &dyn DataSource) -> Result<Self> {
+  pub(crate) fn read(source: &dyn ByteSource) -> Result<Self> {
     let data = read_exact_at(source, 0, 512)?;
     if &data[0..4] != SB_MAGIC {
       return Err(Error::InvalidFormat(

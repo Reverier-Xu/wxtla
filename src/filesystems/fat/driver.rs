@@ -1,10 +1,7 @@
 //! FAT driver open flow.
 
 use super::{DESCRIPTOR, filesystem::FatFileSystem};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  filesystems::{FileSystem, FileSystemDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FatDriver;
@@ -14,23 +11,27 @@ impl FatDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<FatFileSystem> {
+  pub fn open(source: ByteSourceHandle) -> Result<FatFileSystem> {
     FatFileSystem::open(source)
   }
 
   pub fn open_with_hints(
-    source: DataSourceHandle, hints: SourceHints<'_>,
+    source: ByteSourceHandle, hints: SourceHints<'_>,
   ) -> Result<FatFileSystem> {
     FatFileSystem::open_with_hints(source, hints)
   }
 }
-
-impl FileSystemDriver for FatDriver {
+impl Driver for FatDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn FileSystem>> {
-    Ok(Box::new(FatFileSystem::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(FatFileSystem::open_with_hints(
+      source,
+      options.hints,
+    )?))
   }
 }

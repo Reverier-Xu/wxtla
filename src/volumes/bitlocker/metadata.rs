@@ -259,7 +259,7 @@ impl BitlockerMetadataHeader {
 }
 
 impl BitlockerMetadata {
-  pub fn read_block(source: &dyn crate::DataSource, offset: u64) -> Result<Self> {
+  pub fn read_block(source: &dyn crate::ByteSource, offset: u64) -> Result<Self> {
     let block_header =
       BitlockerMetadataBlockHeader::from_bytes(&source.read_bytes_at(offset, 64)?)?;
     let header = BitlockerMetadataHeader::from_bytes(&source.read_bytes_at(offset + 64, 48)?)?;
@@ -271,7 +271,7 @@ impl BitlockerMetadata {
     Self::from_parts(block_header, header, &entries)
   }
 
-  pub fn read_startup_key_file(source: &dyn crate::DataSource) -> Result<BitlockerExternalKey> {
+  pub fn read_startup_key_file(source: &dyn crate::ByteSource) -> Result<BitlockerExternalKey> {
     let header = BitlockerMetadataHeader::from_bytes(&source.read_bytes_at(0, 48)?)?;
     let entry_size = usize::try_from(header.metadata_size.saturating_sub(header.header_size))
       .map_err(|_| {

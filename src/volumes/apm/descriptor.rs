@@ -1,7 +1,7 @@
 //! Apple Partition Map driver descriptor parsing.
 
 use super::constants::{BLOCK0_SIZE, DRIVER_DESCRIPTOR_SIGNATURE};
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Device driver descriptor embedded in the APM driver descriptor block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub struct ApmDriverDescriptor {
 
 impl ApmDriverDescriptor {
   /// Read the driver descriptor from the start of a data source.
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let data = source.read_bytes_at(0, BLOCK0_SIZE)?;
     Self::parse(&data)
   }

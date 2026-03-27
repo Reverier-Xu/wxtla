@@ -8,7 +8,7 @@ use super::{
   system::{GptHeaderLocation, GptVolumeSystem},
   validation::validate_layout,
 };
-use crate::{DataSource, DataSourceHandle, Error, Result, volumes::mbr::MbrPartitionEntry};
+use crate::{ByteSource, ByteSourceHandle, Error, Result, volumes::mbr::MbrPartitionEntry};
 
 #[derive(Debug)]
 struct GptCandidate {
@@ -21,7 +21,7 @@ struct GptHeaderCandidate {
   header: GptHeader,
 }
 
-pub(super) fn candidate_block_sizes(source: &dyn DataSource) -> Result<Vec<u32>> {
+pub(super) fn candidate_block_sizes(source: &dyn ByteSource) -> Result<Vec<u32>> {
   let mut candidates = Vec::new();
   let source_size = source.size()?;
   for block_size in constants::SUPPORTED_BLOCK_SIZES {
@@ -42,7 +42,7 @@ pub(super) fn candidate_block_sizes(source: &dyn DataSource) -> Result<Vec<u32>>
   Ok(candidates)
 }
 
-pub(super) fn open(source: DataSourceHandle) -> Result<GptVolumeSystem> {
+pub(super) fn open(source: ByteSourceHandle) -> Result<GptVolumeSystem> {
   let mut first_error = None;
   for block_size in candidate_block_sizes(source.as_ref())? {
     match open_with_block_size(source.clone(), block_size) {
@@ -60,13 +60,13 @@ pub(super) fn open(source: DataSourceHandle) -> Result<GptVolumeSystem> {
   }))
 }
 
-pub(super) fn validate_primary_probe(source: &dyn DataSource, block_size: u32) -> Result<()> {
+pub(super) fn validate_primary_probe(source: &dyn ByteSource, block_size: u32) -> Result<()> {
   validate_protective_mbr(source)?;
   read_header_candidate(source, block_size, GptHeaderLocation::Primary).map(|_| ())
 }
 
 pub(super) fn open_with_block_size(
-  source: DataSourceHandle, block_size: u32,
+  source: ByteSourceHandle, block_size: u32,
 ) -> Result<GptVolumeSystem> {
   validate_protective_mbr(source.as_ref())?;
 
@@ -150,7 +150,7 @@ pub(super) fn open_with_block_size(
 }
 
 fn read_header_candidate(
-  source: &dyn DataSource, block_size: u32, location: GptHeaderLocation,
+  source: &dyn ByteSource, block_size: u32, location: GptHeaderLocation,
 ) -> Result<GptHeaderCandidate> {
   let source_size = source.size()?;
   let expected_current_lba = match location {
@@ -164,7 +164,7 @@ fn read_header_candidate(
 }
 
 fn read_partitions_candidate(
-  source: &dyn DataSource, block_size: u32, location: GptHeaderLocation, header: GptHeader,
+  source: &dyn ByteSource, block_size: u32, location: GptHeaderLocation, header: GptHeader,
 ) -> Result<GptCandidate> {
   let source_size = source.size()?;
   let expected_current_lba = match location {
@@ -201,7 +201,7 @@ fn last_lba(source_size: u64, block_size: u32) -> Result<u64> {
 }
 
 fn read_header_block(
-  source: &dyn DataSource, block_size: u32, lba: u64,
+  source: &dyn ByteSource, block_size: u32, lba: u64,
 ) -> Result<(GptHeader, Vec<u8>)> {
   let offset = lba
     .checked_mul(u64::from(block_size))
@@ -218,7 +218,7 @@ fn push_candidate_block_size(candidates: &mut Vec<u32>, block_size: u32) {
 }
 
 fn read_entry_array(
-  source: &dyn DataSource, block_size: u32, header: &GptHeader,
+  source: &dyn ByteSource, block_size: u32, header: &GptHeader,
 ) -> Result<Vec<u8>> {
   let entry_array_offset = header
     .entry_array_start_lba
@@ -259,7 +259,7 @@ fn parse_partitions(
   Ok(partitions)
 }
 
-fn validate_protective_mbr(source: &dyn DataSource) -> Result<()> {
+fn validate_protective_mbr(source: &dyn ByteSource) -> Result<()> {
   let sector = source.read_bytes_at(0, 512)?;
   if sector[510..512] != [0x55, 0xAA] {
     return Err(Error::InvalidFormat(

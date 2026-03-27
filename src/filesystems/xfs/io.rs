@@ -1,6 +1,6 @@
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
-pub(crate) fn read_exact_at(source: &dyn DataSource, offset: u64, size: usize) -> Result<Vec<u8>> {
+pub(crate) fn read_exact_at(source: &dyn ByteSource, offset: u64, size: usize) -> Result<Vec<u8>> {
   let mut buf = vec![0u8; size];
   source.read_exact_at(offset, &mut buf)?;
   Ok(buf)

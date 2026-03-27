@@ -1,7 +1,7 @@
 //! VHDX top-level header and region-table parsing.
 
 use super::{constants, guid::VhdxGuid};
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Parsed VHDX image header copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub struct VhdxRegionTable {
 }
 
 impl VhdxImageHeader {
-  pub fn read(source: &dyn DataSource, offset: u64) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource, offset: u64) -> Result<Self> {
     let data = source.read_bytes_at(offset, constants::IMAGE_HEADER_SIZE)?;
     Self::from_bytes(&data)
   }
@@ -108,7 +108,7 @@ impl VhdxImageHeader {
 }
 
 impl VhdxRegionTable {
-  pub fn read(source: &dyn DataSource, offset: u64) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource, offset: u64) -> Result<Self> {
     let data = source.read_bytes_at(offset, constants::REGION_TABLE_SIZE)?;
     Self::from_bytes(&data)
   }
@@ -234,7 +234,7 @@ impl VhdxRegionTable {
   }
 }
 
-pub(super) fn validate_file_identifier(source: &dyn DataSource) -> Result<()> {
+pub(super) fn validate_file_identifier(source: &dyn ByteSource) -> Result<()> {
   let data = source.read_bytes_at(
     constants::FILE_IDENTIFIER_OFFSET,
     constants::FILE_IDENTIFIER_SIZE,

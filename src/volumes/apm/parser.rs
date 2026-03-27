@@ -7,9 +7,9 @@ use super::{
   system::ApmVolumeSystem,
   validation::validate_layout,
 };
-use crate::{DataSource, DataSourceHandle, Result};
+use crate::{ByteSource, ByteSourceHandle, Result};
 
-pub(super) fn open(source: DataSourceHandle) -> Result<ApmVolumeSystem> {
+pub(super) fn open(source: ByteSourceHandle) -> Result<ApmVolumeSystem> {
   let descriptor = ApmDriverDescriptor::read(source.as_ref())?;
   let partitions = read_partition_map(source.as_ref(), descriptor.block_size)?;
 
@@ -18,7 +18,7 @@ pub(super) fn open(source: DataSourceHandle) -> Result<ApmVolumeSystem> {
   Ok(ApmVolumeSystem::new(source, descriptor, partitions))
 }
 
-fn read_partition_map(source: &dyn DataSource, block_size: u16) -> Result<Vec<ApmPartitionInfo>> {
+fn read_partition_map(source: &dyn ByteSource, block_size: u16) -> Result<Vec<ApmPartitionInfo>> {
   let first_entry = ApmPartitionMapEntry::parse(
     &source.read_bytes_at(u64::from(PARTITION_MAP_OFFSET), PARTITION_ENTRY_SIZE)?,
   )?;

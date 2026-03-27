@@ -1,10 +1,7 @@
 //! AD1 driver open flow.
 
 use super::{DESCRIPTOR, archive::AdfArchive};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  archives::{Archive, ArchiveDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AdfDriver;
@@ -14,21 +11,26 @@ impl AdfDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<AdfArchive> {
+  pub fn open(source: ByteSourceHandle) -> Result<AdfArchive> {
     AdfArchive::open(source)
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<AdfArchive> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<AdfArchive> {
     AdfArchive::open_with_hints(source, hints)
   }
 }
 
-impl ArchiveDriver for AdfDriver {
+impl Driver for AdfDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Archive>> {
-    Ok(Box::new(AdfArchive::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(AdfArchive::open_with_hints(
+      source,
+      options.hints,
+    )?))
   }
 }

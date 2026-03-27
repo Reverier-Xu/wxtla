@@ -9,10 +9,14 @@ pub mod images;
 pub mod volumes;
 
 pub use core::{
-  BytesDataSource, DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceReadConcurrency,
-  DataSourceReadStats, DataSourceReadStatsSnapshot, DataSourceSeekCost, Error, FileDataSource,
-  FormatDescriptor, FormatKind, FormatProbe, ObservedDataSource, ProbeCachedDataSource,
-  ProbeConfidence, ProbeContext, ProbeMatch, ProbeOptions, ProbeRegistry, ProbeReport, ProbeResult,
-  RelatedPathBuf, RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result,
-  SharedDataSource, SliceDataSource, SourceHints, SourceIdentity,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceReadConcurrency,
+  ByteSourceReadStats, ByteSourceReadStatsSnapshot, ByteSourceSeekCost, ByteViewSource,
+  BytesDataSource, Credential, DataSource, DataSourceFacets, DataViewId, DataViewKind,
+  DataViewRecord, DataViewSelector, Driver, Error, FileDataSource, FormatDescriptor, FormatKind,
+  FormatProbe, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
+  NamespaceSource, NamespaceStreamId, NamespaceStreamKind, NamespaceStreamRecord,
+  ObservedDataSource, OpenOptions, ProbeCachedDataSource, ProbeConfidence, ProbeContext,
+  ProbeMatch, ProbeOptions, ProbeRegistry, ProbeReport, ProbeResult, RelatedPathBuf,
+  RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SharedDataSource,
+  SliceDataSource, SourceHints, SourceIdentity, TableSource, VerificationPolicy,
 };

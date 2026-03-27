@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::{DESCRIPTOR, entry::GptPartitionInfo, guid::GptGuid, header::GptHeader};
 use crate::{
-  DataSourceHandle, Error, Result, SliceDataSource,
+  ByteSourceHandle, Error, Result, SliceDataSource,
   volumes::{VolumeRecord, VolumeSystem},
 };
 
@@ -19,7 +19,7 @@ pub enum GptHeaderLocation {
 
 /// Open GPT volume system.
 pub struct GptVolumeSystem {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   block_size: u32,
   active_header_location: GptHeaderLocation,
   active_header: GptHeader,
@@ -32,7 +32,7 @@ pub struct GptVolumeSystem {
 impl GptVolumeSystem {
   /// Create a new open GPT volume system.
   pub fn new(
-    source: DataSourceHandle, block_size: u32, active_header_location: GptHeaderLocation,
+    source: ByteSourceHandle, block_size: u32, active_header_location: GptHeaderLocation,
     primary_header: Option<GptHeader>, backup_header: Option<GptHeader>,
     partitions: Vec<GptPartitionInfo>,
   ) -> Result<Self> {
@@ -86,6 +86,29 @@ impl GptVolumeSystem {
     self.header().disk_guid
   }
 
+  /// Return the volume-system block size in bytes.
+  pub fn block_size(&self) -> u32 {
+    self.block_size
+  }
+
+  /// Return the discovered volume records.
+  pub fn volumes(&self) -> &[VolumeRecord] {
+    &self.volumes
+  }
+
+  /// Open the logical byte range corresponding to a volume.
+  pub fn open_volume(&self, index: usize) -> Result<ByteSourceHandle> {
+    let volume = self
+      .volumes
+      .get(index)
+      .ok_or_else(|| Error::NotFound(format!("gpt volume index {index} is out of bounds")))?;
+    Ok(Arc::new(SliceDataSource::new(
+      self.source.clone(),
+      volume.span.byte_offset,
+      volume.span.byte_size,
+    )))
+  }
+
   /// Return the parsed GPT partition metadata.
   pub fn partitions(&self) -> &[GptPartitionInfo] {
     &self.partitions
@@ -98,22 +121,16 @@ impl VolumeSystem for GptVolumeSystem {
   }
 
   fn block_size(&self) -> u32 {
-    self.block_size
+    self.block_size()
   }
 
   fn volumes(&self) -> &[VolumeRecord] {
-    &self.volumes
+    self.volumes()
   }
 
-  fn open_volume(&self, index: usize) -> Result<DataSourceHandle> {
-    let volume = self
-      .volumes
-      .get(index)
-      .ok_or_else(|| Error::NotFound(format!("gpt volume index {index} is out of bounds")))?;
-    Ok(Arc::new(SliceDataSource::new(
-      self.source.clone(),
-      volume.span.byte_offset,
-      volume.span.byte_size,
-    )))
+  fn open_volume(&self, index: usize) -> Result<ByteSourceHandle> {
+    self.open_volume(index)
   }
 }
+
+crate::volumes::driver::impl_volume_system_data_source!(GptVolumeSystem);

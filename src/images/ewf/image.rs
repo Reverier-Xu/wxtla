@@ -16,7 +16,7 @@ use super::{
   types::{EwfChunkDescriptor, EwfChunkEncoding, EwfMediaType},
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
   SourceHints, images::Image,
 };
 
@@ -24,7 +24,7 @@ const CHUNK_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
 /// Read-only EWF image surface.
 pub struct EwfImage {
-  segment_sources: HashMap<u16, DataSourceHandle>,
+  segment_sources: HashMap<u16, ByteSourceHandle>,
   segment_number: u16,
   media_type: EwfMediaType,
   chunk_count: u32,
@@ -43,12 +43,12 @@ pub struct EwfImage {
 
 impl EwfImage {
   /// Open an EWF image from a single segment source.
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::from_parsed(parse(source)?)
   }
 
   /// Open an EWF image using source hints for multi-segment resolution.
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     Self::from_parsed(parse_with_hints(source, hints)?)
   }
 
@@ -323,7 +323,7 @@ fn bounded_cache_capacity(entry_size: usize, byte_budget: usize, max_entries: us
   (byte_budget / entry_size).max(1).min(max_entries)
 }
 
-impl DataSource for EwfImage {
+impl ByteSource for EwfImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.media_size || buf.is_empty() {
       return Ok(0);
@@ -357,8 +357,8 @@ impl DataSource for EwfImage {
     Ok(self.media_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
       .with_preferred_chunk_size((self.sectors_per_chunk * self.bytes_per_sector) as usize)
   }
 
@@ -382,7 +382,7 @@ mod tests {
   use std::{path::Path, sync::Arc};
 
   use super::*;
-  use crate::DataSource;
+  use crate::ByteSource;
 
   struct MemDataSource {
     data: Vec<u8>,
@@ -399,7 +399,7 @@ mod tests {
     }
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -415,7 +415,7 @@ mod tests {
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     Arc::new(MemDataSource::from_fixture(relative_path))
   }
 
@@ -493,3 +493,5 @@ mod tests {
     assert_eq!(&buf, &raw[32_700..32_700 + 1024]);
   }
 }
+
+crate::images::driver::impl_image_data_source!(EwfImage);

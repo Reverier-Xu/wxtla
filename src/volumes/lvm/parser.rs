@@ -8,11 +8,11 @@ use super::{
     resolve_current_pv_name,
   },
 };
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 const LABEL_SCAN_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
 
-pub(super) fn parse_lvm_image(source: &dyn DataSource) -> Result<LvmParsedImage> {
+pub(super) fn parse_lvm_image(source: &dyn ByteSource) -> Result<LvmParsedImage> {
   let label = read_label_sector(source)?.ok_or_else(|| unsupported("missing LVM2 label"))?;
   let metadata = read_best_metadata_copy(source, &label)?;
   let current_pv_name = resolve_current_pv_name(&metadata, &label.pv_identifier)
@@ -26,7 +26,7 @@ pub(super) fn parse_lvm_image(source: &dyn DataSource) -> Result<LvmParsedImage>
 }
 
 fn read_best_metadata_copy(
-  source: &dyn DataSource, label: &PhysicalVolumeLabel,
+  source: &dyn ByteSource, label: &PhysicalVolumeLabel,
 ) -> Result<ParsedMetadata> {
   let mut best_metadata = None::<ParsedMetadata>;
   let mut candidate_error = None::<Error>;
@@ -67,7 +67,7 @@ fn read_best_metadata_copy(
   })
 }
 
-fn read_label_sector(source: &dyn DataSource) -> Result<Option<PhysicalVolumeLabel>> {
+fn read_label_sector(source: &dyn ByteSource) -> Result<Option<PhysicalVolumeLabel>> {
   let source_size = source.size()?;
   let scan_limit = source_size.min(LABEL_SCAN_LIMIT_BYTES);
   let mut candidate_error: Option<Error> = None;
@@ -173,7 +173,7 @@ fn parse_label_from_sector(offset: u64, sector: &[u8; 512]) -> Result<PhysicalVo
   })
 }
 
-fn read_metadata_area(source: &dyn DataSource, area: AreaDescriptor) -> Result<Vec<RawLocation>> {
+fn read_metadata_area(source: &dyn ByteSource, area: AreaDescriptor) -> Result<Vec<RawLocation>> {
   let mut header = [0u8; 512];
   read_fully_at(source, area.offset, &mut header)?;
 
@@ -225,7 +225,7 @@ fn read_metadata_area(source: &dyn DataSource, area: AreaDescriptor) -> Result<V
   Ok(raw_locations)
 }
 
-fn read_metadata_text(source: &dyn DataSource, location: RawLocation) -> Result<ParsedMetadata> {
+fn read_metadata_text(source: &dyn ByteSource, location: RawLocation) -> Result<ParsedMetadata> {
   let mut data = vec![
     0u8;
     usize::try_from(location.size)
@@ -269,7 +269,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;

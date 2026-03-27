@@ -7,7 +7,7 @@ use super::{
   },
   entry::MbrPartitionEntry,
 };
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Parsed MBR-style boot record containing four partition entries.
 #[derive(Debug, Clone)]
@@ -18,7 +18,7 @@ pub struct MbrBootRecord {
 
 impl MbrBootRecord {
   /// Read and parse a boot record from a source offset.
-  pub fn read(source: &dyn DataSource, offset: u64) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource, offset: u64) -> Result<Self> {
     let data = source.read_bytes_at(offset, BOOT_RECORD_SIZE)?;
     Self::parse(&data)
   }

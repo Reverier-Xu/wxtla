@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use support::{FileDataSource, fixture_path};
 use wxtla::{
-  DataSourceHandle, SliceDataSource,
+  ByteSourceHandle, SliceDataSource,
   filesystems::{
-    DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, refs::RefsDriver,
+    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceSource, refs::RefsDriver,
   },
   images::ewf::EwfDriver,
 };
@@ -14,10 +14,10 @@ use wxtla::{
 const REFS_VOLUME_OFFSET: u64 = 34_603_008;
 
 fn open_fixture_file_system() -> wxtla::Result<wxtla::filesystems::refs::RefsFileSystem> {
-  let source: DataSourceHandle =
+  let source: ByteSourceHandle =
     Arc::new(FileDataSource::open(fixture_path("refs/refs-v1_2-3.E01"))?);
   let image = EwfDriver::open(source)?;
-  let image: DataSourceHandle = Arc::new(image);
+  let image: ByteSourceHandle = Arc::new(image);
   let volume_header = wxtla::filesystems::refs::RefsVolumeHeader::from_bytes(
     &image.read_bytes_at(REFS_VOLUME_OFFSET, 512)?,
   )?;
@@ -25,12 +25,12 @@ fn open_fixture_file_system() -> wxtla::Result<wxtla::filesystems::refs::RefsFil
     image,
     REFS_VOLUME_OFFSET,
     volume_header.volume_size,
-  )) as DataSourceHandle)
+  )) as ByteSourceHandle)
 }
 
 fn child_named(
-  file_system: &dyn FileSystem, directory_id: &FileSystemNodeId, name: &str,
-) -> wxtla::Result<DirectoryEntry> {
+  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
+) -> wxtla::Result<NamespaceDirectoryEntry> {
   file_system
     .read_dir(directory_id)?
     .into_iter()
@@ -45,18 +45,18 @@ fn refs_fixture_opens_and_lists_root() {
   let root = file_system.node(&root_id).unwrap();
   let root_entries = file_system.read_dir(&root_id).unwrap();
 
-  assert_eq!(root.kind, FileSystemNodeKind::Directory);
+  assert_eq!(root.kind, NamespaceNodeKind::Directory);
   assert_eq!(
     root_entries
       .iter()
       .map(|entry| (entry.name.clone(), entry.kind))
       .collect::<Vec<_>>(),
     vec![
-      ("$RECYCLE.BIN".to_string(), FileSystemNodeKind::Directory),
-      ("NotDeleted.txt".to_string(), FileSystemNodeKind::File),
+      ("$RECYCLE.BIN".to_string(), NamespaceNodeKind::Directory),
+      ("NotDeleted.txt".to_string(), NamespaceNodeKind::File),
       (
         "System Volume Information".to_string(),
-        FileSystemNodeKind::Directory,
+        NamespaceNodeKind::Directory,
       ),
     ]
   );
@@ -70,7 +70,7 @@ fn refs_fixture_opens_and_lists_root() {
       .collect::<Vec<_>>(),
     vec![(
       "S-1-5-21-1814885685-2275487565-1242746162-1001".to_string(),
-      FileSystemNodeKind::Directory,
+      NamespaceNodeKind::Directory,
     )]
   );
 
@@ -81,7 +81,7 @@ fn refs_fixture_opens_and_lists_root() {
       .iter()
       .map(|entry| (entry.name.clone(), entry.kind))
       .collect::<Vec<_>>(),
-    vec![("desktop.ini".to_string(), FileSystemNodeKind::File)]
+    vec![("desktop.ini".to_string(), NamespaceNodeKind::File)]
   );
 }
 
@@ -101,7 +101,7 @@ fn refs_fixture_reads_regular_files() {
   assert_eq!(
     String::from_utf8(
       file_system
-        .open_file(&desktop_ini.node_id)
+        .open_content(&desktop_ini.node_id)
         .unwrap()
         .read_all()
         .unwrap()
@@ -121,7 +121,7 @@ fn refs_fixture_reads_regular_files() {
   assert_eq!(
     String::from_utf8(
       file_system
-        .open_file(&not_deleted.node_id)
+        .open_content(&not_deleted.node_id)
         .unwrap()
         .read_all()
         .unwrap()

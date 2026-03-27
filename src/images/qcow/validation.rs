@@ -1,9 +1,9 @@
 //! Structural validation of QCOW headers and table offsets.
 
 use super::{constants::QCOW_VERSION_1, header::QcowHeader};
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
-pub(super) fn validate_header_layout(source: &dyn DataSource, header: &QcowHeader) -> Result<()> {
+pub(super) fn validate_header_layout(source: &dyn ByteSource, header: &QcowHeader) -> Result<()> {
   let file_size = source.size()?;
   let cluster_size = header.cluster_size()?;
   let l2_entry_count = header.l2_entry_count()?;

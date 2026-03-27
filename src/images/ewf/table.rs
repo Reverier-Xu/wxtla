@@ -3,7 +3,7 @@
 use adler2::{Adler32, adler32_slice};
 
 use super::constants::{TABLE_FOOTER_SIZE, TABLE_HEADER_SIZE};
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 const TABLE_ENTRY_SIZE: usize = 4;
 const TABLE_SCAN_BUFFER_SIZE: usize = 64 * 1024;
@@ -41,7 +41,7 @@ pub(super) struct EwfAnalyzedTable {
 }
 
 impl EwfAnalyzedTable {
-  pub fn read(source: &dyn DataSource, payload_offset: u64, payload_size: usize) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource, payload_offset: u64, payload_size: usize) -> Result<Self> {
     let layout = EwfTableLayout::read(source, payload_offset, payload_size)?;
     let overflow_start_index = validate_entries(source, payload_offset, layout)?;
 
@@ -53,7 +53,7 @@ impl EwfAnalyzedTable {
 }
 
 impl EwfTableLayout {
-  pub fn read(source: &dyn DataSource, payload_offset: u64, payload_size: usize) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource, payload_offset: u64, payload_size: usize) -> Result<Self> {
     if payload_size < TABLE_HEADER_SIZE + TABLE_FOOTER_SIZE {
       return Err(Error::InvalidFormat(
         "ewf table payload is too small".to_string(),
@@ -97,7 +97,7 @@ impl EwfTableLayout {
 }
 
 pub(super) fn read_entry_pair(
-  source: &dyn DataSource, entries_offset: u64, entry_count: u32, entry_index: usize,
+  source: &dyn ByteSource, entries_offset: u64, entry_count: u32, entry_index: usize,
 ) -> Result<(EwfTableEntry, Option<EwfTableEntry>)> {
   let entry_count = usize::try_from(entry_count)
     .map_err(|_| Error::InvalidRange("ewf table entry count is too large".to_string()))?;
@@ -131,7 +131,7 @@ pub(super) fn read_entry_pair(
 }
 
 fn validate_entries(
-  source: &dyn DataSource, payload_offset: u64, layout: EwfTableLayout,
+  source: &dyn ByteSource, payload_offset: u64, layout: EwfTableLayout,
 ) -> Result<Option<usize>> {
   let entries_offset = payload_offset
     .checked_add(TABLE_HEADER_SIZE as u64)
@@ -259,12 +259,12 @@ mod tests {
   use adler2::adler32_slice;
 
   use super::*;
-  use crate::{BytesDataSource, DataSourceHandle};
+  use crate::{ByteSourceHandle, BytesDataSource};
 
   #[test]
   fn analyzes_base_offset_without_materializing_the_table() {
     let payload = make_table_payload(1869, &[0x8000_004C, 0x8000_031D]);
-    let source: DataSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
+    let source: ByteSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
 
     let table = EwfAnalyzedTable::read(source.as_ref(), 0, 36).unwrap();
 
@@ -277,7 +277,7 @@ mod tests {
   fn reads_table_layout_without_loading_inline_chunks() {
     let mut payload = make_table_payload(1869, &[0x8000_004C, 0x8000_0058]);
     payload.extend_from_slice(&[0u8; 16]);
-    let source: DataSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
+    let source: ByteSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
     let layout = EwfTableLayout::read(source.as_ref(), 0, 52).unwrap();
 
     assert_eq!(layout.entry_count, 2);
@@ -292,7 +292,7 @@ mod tests {
   fn accepts_inline_chunk_data_after_the_footer() {
     let mut payload = make_table_payload(0, &[0x8000_004C, 0x8000_0058]);
     payload.extend_from_slice(&[0u8; 16]);
-    let source: DataSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
+    let source: ByteSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
 
     let table = EwfAnalyzedTable::read(source.as_ref(), 0, 52).unwrap();
 
@@ -302,7 +302,7 @@ mod tests {
   #[test]
   fn detects_overflow_start_in_streaming_analysis() {
     let payload = make_table_payload(0, &[0x7FFF_F000, 0x8000_1000, 0x8000_2000]);
-    let source: DataSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
+    let source: ByteSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
 
     let table = EwfAnalyzedTable::read(source.as_ref(), 0, 40).unwrap();
 
@@ -312,7 +312,7 @@ mod tests {
   #[test]
   fn reads_adjacent_entries_without_loading_the_table() {
     let payload = make_table_payload(0, &[0x8000_004C, 0x8000_0058]);
-    let source: DataSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
+    let source: ByteSourceHandle = std::sync::Arc::new(BytesDataSource::new(payload));
 
     let (current, next) = read_entry_pair(source.as_ref(), 24, 2, 0).unwrap();
 

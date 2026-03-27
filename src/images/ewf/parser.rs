@@ -17,7 +17,7 @@ use super::{
   volume::EwfVolumeInfo,
 };
 use crate::{
-  DataSource, DataSourceHandle, Error, RelatedSourcePurpose, RelatedSourceRequest, Result,
+  ByteSource, ByteSourceHandle, Error, RelatedSourcePurpose, RelatedSourceRequest, Result,
   SourceHints,
 };
 
@@ -47,7 +47,7 @@ pub(super) struct ParsedEwfSources {
   /// Parsed EWF metadata.
   pub parsed: ParsedEwf,
   /// Segment sources keyed by segment number.
-  pub segment_sources: HashMap<u16, DataSourceHandle>,
+  pub segment_sources: HashMap<u16, ByteSourceHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,13 +107,13 @@ struct ParsedSegment {
 }
 
 /// Parse a single-segment EWF image source.
-pub(super) fn parse(source: DataSourceHandle) -> Result<ParsedEwfSources> {
+pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedEwfSources> {
   parse_with_hints(source, SourceHints::new())
 }
 
 /// Parse an EWF image source using source hints for segment resolution.
 pub(super) fn parse_with_hints(
-  source: DataSourceHandle, hints: SourceHints<'_>,
+  source: ByteSourceHandle, hints: SourceHints<'_>,
 ) -> Result<ParsedEwfSources> {
   let current_file_header = EwfFileHeader::read(source.as_ref())?;
   let naming_info = hints
@@ -189,8 +189,8 @@ pub(super) fn parse_with_hints(
 }
 
 fn resolve_initial_source(
-  source: DataSourceHandle, hints: SourceHints<'_>, naming_info: Option<&EwfSegmentPathInfo>,
-) -> Result<DataSourceHandle> {
+  source: ByteSourceHandle, hints: SourceHints<'_>, naming_info: Option<&EwfSegmentPathInfo>,
+) -> Result<ByteSourceHandle> {
   match (naming_info, hints.resolver()) {
     (Some(info), Some(resolver)) if info.segment_number != 1 => {
       let segment_one_name = info.file_name_for_segment(1)?;
@@ -213,7 +213,7 @@ fn resolve_initial_source(
 
 fn resolve_next_source(
   hints: SourceHints<'_>, naming_info: Option<&EwfSegmentPathInfo>, segment_number: u16,
-) -> Result<DataSourceHandle> {
+) -> Result<ByteSourceHandle> {
   let resolver = hints.resolver().ok_or_else(|| {
     Error::InvalidSourceReference(
       "ewf multi-segment images require a related-source resolver".to_string(),
@@ -240,7 +240,7 @@ fn resolve_next_source(
     .ok_or_else(|| Error::NotFound(format!("missing ewf segment {segment_number}")))
 }
 
-fn parse_segment(source: &dyn DataSource, state: &mut ParseState) -> Result<ParsedSegment> {
+fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<ParsedSegment> {
   let file_header = EwfFileHeader::read(source)?;
   let file_size = source.size()?;
   let mut section_offset = FILE_HEADER_SIZE as u64;
@@ -395,7 +395,7 @@ fn section_payload_size(section: &EwfSectionDescriptor) -> Result<usize> {
 }
 
 fn parse_volume_payload(
-  source: &dyn DataSource, payload_offset: u64, payload_size: usize,
+  source: &dyn ByteSource, payload_offset: u64, payload_size: usize,
 ) -> Result<EwfVolumeInfo> {
   let payload = source.read_bytes_at(payload_offset, payload_size)?;
 
@@ -418,7 +418,7 @@ mod tests {
 
   use super::*;
   use crate::{
-    DataSource, DataSourceHandle, RelatedSourceRequest, RelatedSourceResolver, SourceHints,
+    ByteSource, ByteSourceHandle, RelatedSourceRequest, RelatedSourceResolver, SourceHints,
     SourceIdentity, images::ewf::constants::FILE_HEADER_MAGIC,
   };
 
@@ -426,7 +426,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -455,7 +455,7 @@ mod tests {
     }
   }
 
-  impl DataSource for SparseDataSource {
+  impl ByteSource for SparseDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       if offset >= self.size || buf.is_empty() {
         return Ok(0);
@@ -493,11 +493,11 @@ mod tests {
   }
 
   struct Resolver {
-    data: HashMap<String, DataSourceHandle>,
+    data: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.data.get(&request.path.to_string()).cloned())
     }
   }
@@ -513,11 +513,11 @@ mod tests {
 
   #[test]
   fn resolves_first_segment_from_a_later_numeric_segment() {
-    let first: DataSourceHandle = Arc::new(MemDataSource { data: vec![] });
+    let first: ByteSourceHandle = Arc::new(MemDataSource { data: vec![] });
     let resolver = Resolver {
       data: HashMap::from([("images/ext2.E01".to_string(), first.clone())]),
     };
-    let source: DataSourceHandle = Arc::new(MemDataSource { data: vec![] });
+    let source: ByteSourceHandle = Arc::new(MemDataSource { data: vec![] });
     let identity = SourceIdentity::from_relative_path("images/ext2.E02").unwrap();
 
     let resolved = resolve_initial_source(
@@ -561,10 +561,10 @@ mod tests {
         "images/ext2.E01".to_string(),
         Arc::new(MemDataSource {
           data: first_segment.clone(),
-        }) as DataSourceHandle,
+        }) as ByteSourceHandle,
       )]),
     };
-    let source: DataSourceHandle = Arc::new(MemDataSource {
+    let source: ByteSourceHandle = Arc::new(MemDataSource {
       data: make_file_header(100),
     });
     let identity = SourceIdentity::from_relative_path("images/ext2.EAA").unwrap();
@@ -598,7 +598,7 @@ mod tests {
     let table2_section = make_section("table2", &table_payload, table2_offset);
     let done_offset = table2_offset + table2_section.len() as u64;
     let done_section = make_descriptor("done", done_offset, SECTION_DESCRIPTOR_SIZE as u64);
-    let source: DataSourceHandle = Arc::new(
+    let source: ByteSourceHandle = Arc::new(
       SparseDataSource {
         size: done_offset + done_section.len() as u64,
         ..SparseDataSource::default()
@@ -626,7 +626,7 @@ mod tests {
     let volume_section = make_section("volume", &volume_payload, volume_offset);
     let done_offset = volume_offset + volume_section.len() as u64;
     let done_section = make_descriptor("done", done_offset, SECTION_DESCRIPTOR_SIZE as u64);
-    let source: DataSourceHandle = Arc::new(MemDataSource {
+    let source: ByteSourceHandle = Arc::new(MemDataSource {
       data: [make_file_header(1), volume_section, done_section].concat(),
     });
 
@@ -650,7 +650,7 @@ mod tests {
     let digest_section = make_section("digest", &digest_payload, digest_offset);
     let done_offset = digest_offset + digest_section.len() as u64;
     let done_section = make_descriptor("done", done_offset, SECTION_DESCRIPTOR_SIZE as u64);
-    let source: DataSourceHandle = Arc::new(MemDataSource {
+    let source: ByteSourceHandle = Arc::new(MemDataSource {
       data: [
         make_file_header(1),
         volume_section,

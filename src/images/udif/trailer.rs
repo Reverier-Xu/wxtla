@@ -1,6 +1,6 @@
 //! UDIF trailer parsing.
 
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 pub(super) const TRAILER_SIZE: usize = 512;
 const TRAILER_MAGIC: &[u8; 4] = b"koly";
@@ -33,7 +33,7 @@ pub struct UdifTrailer {
 }
 
 impl UdifTrailer {
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let size = source.size()?;
     if size < TRAILER_SIZE as u64 {
       return Err(Error::InvalidFormat(

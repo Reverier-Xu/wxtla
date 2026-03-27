@@ -1,10 +1,7 @@
 //! VHD driver open flow.
 
 use super::{DESCRIPTOR, image::VhdImage};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  images::{Image, ImageDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct VhdDriver;
@@ -14,17 +11,19 @@ impl VhdDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<VhdImage> {
+  pub fn open(source: ByteSourceHandle) -> Result<VhdImage> {
     VhdImage::open(source)
   }
 }
 
-impl ImageDriver for VhdDriver {
+impl Driver for VhdDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Image>> {
-    Ok(Box::new(VhdImage::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(VhdImage::open_with_hints(source, options.hints)?))
   }
 }

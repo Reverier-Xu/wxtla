@@ -1,10 +1,7 @@
 //! GPT driver open flow.
 
 use super::{DESCRIPTOR, parser, system::GptVolumeSystem};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  volumes::{VolumeSystem, VolumeSystemDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result};
 
 /// Driver for the GUID Partition Table scheme.
 #[derive(Debug, Default, Clone, Copy)]
@@ -17,26 +14,26 @@ impl GptDriver {
   }
 
   /// Open a GPT source using inferred logical block size.
-  pub fn open(source: DataSourceHandle) -> Result<GptVolumeSystem> {
+  pub fn open(source: ByteSourceHandle) -> Result<GptVolumeSystem> {
     parser::open(source)
   }
 
   /// Open a GPT source using an explicit logical block size.
   pub fn open_with_block_size(
-    source: DataSourceHandle, block_size: u32,
+    source: ByteSourceHandle, block_size: u32,
   ) -> Result<GptVolumeSystem> {
     parser::open_with_block_size(source, block_size)
   }
 }
 
-impl VolumeSystemDriver for GptDriver {
+impl Driver for GptDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
   fn open(
-    &self, source: DataSourceHandle, _hints: SourceHints<'_>,
-  ) -> Result<Box<dyn VolumeSystem>> {
+    &self, source: ByteSourceHandle, _options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
     Ok(Box::new(Self::open(source)?))
   }
 }
@@ -47,7 +44,7 @@ mod tests {
 
   use super::*;
   use crate::{
-    DataSource, Error, Result,
+    ByteSource, Error, Result,
     volumes::gpt::{GptHeaderLocation, LINUX_FILESYSTEM, MICROSOFT_BASIC_DATA, integrity},
   };
 
@@ -76,7 +73,7 @@ mod tests {
     }
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       if offset >= self.data.len() {
@@ -92,7 +89,7 @@ mod tests {
     }
   }
 
-  impl DataSource for GuardedReadSource {
+  impl ByteSource for GuardedReadSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = offset as usize;
       let end = offset.saturating_add(buf.len());
@@ -114,17 +111,17 @@ mod tests {
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     Arc::new(MemDataSource::from_fixture(relative_path))
   }
 
-  fn synthetic_source(bytes: Vec<u8>) -> DataSourceHandle {
+  fn synthetic_source(bytes: Vec<u8>) -> ByteSourceHandle {
     Arc::new(MemDataSource { data: bytes })
   }
 
   fn guarded_source(
     bytes: Vec<u8>, forbidden_start: usize, forbidden_end: usize,
-  ) -> DataSourceHandle {
+  ) -> ByteSourceHandle {
     Arc::new(GuardedReadSource {
       data: bytes,
       forbidden_start,

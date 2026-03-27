@@ -4,25 +4,25 @@ use std::{collections::HashSet, sync::Arc};
 
 use super::{DESCRIPTOR, SplitSegmentSequence};
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
   SourceHints, images::Image,
 };
 
 pub struct SplitRawImage {
-  segments: Arc<[DataSourceHandle]>,
+  segments: Arc<[ByteSourceHandle]>,
   segment_offsets: Arc<[u64]>,
   segment_size: u64,
   media_size: u64,
 }
 
 impl SplitRawImage {
-  pub fn open(_source: DataSourceHandle) -> Result<Self> {
+  pub fn open(_source: ByteSourceHandle) -> Result<Self> {
     Err(Error::InvalidSourceReference(
       "split raw images require source hints, a resolver, and a source identity".to_string(),
     ))
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let resolver = hints.resolver().ok_or_else(|| {
       Error::InvalidSourceReference(
         "split raw images require a related-source resolver".to_string(),
@@ -143,7 +143,7 @@ impl SplitRawImage {
   }
 }
 
-impl DataSource for SplitRawImage {
+impl ByteSource for SplitRawImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.media_size || buf.is_empty() {
       return Ok(0);
@@ -183,9 +183,9 @@ impl DataSource for SplitRawImage {
     Ok(self.media_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     let preferred_chunk_size = usize::try_from(self.segment_size).unwrap_or(1024 * 1024);
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
       .with_preferred_chunk_size(preferred_chunk_size)
   }
 
@@ -211,7 +211,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -229,16 +229,16 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &crate::RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &crate::RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -295,14 +295,14 @@ mod tests {
         "bundle/disk.raw.001".to_string(),
         Arc::new(MemDataSource {
           data: vec![b'B'; 4],
-        }) as DataSourceHandle,
+        }) as ByteSourceHandle,
       )]),
     };
     let identity = SourceIdentity::from_relative_path("bundle/disk.raw.000").unwrap();
     let image = SplitRawImage::open_with_hints(
       Arc::new(MemDataSource {
         data: vec![b'A'; 4],
-      }) as DataSourceHandle,
+      }) as ByteSourceHandle,
       SourceHints::new()
         .with_resolver(&resolver)
         .with_source_identity(&identity),
@@ -319,7 +319,7 @@ mod tests {
         "bundle/disk.raw.002".to_string(),
         Arc::new(MemDataSource {
           data: vec![b'C'; 4],
-        }) as DataSourceHandle,
+        }) as ByteSourceHandle,
       )]),
     };
     let identity = SourceIdentity::from_relative_path("bundle/disk.raw.000").unwrap();
@@ -327,7 +327,7 @@ mod tests {
     let result = SplitRawImage::open_with_hints(
       Arc::new(MemDataSource {
         data: vec![b'A'; 4],
-      }) as DataSourceHandle,
+      }) as ByteSourceHandle,
       SourceHints::new()
         .with_resolver(&resolver)
         .with_source_identity(&identity),
@@ -343,7 +343,7 @@ mod tests {
         "bundle/disk.raw.002".to_string(),
         Arc::new(MemDataSource {
           data: vec![b'C'; 4],
-        }) as DataSourceHandle,
+        }) as ByteSourceHandle,
       )]),
     };
     let identity = SourceIdentity::from_relative_path("bundle/disk.raw.002").unwrap();
@@ -351,7 +351,7 @@ mod tests {
     let result = SplitRawImage::open_with_hints(
       Arc::new(MemDataSource {
         data: vec![b'B'; 4],
-      }) as DataSourceHandle,
+      }) as ByteSourceHandle,
       SourceHints::new()
         .with_resolver(&resolver)
         .with_source_identity(&identity),
@@ -367,14 +367,14 @@ mod tests {
         "bundle/disk.2of2".to_string(),
         Arc::new(MemDataSource {
           data: vec![b'Z'; 4],
-        }) as DataSourceHandle,
+        }) as ByteSourceHandle,
       )]),
     };
     let identity = SourceIdentity::from_relative_path("bundle/disk.1of2").unwrap();
     let image = SplitRawImage::open_with_hints(
       Arc::new(MemDataSource {
         data: vec![b'Y'; 4],
-      }) as DataSourceHandle,
+      }) as ByteSourceHandle,
       SourceHints::new()
         .with_resolver(&resolver)
         .with_source_identity(&identity),
@@ -391,14 +391,14 @@ mod tests {
         "bundle/diskab".to_string(),
         Arc::new(MemDataSource {
           data: vec![b'B'; 4],
-        }) as DataSourceHandle,
+        }) as ByteSourceHandle,
       )]),
     };
     let identity = SourceIdentity::from_relative_path("bundle/diskaa").unwrap();
     let image = SplitRawImage::open_with_hints(
       Arc::new(MemDataSource {
         data: vec![b'A'; 4],
-      }) as DataSourceHandle,
+      }) as ByteSourceHandle,
       SourceHints::new()
         .with_resolver(&resolver)
         .with_source_identity(&identity),
@@ -411,8 +411,10 @@ mod tests {
   #[test]
   fn requires_resolver_hints() {
     let result =
-      SplitRawImage::open(Arc::new(MemDataSource { data: vec![0; 4] }) as DataSourceHandle);
+      SplitRawImage::open(Arc::new(MemDataSource { data: vec![0; 4] }) as ByteSourceHandle);
 
     assert!(matches!(result, Err(Error::InvalidSourceReference(_))));
   }
 }
+
+crate::images::driver::impl_image_data_source!(SplitRawImage);

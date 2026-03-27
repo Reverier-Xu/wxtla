@@ -9,7 +9,7 @@ use super::{
   system::MbrVolumeSystem,
   validation::validate_partitions,
 };
-use crate::{DataSource, DataSourceHandle, Error, Result, volumes::VolumeRole};
+use crate::{ByteSource, ByteSourceHandle, Error, Result, volumes::VolumeRole};
 
 const EXT_SUPERBLOCK_MAGIC_OFFSET: u64 = 1024 + 56;
 const PARTITION_BOOT_SIGNATURE_OFFSET: u64 = 510;
@@ -39,7 +39,7 @@ struct CandidateScore {
   bytes_per_sector_preference: u8,
 }
 
-pub(super) fn open(source: DataSourceHandle) -> Result<MbrVolumeSystem> {
+pub(super) fn open(source: ByteSourceHandle) -> Result<MbrVolumeSystem> {
   let boot_record = MbrBootRecord::read(source.as_ref(), 0)?;
   let parsed = infer_layout(source.as_ref(), &boot_record)?;
 
@@ -52,7 +52,7 @@ pub(super) fn open(source: DataSourceHandle) -> Result<MbrVolumeSystem> {
 }
 
 pub(super) fn open_with_sector_size(
-  source: DataSourceHandle, bytes_per_sector: u32,
+  source: ByteSourceHandle, bytes_per_sector: u32,
 ) -> Result<MbrVolumeSystem> {
   let boot_record = MbrBootRecord::read(source.as_ref(), 0)?;
   let parsed = parse_layout(source.as_ref(), &boot_record, bytes_per_sector)?;
@@ -65,7 +65,7 @@ pub(super) fn open_with_sector_size(
   ))
 }
 
-fn infer_layout(source: &dyn DataSource, boot_record: &MbrBootRecord) -> Result<MbrParsedLayout> {
+fn infer_layout(source: &dyn ByteSource, boot_record: &MbrBootRecord) -> Result<MbrParsedLayout> {
   let mut best_match = None;
 
   for bytes_per_sector in SUPPORTED_BYTES_PER_SECTOR {
@@ -88,7 +88,7 @@ fn infer_layout(source: &dyn DataSource, boot_record: &MbrBootRecord) -> Result<
 }
 
 fn parse_layout(
-  source: &dyn DataSource, boot_record: &MbrBootRecord, bytes_per_sector: u32,
+  source: &dyn ByteSource, boot_record: &MbrBootRecord, bytes_per_sector: u32,
 ) -> Result<MbrParsedLayout> {
   if !SUPPORTED_BYTES_PER_SECTOR.contains(&bytes_per_sector) {
     return Err(Error::InvalidFormat(format!(
@@ -132,7 +132,7 @@ fn parse_layout(
 }
 
 fn parse_logical_partitions(
-  source: &dyn DataSource, bytes_per_sector: u32, first_ebr_lba: u64,
+  source: &dyn ByteSource, bytes_per_sector: u32, first_ebr_lba: u64,
   partitions: &mut Vec<MbrPartitionInfo>, seen_ebrs: &mut HashSet<u64>,
 ) -> Result<()> {
   let mut current_ebr_lba = first_ebr_lba;
@@ -208,7 +208,7 @@ fn parse_logical_partitions(
   Ok(())
 }
 
-fn score_candidate(source: &dyn DataSource, parsed: &MbrParsedLayout) -> Result<CandidateScore> {
+fn score_candidate(source: &dyn ByteSource, parsed: &MbrParsedLayout) -> Result<CandidateScore> {
   let mut evidence_score = 0u16;
   let mut recognized_partition_count = 0usize;
   let logical_partition_count = parsed
@@ -284,7 +284,7 @@ fn is_ntfs_type(type_code: u8) -> bool {
   matches!(type_code, 0x07 | 0x17 | 0x27)
 }
 
-fn partition_has_boot_signature(source: &dyn DataSource, offset: u64) -> Result<bool> {
+fn partition_has_boot_signature(source: &dyn ByteSource, offset: u64) -> Result<bool> {
   Ok(
     read_magic(
       source,
@@ -296,7 +296,7 @@ fn partition_has_boot_signature(source: &dyn DataSource, offset: u64) -> Result<
   )
 }
 
-fn partition_has_fat_signature(source: &dyn DataSource, offset: u64) -> Result<bool> {
+fn partition_has_fat_signature(source: &dyn ByteSource, offset: u64) -> Result<bool> {
   if !partition_has_boot_signature(source, offset)? {
     return Ok(false);
   }
@@ -312,7 +312,7 @@ fn partition_has_fat_signature(source: &dyn DataSource, offset: u64) -> Result<b
   )
 }
 
-fn partition_has_ntfs_signature(source: &dyn DataSource, offset: u64) -> Result<bool> {
+fn partition_has_ntfs_signature(source: &dyn ByteSource, offset: u64) -> Result<bool> {
   if !partition_has_boot_signature(source, offset)? {
     return Ok(false);
   }
@@ -320,7 +320,7 @@ fn partition_has_ntfs_signature(source: &dyn DataSource, offset: u64) -> Result<
   Ok(read_magic(source, offset + 3, NTFS_OEM_ID.len())?.as_deref() == Some(NTFS_OEM_ID))
 }
 
-fn partition_has_ext_signature(source: &dyn DataSource, offset: u64) -> Result<bool> {
+fn partition_has_ext_signature(source: &dyn ByteSource, offset: u64) -> Result<bool> {
   Ok(
     read_magic(
       source,
@@ -332,7 +332,7 @@ fn partition_has_ext_signature(source: &dyn DataSource, offset: u64) -> Result<b
   )
 }
 
-fn partition_has_hfs_signature(source: &dyn DataSource, offset: u64) -> Result<bool> {
+fn partition_has_hfs_signature(source: &dyn ByteSource, offset: u64) -> Result<bool> {
   Ok(
     read_magic(source, offset + 1024, 2)?
       .as_deref()
@@ -340,7 +340,7 @@ fn partition_has_hfs_signature(source: &dyn DataSource, offset: u64) -> Result<b
   )
 }
 
-fn read_magic(source: &dyn DataSource, offset: u64, len: usize) -> Result<Option<Vec<u8>>> {
+fn read_magic(source: &dyn ByteSource, offset: u64, len: usize) -> Result<Option<Vec<u8>>> {
   match source.read_bytes_at(offset, len) {
     Ok(bytes) => Ok(Some(bytes)),
     Err(Error::UnexpectedEof { .. }) => Ok(None),

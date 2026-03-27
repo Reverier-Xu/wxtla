@@ -1,10 +1,7 @@
 //! VMDK driver open flow.
 
 use super::{DESCRIPTOR, image::VmdkImage};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  images::{Image, ImageDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct VmdkDriver;
@@ -14,21 +11,23 @@ impl VmdkDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<VmdkImage> {
+  pub fn open(source: ByteSourceHandle) -> Result<VmdkImage> {
     VmdkImage::open(source)
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<VmdkImage> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<VmdkImage> {
     VmdkImage::open_with_hints(source, hints)
   }
 }
 
-impl ImageDriver for VmdkDriver {
+impl Driver for VmdkDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Image>> {
-    Ok(Box::new(VmdkImage::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(VmdkImage::open_with_hints(source, options.hints)?))
   }
 }

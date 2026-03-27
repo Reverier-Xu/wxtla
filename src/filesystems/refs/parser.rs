@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 pub(crate) const VOLUME_HEADER_SIZE: usize = 512;
 pub(crate) const METADATA_BLOCK_HEADER_V1_SIZE: usize = 48;
@@ -38,7 +38,7 @@ pub struct RefsVolumeHeader {
 }
 
 impl RefsVolumeHeader {
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let bytes = source.read_bytes_at(0, VOLUME_HEADER_SIZE)?;
     Self::from_bytes(&bytes)
   }

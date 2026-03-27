@@ -1,8 +1,8 @@
 use super::extent::XfsExtent;
-use crate::{DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceCapabilities, ByteSourceHandle, Error, Result};
 
 pub(crate) struct XfsExtentDataSource {
-  pub(crate) source: DataSourceHandle,
+  pub(crate) source: ByteSourceHandle,
   pub(crate) block_size: u64,
   pub(crate) file_size: u64,
   pub(crate) extents: Vec<XfsExtent>,
@@ -21,7 +21,7 @@ impl XfsExtentDataSource {
   }
 }
 
-impl DataSource for XfsExtentDataSource {
+impl ByteSource for XfsExtentDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.file_size || buf.is_empty() {
       return Ok(0);
@@ -64,7 +64,7 @@ impl DataSource for XfsExtentDataSource {
     Ok(self.file_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.source.capabilities()
   }
 }

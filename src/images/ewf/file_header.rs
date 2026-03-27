@@ -1,7 +1,7 @@
 //! EWF file-header parsing.
 
 use super::constants::{FILE_HEADER_MAGIC, FILE_HEADER_MAGIC_LVF, FILE_HEADER_SIZE};
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Distinguishes classic EVF segment headers from LVF ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub struct EwfFileHeader {
 
 impl EwfFileHeader {
   /// Read the file header from the start of a source.
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let data = source.read_bytes_at(0, FILE_HEADER_SIZE)?;
     Self::parse(&data)
   }

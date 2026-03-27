@@ -12,22 +12,22 @@ use super::{
   metadata::{BitlockerEncryptionMethod, BitlockerMetadata, BitlockerVolumeMasterKey},
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
   SourceHints,
   volumes::{VolumeRecord, VolumeRole, VolumeSpan, VolumeSystem},
 };
 
 pub struct BitlockerVolumeSystem {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   header: BitlockerVolumeHeader,
   metadata: BitlockerMetadata,
-  decrypted_volume: Option<DataSourceHandle>,
+  decrypted_volume: Option<ByteSourceHandle>,
   volumes: Vec<VolumeRecord>,
 }
 
 #[derive(Clone)]
 struct BitlockerDecryptedVolume {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   bytes_per_sector: u16,
   flavor: BitlockerHeaderFlavor,
   metadata_offsets: [u64; 3],
@@ -42,11 +42,11 @@ struct BitlockerDecryptedVolume {
 }
 
 impl BitlockerVolumeSystem {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let mut header = BitlockerVolumeHeader::from_bytes(&source.read_bytes_at(0, 512)?)?;
     let metadata = header
       .metadata_offsets
@@ -86,6 +86,14 @@ impl BitlockerVolumeSystem {
 
   pub fn metadata(&self) -> &BitlockerMetadata {
     &self.metadata
+  }
+
+  pub fn block_size(&self) -> u32 {
+    u32::from(self.header.bytes_per_sector)
+  }
+
+  pub fn volumes(&self) -> &[VolumeRecord] {
+    &self.volumes
   }
 
   pub fn is_locked(&self) -> bool {
@@ -130,7 +138,7 @@ impl BitlockerVolumeSystem {
   }
 
   pub fn unlock_with_startup_key_source(
-    &mut self, startup_key_source: DataSourceHandle,
+    &mut self, startup_key_source: ByteSourceHandle,
   ) -> Result<bool> {
     let external_key = BitlockerMetadata::read_startup_key_file(startup_key_source.as_ref())?;
     let Some(startup_key) = external_key.key.as_ref() else {
@@ -192,25 +200,11 @@ impl BitlockerVolumeSystem {
       full_volume_encryption_key,
       tweak_key,
       media_size: self.header.volume_size,
-    }) as DataSourceHandle);
+    }) as ByteSourceHandle);
     Ok(())
   }
-}
 
-impl VolumeSystem for BitlockerVolumeSystem {
-  fn descriptor(&self) -> crate::FormatDescriptor {
-    DESCRIPTOR
-  }
-
-  fn block_size(&self) -> u32 {
-    u32::from(self.header.bytes_per_sector)
-  }
-
-  fn volumes(&self) -> &[VolumeRecord] {
-    &self.volumes
-  }
-
-  fn open_volume(&self, index: usize) -> Result<DataSourceHandle> {
+  pub fn open_volume(&self, index: usize) -> Result<ByteSourceHandle> {
     let _ = self
       .volumes
       .get(index)
@@ -223,7 +217,25 @@ impl VolumeSystem for BitlockerVolumeSystem {
   }
 }
 
-impl DataSource for BitlockerDecryptedVolume {
+impl VolumeSystem for BitlockerVolumeSystem {
+  fn descriptor(&self) -> crate::FormatDescriptor {
+    DESCRIPTOR
+  }
+
+  fn block_size(&self) -> u32 {
+    self.block_size()
+  }
+
+  fn volumes(&self) -> &[VolumeRecord] {
+    self.volumes()
+  }
+
+  fn open_volume(&self, index: usize) -> Result<ByteSourceHandle> {
+    self.open_volume(index)
+  }
+}
+
+impl ByteSource for BitlockerDecryptedVolume {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.media_size || buf.is_empty() {
       return Ok(0);
@@ -261,8 +273,8 @@ impl DataSource for BitlockerDecryptedVolume {
     Ok(self.media_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Expensive)
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Expensive)
       .with_preferred_chunk_size(usize::from(self.bytes_per_sector))
   }
 
@@ -471,7 +483,7 @@ mod tests {
     *,
   };
   use crate::{
-    DataSource, DataSourceHandle, FileDataSource,
+    ByteSource, ByteSourceHandle, FileDataSource,
     images::ewf::EwfImage,
     volumes::{bitlocker::BitlockerKeyProtectorKind, mbr::MbrDriver},
   };
@@ -482,7 +494,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -506,9 +518,9 @@ mod tests {
   }
 
   fn open_bitlocker_fixture() -> BitlockerVolumeSystem {
-    let ewf_source: DataSourceHandle =
+    let ewf_source: ByteSourceHandle =
       Arc::new(FileDataSource::open(fixture_path("bitlocker/bitlocker.E01")).unwrap());
-    let image: DataSourceHandle = Arc::new(EwfImage::open(ewf_source).unwrap());
+    let image: ByteSourceHandle = Arc::new(EwfImage::open(ewf_source).unwrap());
     let mbr = MbrDriver::open(image).unwrap();
     BitlockerVolumeSystem::open(mbr.open_volume(0).unwrap()).unwrap()
   }
@@ -854,7 +866,7 @@ mod tests {
     plaintext_header[..8].copy_from_slice(b"TESTNTFS");
     let source = Arc::new(MemDataSource {
       data: build_synthetic_volume(method, entries, &fvek, None, &plaintext_header),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
 
     let mut system = BitlockerVolumeSystem::open(source).unwrap();
     assert!(system.is_locked());
@@ -907,7 +919,7 @@ mod tests {
     plaintext_header[..8].copy_from_slice(b"TESTNTFS");
     let source = Arc::new(MemDataSource {
       data: build_synthetic_volume(method, entries, &fvek, None, &plaintext_header),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
 
     let mut system = BitlockerVolumeSystem::open(source).unwrap();
 
@@ -950,7 +962,7 @@ mod tests {
     plaintext_header[..8].copy_from_slice(b"TESTNTFS");
     let source = Arc::new(MemDataSource {
       data: build_synthetic_volume(method, entries, &fvek, None, &plaintext_header),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
 
     let mut system = BitlockerVolumeSystem::open(source).unwrap();
 
@@ -997,7 +1009,7 @@ mod tests {
     ];
     let mut password_system = BitlockerVolumeSystem::open(Arc::new(MemDataSource {
       data: build_synthetic_volume(method, password_entries, &fvek, None, &plaintext_header),
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
     .unwrap();
     assert!(password_system.unlock_with_password(password).unwrap());
     assert_eq!(
@@ -1028,7 +1040,7 @@ mod tests {
     ];
     let mut recovery_system = BitlockerVolumeSystem::open(Arc::new(MemDataSource {
       data: build_synthetic_volume(method, recovery_entries, &fvek, None, &plaintext_header),
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
     .unwrap();
     assert!(
       recovery_system
@@ -1079,7 +1091,7 @@ mod tests {
     plaintext_header[..4].copy_from_slice(b"BEK!");
     let mut system = BitlockerVolumeSystem::open(Arc::new(MemDataSource {
       data: build_synthetic_volume(method, entries, &fvek, None, &plaintext_header),
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
     .unwrap();
 
     let mut startup_value = vec![0u8; 24];
@@ -1098,7 +1110,7 @@ mod tests {
     bek_header[12..16].copy_from_slice(&metadata_size.to_le_bytes());
     let startup_source = Arc::new(MemDataSource {
       data: [bek_header, startup_entry].concat(),
-    }) as DataSourceHandle;
+    }) as ByteSourceHandle;
 
     assert!(
       system
@@ -1193,3 +1205,5 @@ mod tests {
     );
   }
 }
+
+crate::volumes::driver::impl_volume_system_data_source!(BitlockerVolumeSystem);

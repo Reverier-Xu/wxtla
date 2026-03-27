@@ -4,32 +4,34 @@ use std::sync::Arc;
 
 use support::{FileDataSource, fixture_path};
 use wxtla::{
-  DataSourceHandle, DataSourceReadStats, ObservedDataSource,
-  filesystems::{DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, hfs::HfsDriver},
+  ByteSourceHandle, ByteSourceReadStats, ObservedDataSource,
+  filesystems::{
+    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceSource, hfs::HfsDriver,
+  },
 };
 
 fn open_fixture_file_system(
   relative_path: &str,
 ) -> wxtla::Result<wxtla::filesystems::hfs::HfsFileSystem> {
-  let source: DataSourceHandle = Arc::new(FileDataSource::open(fixture_path(relative_path))?);
+  let source: ByteSourceHandle = Arc::new(FileDataSource::open(fixture_path(relative_path))?);
   HfsDriver::open(source)
 }
 
 fn open_observed_fixture_file_system(
   relative_path: &str,
-) -> wxtla::Result<(wxtla::filesystems::hfs::HfsFileSystem, DataSourceReadStats)> {
+) -> wxtla::Result<(wxtla::filesystems::hfs::HfsFileSystem, ByteSourceReadStats)> {
   let observed = Arc::new(ObservedDataSource::new(Arc::new(FileDataSource::open(
     fixture_path(relative_path),
   )?)));
   let stats = observed.stats();
-  let source: DataSourceHandle = observed;
+  let source: ByteSourceHandle = observed;
 
   Ok((HfsDriver::open(source)?, stats))
 }
 
 fn child_named(
-  file_system: &dyn FileSystem, directory_id: &FileSystemNodeId, name: &str,
-) -> wxtla::Result<DirectoryEntry> {
+  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
+) -> wxtla::Result<NamespaceDirectoryEntry> {
   file_system
     .read_dir(directory_id)?
     .into_iter()
@@ -50,7 +52,7 @@ fn hfs_fixture_reads_basic_directory_and_file_contents() {
   assert_eq!(file_system.node(&empty_entry.node_id).unwrap().size, 0);
   assert_eq!(
     file_system
-      .open_file(&empty_entry.node_id)
+      .open_content(&empty_entry.node_id)
       .unwrap()
       .read_all()
       .unwrap(),
@@ -63,14 +65,14 @@ fn hfs_fixture_reads_basic_directory_and_file_contents() {
 
   assert_eq!(
     file_system
-      .open_file(&testfile_entry.node_id)
+      .open_content(&testfile_entry.node_id)
       .unwrap()
       .read_all()
       .unwrap(),
     b"Keramics\n"
   );
   let license_data = file_system
-    .open_file(&license_entry.node_id)
+    .open_content(&license_entry.node_id)
     .unwrap()
     .read_all()
     .unwrap();
@@ -113,7 +115,7 @@ fn hfsplus_fixture_reads_regular_files_and_resolves_hardlinks() {
 
   assert_eq!(
     file_system
-      .open_file(&testfile_entry.node_id)
+      .open_content(&testfile_entry.node_id)
       .unwrap()
       .read_all()
       .unwrap(),
@@ -121,7 +123,7 @@ fn hfsplus_fixture_reads_regular_files_and_resolves_hardlinks() {
   );
   assert_eq!(
     file_system
-      .open_file(&hardlink_entry.node_id)
+      .open_content(&hardlink_entry.node_id)
       .unwrap()
       .read_all()
       .unwrap(),
@@ -129,13 +131,13 @@ fn hfsplus_fixture_reads_regular_files_and_resolves_hardlinks() {
   );
   assert_eq!(
     file_system.node(&file_symlink.node_id).unwrap().kind,
-    FileSystemNodeKind::Symlink
+    NamespaceNodeKind::Symlink
   );
   assert_eq!(
     file_system.node(&directory_symlink.node_id).unwrap().kind,
-    FileSystemNodeKind::Symlink
+    NamespaceNodeKind::Symlink
   );
-  assert!(file_system.open_file(&file_symlink.node_id).is_err());
+  assert!(file_system.open_content(&file_symlink.node_id).is_err());
 }
 
 #[test]

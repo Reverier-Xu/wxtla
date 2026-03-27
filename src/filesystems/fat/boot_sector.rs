@@ -1,6 +1,6 @@
 //! FAT boot-sector parsing and layout helpers.
 
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 pub(crate) const BOOT_SECTOR_SIZE: usize = 512;
 
@@ -26,7 +26,7 @@ pub struct FatBootSector {
 }
 
 impl FatBootSector {
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let bytes = source.read_bytes_at(0, BOOT_SECTOR_SIZE)?;
     Self::from_bytes(&bytes)
   }

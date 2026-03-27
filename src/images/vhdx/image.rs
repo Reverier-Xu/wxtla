@@ -16,7 +16,7 @@ use super::{
   },
 };
 use crate::{
-  DataSource, DataSourceCapabilities, DataSourceHandle, DataSourceSeekCost, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
   SourceHints, images::Image,
 };
 
@@ -26,20 +26,20 @@ const BLOCK_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 const SECTOR_BITMAP_CACHE_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 
 pub struct VhdxImage {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   image_header: VhdxImageHeader,
   metadata: VhdxMetadata,
   bat: VhdxBatLayout,
   payload_block_count: u64,
   entries_per_chunk: u64,
   sector_bitmap_size: u64,
-  parent_image: Option<DataSourceHandle>,
+  parent_image: Option<ByteSourceHandle>,
   block_cache: VhdxCache<Vec<u8>>,
   sector_bitmap_cache: VhdxCache<Vec<u8>>,
 }
 
 impl VhdxImage {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     let parsed = parse(source)?;
     if parsed.metadata.disk_type == VhdxDiskType::Differential {
       return Err(Error::InvalidSourceReference(
@@ -49,7 +49,7 @@ impl VhdxImage {
     Self::from_parsed(parsed, None)
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let parsed = parse(source)?;
     let parent_image = if parsed.metadata.disk_type == VhdxDiskType::Differential {
       let resolver = hints.resolver().ok_or_else(|| {
@@ -93,7 +93,7 @@ impl VhdxImage {
         )));
       }
 
-      Some(Arc::new(parent_image) as DataSourceHandle)
+      Some(Arc::new(parent_image) as ByteSourceHandle)
     } else {
       None
     };
@@ -101,7 +101,7 @@ impl VhdxImage {
     Self::from_parsed(parsed, parent_image)
   }
 
-  fn from_parsed(parsed: ParsedVhdx, parent_image: Option<DataSourceHandle>) -> Result<Self> {
+  fn from_parsed(parsed: ParsedVhdx, parent_image: Option<ByteSourceHandle>) -> Result<Self> {
     let block_size = usize::try_from(parsed.metadata.block_size)
       .map_err(|_| Error::InvalidRange("vhdx block size is too large".to_string()))?;
     let sector_bitmap_size = usize::try_from(parsed.sector_bitmap_size)
@@ -236,7 +236,7 @@ fn bounded_cache_capacity(entry_size: usize, byte_budget: usize, max_entries: us
   (byte_budget / entry_size).max(1).min(max_entries)
 }
 
-impl DataSource for VhdxImage {
+impl ByteSource for VhdxImage {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.metadata.virtual_disk_size || buf.is_empty() {
       return Ok(0);
@@ -337,8 +337,8 @@ impl DataSource for VhdxImage {
     Ok(self.metadata.virtual_disk_size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
-    DataSourceCapabilities::concurrent(DataSourceSeekCost::Cheap)
+  fn capabilities(&self) -> ByteSourceCapabilities {
+    ByteSourceCapabilities::concurrent(ByteSourceSeekCost::Cheap)
       .with_preferred_chunk_size(self.metadata.block_size as usize)
   }
 
@@ -372,7 +372,7 @@ impl Image for VhdxImage {
 fn resolve_parent_source(
   locator: &VhdxParentLocator, resolver: &dyn crate::RelatedSourceResolver,
   identity: &crate::SourceIdentity,
-) -> Result<Option<(DataSourceHandle, crate::RelatedPathBuf)>> {
+) -> Result<Option<(ByteSourceHandle, crate::RelatedPathBuf)>> {
   for candidate in locator.candidate_paths() {
     if let Some(resolution) = resolve_parent_candidate(resolver, identity, candidate)? {
       return Ok(Some(resolution));
@@ -384,7 +384,7 @@ fn resolve_parent_source(
 
 fn resolve_parent_candidate(
   resolver: &dyn crate::RelatedSourceResolver, identity: &crate::SourceIdentity, candidate: &str,
-) -> Result<Option<(DataSourceHandle, crate::RelatedPathBuf)>> {
+) -> Result<Option<(ByteSourceHandle, crate::RelatedPathBuf)>> {
   if let Ok(relative) = crate::RelatedPathBuf::from_relative_path(candidate)
     && let Some(parent) = identity.logical_path().parent()
   {
@@ -420,7 +420,7 @@ mod tests {
     data: Vec<u8>,
   }
 
-  impl DataSource for MemDataSource {
+  impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
         .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
@@ -438,16 +438,16 @@ mod tests {
   }
 
   struct Resolver {
-    files: HashMap<String, DataSourceHandle>,
+    files: HashMap<String, ByteSourceHandle>,
   }
 
   impl RelatedSourceResolver for Resolver {
-    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<DataSourceHandle>> {
+    fn resolve(&self, request: &RelatedSourceRequest) -> Result<Option<ByteSourceHandle>> {
       Ok(self.files.get(&request.path.to_string()).cloned())
     }
   }
 
-  fn sample_source(relative_path: &str) -> DataSourceHandle {
+  fn sample_source(relative_path: &str) -> ByteSourceHandle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("formats")
       .join(relative_path);
@@ -621,3 +621,5 @@ mod tests {
     assert!(matches!(result, Err(Error::InvalidFormat(_))));
   }
 }
+
+crate::images::driver::impl_image_data_source!(VhdxImage);

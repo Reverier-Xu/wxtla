@@ -1,10 +1,7 @@
 //! RAR driver open flow.
 
 use super::{DESCRIPTOR, archive::RarArchive};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  archives::{Archive, ArchiveDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result, SourceHints};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RarDriver;
@@ -14,21 +11,26 @@ impl RarDriver {
     Self
   }
 
-  pub fn open(source: DataSourceHandle) -> Result<RarArchive> {
+  pub fn open(source: ByteSourceHandle) -> Result<RarArchive> {
     RarArchive::open(source)
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, hints: SourceHints<'_>) -> Result<RarArchive> {
+  pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<RarArchive> {
     RarArchive::open_with_hints(source, hints)
   }
 }
 
-impl ArchiveDriver for RarDriver {
+impl Driver for RarDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Archive>> {
-    Ok(Box::new(RarArchive::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(RarArchive::open_with_hints(
+      source,
+      options.hints,
+    )?))
   }
 }

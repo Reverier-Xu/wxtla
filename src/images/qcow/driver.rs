@@ -1,10 +1,7 @@
 //! QCOW driver open flow.
 
 use super::{DESCRIPTOR, image::QcowImage};
-use crate::{
-  DataSourceHandle, Result, SourceHints,
-  images::{Image, ImageDriver},
-};
+use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result};
 
 /// Driver for QCOW image files.
 #[derive(Debug, Default, Clone, Copy)]
@@ -17,17 +14,19 @@ impl QcowDriver {
   }
 
   /// Open a QCOW image.
-  pub fn open(source: DataSourceHandle) -> Result<QcowImage> {
+  pub fn open(source: ByteSourceHandle) -> Result<QcowImage> {
     QcowImage::open(source)
   }
 }
 
-impl ImageDriver for QcowDriver {
+impl Driver for QcowDriver {
   fn descriptor(&self) -> crate::FormatDescriptor {
     DESCRIPTOR
   }
 
-  fn open(&self, source: DataSourceHandle, hints: SourceHints<'_>) -> Result<Box<dyn Image>> {
-    Ok(Box::new(QcowImage::open_with_hints(source, hints)?))
+  fn open(
+    &self, source: ByteSourceHandle, options: OpenOptions<'_>,
+  ) -> Result<Box<dyn DataSource>> {
+    Ok(Box::new(QcowImage::open_with_hints(source, options.hints)?))
   }
 }

@@ -1,7 +1,7 @@
 //! VMDK sparse extent header parsing.
 
 use super::constants;
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Parsed VMDK sparse-file header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,11 +33,11 @@ pub struct VmdkSparseHeader {
 }
 
 impl VmdkSparseHeader {
-  pub fn read(source: &dyn DataSource) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource) -> Result<Self> {
     Self::read_at(source, 0)
   }
 
-  pub fn read_at(source: &dyn DataSource, offset: u64) -> Result<Self> {
+  pub fn read_at(source: &dyn ByteSource, offset: u64) -> Result<Self> {
     let data = source.read_bytes_at(offset, constants::SPARSE_HEADER_SIZE)?;
     Self::from_bytes(&data)
   }

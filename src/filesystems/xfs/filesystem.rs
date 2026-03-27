@@ -19,9 +19,9 @@ use super::{
   superblock::XfsSuperblock,
 };
 use crate::{
-  BytesDataSource, DataSourceHandle, Error, Result, SourceHints,
+  ByteSourceHandle, BytesDataSource, Error, Result, SourceHints,
   filesystems::{
-    DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, FileSystemNodeRecord,
+    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
   },
 };
 
@@ -41,17 +41,17 @@ struct XfsAgi {
 }
 
 pub struct XfsFileSystem {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   superblock: XfsSuperblock,
   inode_chunk_cache: Mutex<HashMap<u64, Arc<[u32]>>>,
 }
 
 impl XfsFileSystem {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let superblock = XfsSuperblock::read(source.as_ref())?;
     Ok(Self {
       source,
@@ -60,7 +60,7 @@ impl XfsFileSystem {
     })
   }
 
-  pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<XfsNodeDetails> {
+  pub fn node_details(&self, node_id: &NamespaceNodeId) -> Result<XfsNodeDetails> {
     let inode = self.read_inode(decode_node_id(node_id)?)?;
 
     Ok(XfsNodeDetails {
@@ -72,7 +72,7 @@ impl XfsFileSystem {
     })
   }
 
-  pub fn symlink_target(&self, node_id: &FileSystemNodeId) -> Result<Option<String>> {
+  pub fn symlink_target(&self, node_id: &NamespaceNodeId) -> Result<Option<String>> {
     let inode_number = decode_node_id(node_id)?;
     let inode = self.read_inode(inode_number)?;
     if !inode.is_symlink() {
@@ -502,7 +502,7 @@ impl XfsFileSystem {
 
   fn open_inode_data_source(
     &self, _inode_number: u64, inode: &XfsInode,
-  ) -> Result<DataSourceHandle> {
+  ) -> Result<ByteSourceHandle> {
     if inode.fork_type == FORK_INLINE {
       let data = inode
         .inline_data
@@ -510,7 +510,7 @@ impl XfsFileSystem {
         .ok_or_else(|| Error::InvalidFormat("missing xfs inline file data".to_string()))?;
       let len = data.len().min(inode.size as usize);
       return Ok(
-        Arc::new(BytesDataSource::new(Arc::<[u8]>::from(&data[..len]))) as DataSourceHandle,
+        Arc::new(BytesDataSource::new(Arc::<[u8]>::from(&data[..len]))) as ByteSourceHandle,
       );
     }
 
@@ -519,7 +519,7 @@ impl XfsFileSystem {
       block_size: self.superblock.block_size as u64,
       file_size: inode.size,
       extents: self.read_data_extents(inode, true)?,
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
   }
 }
 
@@ -528,40 +528,40 @@ impl FileSystem for XfsFileSystem {
     DESCRIPTOR
   }
 
-  fn root_node_id(&self) -> FileSystemNodeId {
-    FileSystemNodeId::from_u64(self.superblock.root_ino)
+  fn root_node_id(&self) -> NamespaceNodeId {
+    NamespaceNodeId::from_u64(self.superblock.root_ino)
   }
 
-  fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
+  fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     let inode_number = decode_node_id(node_id)?;
     let inode = self.read_inode(inode_number)?;
-    Ok(FileSystemNodeRecord::new(
-      FileSystemNodeId::from_u64(inode_number),
+    Ok(NamespaceNodeRecord::new(
+      NamespaceNodeId::from_u64(inode_number),
       kind_from_inode(&inode),
       if inode.is_dir() { 0 } else { inode.size },
     ))
   }
 
-  fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let inode = self.read_inode(decode_node_id(directory_id)?)?;
     let mut entries = self.read_dir_entries(&inode)?;
     entries.sort_by(|left, right| left.name.cmp(&right.name));
     let mut directory_entries = Vec::with_capacity(entries.len());
     for entry in entries {
       let child_inode = self.read_inode(entry.inode_number)?;
-      directory_entries.push(DirectoryEntry::new(
+      directory_entries.push(NamespaceDirectoryEntry::new(
         entry.name,
-        FileSystemNodeId::from_u64(entry.inode_number),
+        NamespaceNodeId::from_u64(entry.inode_number),
         kind_from_inode(&child_inode),
       ));
     }
     Ok(directory_entries)
   }
 
-  fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
+  fn open_file(&self, file_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let inode_number = decode_node_id(file_id)?;
     let inode = self.read_inode(inode_number)?;
-    if kind_from_inode(&inode) != FileSystemNodeKind::File {
+    if kind_from_inode(&inode) != NamespaceNodeKind::File {
       return Err(Error::NotFound(format!(
         "xfs inode {inode_number} is not a readable file"
       )));
@@ -570,19 +570,19 @@ impl FileSystem for XfsFileSystem {
   }
 }
 
-fn kind_from_inode(inode: &XfsInode) -> FileSystemNodeKind {
+fn kind_from_inode(inode: &XfsInode) -> NamespaceNodeKind {
   match inode.mode & FILETYPE_MASK {
-    FILETYPE_DIR => FileSystemNodeKind::Directory,
-    FILETYPE_SYMLINK => FileSystemNodeKind::Symlink,
-    FILETYPE_REGULAR => FileSystemNodeKind::File,
+    FILETYPE_DIR => NamespaceNodeKind::Directory,
+    FILETYPE_SYMLINK => NamespaceNodeKind::Symlink,
+    FILETYPE_REGULAR => NamespaceNodeKind::File,
     FILETYPE_FIFO | FILETYPE_CHAR_DEVICE | FILETYPE_BLOCK_DEVICE | FILETYPE_SOCKET => {
-      FileSystemNodeKind::Special
+      NamespaceNodeKind::Special
     }
-    _ => FileSystemNodeKind::Special,
+    _ => NamespaceNodeKind::Special,
   }
 }
 
-fn decode_node_id(node_id: &FileSystemNodeId) -> Result<u64> {
+fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
     return Err(Error::InvalidSourceReference(
@@ -605,14 +605,14 @@ mod tests {
   };
 
   use super::*;
-  use crate::DataSource;
+  use crate::ByteSource;
 
   struct CountingDataSource {
     data: Vec<u8>,
     reads: AtomicUsize,
   }
 
-  impl DataSource for CountingDataSource {
+  impl ByteSource for CountingDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       self.reads.fetch_add(1, Ordering::Relaxed);
       let offset = usize::try_from(offset)
@@ -656,12 +656,12 @@ mod tests {
       superblock: test_superblock(),
       inode_chunk_cache: Mutex::new(HashMap::new()),
     };
-    let node_id = FileSystemNodeId::from_u64(64);
+    let node_id = NamespaceNodeId::from_u64(64);
 
     let node = filesystem.node(&node_id).unwrap();
     let error = filesystem.open_file(&node_id).err().unwrap();
 
-    assert_eq!(node.kind, FileSystemNodeKind::Special);
+    assert_eq!(node.kind, NamespaceNodeKind::Special);
     assert!(matches!(error, Error::NotFound(_)));
   }
 
@@ -719,3 +719,5 @@ mod tests {
     data
   }
 }
+
+crate::filesystems::driver::impl_file_system_data_source!(XfsFileSystem);

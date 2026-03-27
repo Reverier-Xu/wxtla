@@ -8,7 +8,7 @@ use super::constants::{
   SECTION_TYPE_HEADER2, SECTION_TYPE_NEXT, SECTION_TYPE_SECTORS, SECTION_TYPE_TABLE,
   SECTION_TYPE_TABLE2, SECTION_TYPE_VOLUME,
 };
-use crate::{DataSource, Error, Result};
+use crate::{ByteSource, Error, Result};
 
 /// Known EWF section kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub struct EwfSectionDescriptor {
 
 impl EwfSectionDescriptor {
   /// Read a section descriptor from a source offset.
-  pub fn read(source: &dyn DataSource, offset: u64) -> Result<Self> {
+  pub fn read(source: &dyn ByteSource, offset: u64) -> Result<Self> {
     let data = source.read_bytes_at(offset, SECTION_DESCRIPTOR_SIZE)?;
     Self::parse(&data, offset)
   }

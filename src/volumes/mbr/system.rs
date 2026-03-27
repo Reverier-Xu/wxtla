@@ -4,13 +4,13 @@ use std::sync::Arc;
 
 use super::{DESCRIPTOR, entry::MbrPartitionInfo};
 use crate::{
-  DataSourceHandle, Error, Result, SliceDataSource,
+  ByteSourceHandle, Error, Result, SliceDataSource,
   volumes::{VolumeRecord, VolumeSystem},
 };
 
 /// Open MBR volume system.
 pub struct MbrVolumeSystem {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   bytes_per_sector: u32,
   disk_signature: u32,
   volumes: Vec<VolumeRecord>,
@@ -20,7 +20,7 @@ pub struct MbrVolumeSystem {
 impl MbrVolumeSystem {
   /// Create a new open MBR volume system.
   pub fn new(
-    source: DataSourceHandle, bytes_per_sector: u32, disk_signature: u32,
+    source: ByteSourceHandle, bytes_per_sector: u32, disk_signature: u32,
     partitions: Vec<MbrPartitionInfo>,
   ) -> Self {
     let volumes = partitions
@@ -51,27 +51,24 @@ impl MbrVolumeSystem {
   pub fn bytes_per_sector(&self) -> u32 {
     self.bytes_per_sector
   }
-}
 
-impl VolumeSystem for MbrVolumeSystem {
-  fn descriptor(&self) -> crate::FormatDescriptor {
-    DESCRIPTOR
-  }
-
-  fn block_size(&self) -> u32 {
+  /// Return the volume-system block size in bytes.
+  pub fn block_size(&self) -> u32 {
     self.bytes_per_sector
   }
 
-  fn volumes(&self) -> &[VolumeRecord] {
+  /// Return the discovered volume records.
+  pub fn volumes(&self) -> &[VolumeRecord] {
     &self.volumes
   }
 
-  fn open_volume(&self, index: usize) -> Result<DataSourceHandle> {
+  /// Open the logical byte range corresponding to a volume.
+  pub fn open_volume(&self, index: usize) -> Result<ByteSourceHandle> {
     let volume = self
       .volumes
       .get(index)
       .ok_or_else(|| Error::NotFound(format!("mbr volume index {index} is out of bounds")))?;
-    let slice: DataSourceHandle = Arc::new(SliceDataSource::new(
+    let slice: ByteSourceHandle = Arc::new(SliceDataSource::new(
       self.source.clone(),
       volume.span.byte_offset,
       volume.span.byte_size,
@@ -80,3 +77,23 @@ impl VolumeSystem for MbrVolumeSystem {
     Ok(slice)
   }
 }
+
+impl VolumeSystem for MbrVolumeSystem {
+  fn descriptor(&self) -> crate::FormatDescriptor {
+    DESCRIPTOR
+  }
+
+  fn block_size(&self) -> u32 {
+    self.block_size()
+  }
+
+  fn volumes(&self) -> &[VolumeRecord] {
+    self.volumes()
+  }
+
+  fn open_volume(&self, index: usize) -> Result<ByteSourceHandle> {
+    self.open_volume(index)
+  }
+}
+
+crate::volumes::driver::impl_volume_system_data_source!(MbrVolumeSystem);

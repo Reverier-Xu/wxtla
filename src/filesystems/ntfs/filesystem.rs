@@ -18,9 +18,9 @@ use super::{
   runlist::{NtfsCompressedDataSource, NtfsDataRun, NtfsNonResidentDataSource, parse_runlist},
 };
 use crate::{
-  BytesDataSource, DataSourceHandle, Error, Result, SourceHints,
+  ByteSourceHandle, BytesDataSource, Error, Result, SourceHints,
   filesystems::{
-    DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, FileSystemNodeRecord,
+    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
   },
 };
 
@@ -28,19 +28,19 @@ const ROOT_FILE_RECORD_NUMBER: u64 = 5;
 const DEFAULT_NTFS_COMPRESSION_UNIT_CLUSTERS: u64 = 16;
 
 pub struct NtfsFileSystem {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   boot_sector: NtfsBootSector,
-  mft_stream: DataSourceHandle,
+  mft_stream: ByteSourceHandle,
   file_record_size: u64,
   record_count: u64,
   nodes: Mutex<HashMap<u64, Arc<NtfsNode>>>,
-  children: Mutex<HashMap<u64, Arc<[DirectoryEntry]>>>,
+  children: Mutex<HashMap<u64, Arc<[NamespaceDirectoryEntry]>>>,
 }
 
 struct NtfsNode {
   name: String,
   parent_id: Option<u64>,
-  record: FileSystemNodeRecord,
+  record: NamespaceNodeRecord,
   data_attributes: Arc<[NtfsDataAttribute]>,
   index_root_attributes: Arc<[NtfsDataAttribute]>,
   index_allocation_attributes: Arc<[NtfsDataAttribute]>,
@@ -54,11 +54,11 @@ pub struct NtfsDataStreamInfo {
 }
 
 impl NtfsFileSystem {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let boot_sector = NtfsBootSector::read(source.as_ref())?;
     let file_record_size = boot_sector.file_record_size()?;
     let mft_offset = boot_sector.mft_offset()?;
@@ -102,7 +102,7 @@ impl NtfsFileSystem {
       nodes: Mutex::new(HashMap::new()),
       children: Mutex::new(HashMap::new()),
     };
-    let root_id = FileSystemNodeId::from_u64(ROOT_FILE_RECORD_NUMBER);
+    let root_id = NamespaceNodeId::from_u64(ROOT_FILE_RECORD_NUMBER);
     if filesystem.lookup_node(&root_id).is_err() {
       return Err(Error::InvalidFormat(
         "ntfs root directory record is missing".to_string(),
@@ -112,7 +112,7 @@ impl NtfsFileSystem {
     Ok(filesystem)
   }
 
-  pub fn data_streams(&self, node_id: &FileSystemNodeId) -> Result<Vec<NtfsDataStreamInfo>> {
+  pub fn data_streams(&self, node_id: &NamespaceNodeId) -> Result<Vec<NtfsDataStreamInfo>> {
     let node = self.lookup_node(node_id)?;
     let mut streams = Vec::new();
     for (name, attributes) in grouped_stream_attributes(&node.data_attributes) {
@@ -125,8 +125,8 @@ impl NtfsFileSystem {
   }
 
   pub fn open_data_stream(
-    &self, node_id: &FileSystemNodeId, name: Option<&str>,
-  ) -> Result<DataSourceHandle> {
+    &self, node_id: &NamespaceNodeId, name: Option<&str>,
+  ) -> Result<ByteSourceHandle> {
     let node = self.lookup_node(node_id)?;
     let attributes = node
       .data_attributes
@@ -145,11 +145,11 @@ impl NtfsFileSystem {
     build_stream_data_source(self.source.clone(), &self.boot_sector, &attributes)
   }
 
-  pub fn reparse_point(&self, node_id: &FileSystemNodeId) -> Result<Option<NtfsReparsePointInfo>> {
+  pub fn reparse_point(&self, node_id: &NamespaceNodeId) -> Result<Option<NtfsReparsePointInfo>> {
     Ok(self.lookup_node(node_id)?.reparse_point.clone())
   }
 
-  pub fn symlink_target(&self, node_id: &FileSystemNodeId) -> Result<Option<String>> {
+  pub fn symlink_target(&self, node_id: &NamespaceNodeId) -> Result<Option<String>> {
     Ok(
       self
         .lookup_node(node_id)?
@@ -159,7 +159,7 @@ impl NtfsFileSystem {
     )
   }
 
-  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<Arc<NtfsNode>> {
+  fn lookup_node(&self, node_id: &NamespaceNodeId) -> Result<Arc<NtfsNode>> {
     let record_number = decode_node_id(node_id)?;
     self
       .load_node(record_number)?
@@ -196,7 +196,7 @@ impl NtfsFileSystem {
         name.name
       },
       parent_id,
-      record: FileSystemNodeRecord::new(FileSystemNodeId::from_u64(record_number), kind, size),
+      record: NamespaceNodeRecord::new(NamespaceNodeId::from_u64(record_number), kind, size),
       data_attributes: Arc::from(record.data_attributes),
       index_root_attributes: Arc::from(record.index_root_attributes),
       index_allocation_attributes: Arc::from(record.index_allocation_attributes),
@@ -251,7 +251,7 @@ impl NtfsFileSystem {
 
   fn directory_entries(
     &self, record_number: u64, node: &NtfsNode,
-  ) -> Result<Arc<[DirectoryEntry]>> {
+  ) -> Result<Arc<[NamespaceDirectoryEntry]>> {
     if let Some(entries) = self
       .children
       .lock()
@@ -297,7 +297,7 @@ impl NtfsFileSystem {
         self.scan_directory_entries(record_number)?
       };
     entries.sort_by(|left, right| left.name.cmp(&right.name));
-    let entries: Arc<[DirectoryEntry]> = Arc::from(entries.into_boxed_slice());
+    let entries: Arc<[NamespaceDirectoryEntry]> = Arc::from(entries.into_boxed_slice());
 
     let mut cache = self
       .children
@@ -310,7 +310,7 @@ impl NtfsFileSystem {
     Ok(entries)
   }
 
-  fn scan_directory_entries(&self, record_number: u64) -> Result<Vec<DirectoryEntry>> {
+  fn scan_directory_entries(&self, record_number: u64) -> Result<Vec<NamespaceDirectoryEntry>> {
     let mut entries = Vec::new();
     for child_record_number in 0..self.record_count {
       let Some(node) = self.load_node(child_record_number)? else {
@@ -319,7 +319,7 @@ impl NtfsFileSystem {
       if node.parent_id != Some(record_number) || child_record_number == ROOT_FILE_RECORD_NUMBER {
         continue;
       }
-      entries.push(DirectoryEntry::new(
+      entries.push(NamespaceDirectoryEntry::new(
         node.name.clone(),
         node.record.id.clone(),
         node.record.kind,
@@ -335,18 +335,18 @@ impl FileSystem for NtfsFileSystem {
     DESCRIPTOR
   }
 
-  fn root_node_id(&self) -> FileSystemNodeId {
-    FileSystemNodeId::from_u64(ROOT_FILE_RECORD_NUMBER)
+  fn root_node_id(&self) -> NamespaceNodeId {
+    NamespaceNodeId::from_u64(ROOT_FILE_RECORD_NUMBER)
   }
 
-  fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
+  fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     self.lookup_node(node_id).map(|node| node.record.clone())
   }
 
-  fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let record_number = decode_node_id(directory_id)?;
     let node = self.lookup_node(directory_id)?;
-    if node.record.kind != FileSystemNodeKind::Directory {
+    if node.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::NotFound(format!(
         "ntfs node {record_number} is not a directory"
       )));
@@ -355,10 +355,10 @@ impl FileSystem for NtfsFileSystem {
     Ok(self.directory_entries(record_number, &node)?.to_vec())
   }
 
-  fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
+  fn open_file(&self, file_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let record_number = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
-    if node.record.kind == FileSystemNodeKind::Directory {
+    if node.record.kind == NamespaceNodeKind::Directory {
       return Err(Error::NotFound(format!(
         "ntfs node {record_number} is not a readable file"
       )));
@@ -386,7 +386,7 @@ fn grouped_stream_attributes(
 }
 
 fn resolve_bootstrap_mft_record(
-  source: DataSourceHandle, boot_sector: &NtfsBootSector, bootstrap_mft_stream: DataSourceHandle,
+  source: ByteSourceHandle, boot_sector: &NtfsBootSector, bootstrap_mft_stream: ByteSourceHandle,
   file_record_size: u64, record: &NtfsFileRecord,
 ) -> Result<NtfsFileRecord> {
   let attribute_list_entries = load_attribute_list_entries(source, boot_sector, record)?;
@@ -493,7 +493,7 @@ where
 }
 
 fn load_attribute_list_entries(
-  source: DataSourceHandle, boot_sector: &NtfsBootSector, record: &NtfsFileRecord,
+  source: ByteSourceHandle, boot_sector: &NtfsBootSector, record: &NtfsFileRecord,
 ) -> Result<Vec<NtfsAttributeListEntry>> {
   if record.attribute_list_attributes.is_empty() {
     return Ok(record.attribute_list_entries.clone());
@@ -540,13 +540,13 @@ fn resident_index_root_data(attributes: &[NtfsDataAttribute]) -> Result<Option<A
   }
 }
 
-fn classify_node(record: &NtfsFileRecord) -> Result<(FileSystemNodeKind, u64)> {
+fn classify_node(record: &NtfsFileRecord) -> Result<(NamespaceNodeKind, u64)> {
   if record.is_directory() {
     let kind = match record.reparse_point.as_ref().map(|info| info.kind) {
       Some(NtfsReparsePointKind::MountPoint | NtfsReparsePointKind::SymbolicLink) => {
-        FileSystemNodeKind::Symlink
+        NamespaceNodeKind::Symlink
       }
-      _ => FileSystemNodeKind::Directory,
+      _ => NamespaceNodeKind::Directory,
     };
     return Ok((kind, 0));
   }
@@ -554,16 +554,16 @@ fn classify_node(record: &NtfsFileRecord) -> Result<(FileSystemNodeKind, u64)> {
   let size = default_stream_size(&record.data_attributes)?;
   let kind = match record.reparse_point.as_ref().map(|info| info.kind) {
     Some(NtfsReparsePointKind::MountPoint | NtfsReparsePointKind::SymbolicLink) => {
-      FileSystemNodeKind::Symlink
+      NamespaceNodeKind::Symlink
     }
-    _ => FileSystemNodeKind::File,
+    _ => NamespaceNodeKind::File,
   };
   Ok((kind, size))
 }
 
 fn build_default_data_source(
-  source: DataSourceHandle, boot_sector: &NtfsBootSector, data_attributes: &[NtfsDataAttribute],
-) -> Result<DataSourceHandle> {
+  source: ByteSourceHandle, boot_sector: &NtfsBootSector, data_attributes: &[NtfsDataAttribute],
+) -> Result<ByteSourceHandle> {
   let data_attributes = data_attributes
     .iter()
     .filter(|attribute| attribute.name.is_none())
@@ -630,11 +630,11 @@ fn stream_size(attributes: &[NtfsDataAttribute]) -> Result<u64> {
 }
 
 fn build_stream_data_source(
-  source: DataSourceHandle, boot_sector: &NtfsBootSector, attributes: &[NtfsDataAttribute],
-) -> Result<DataSourceHandle> {
+  source: ByteSourceHandle, boot_sector: &NtfsBootSector, attributes: &[NtfsDataAttribute],
+) -> Result<ByteSourceHandle> {
   if attributes.is_empty() {
     return Ok(
-      Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as DataSourceHandle,
+      Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as ByteSourceHandle,
     );
   }
 
@@ -651,7 +651,7 @@ fn build_stream_data_source(
         "ntfs fragmented resident data attributes are not supported".to_string(),
       ));
     }
-    return Ok(Arc::new(BytesDataSource::new(resident.remove(0))) as DataSourceHandle);
+    return Ok(Arc::new(BytesDataSource::new(resident.remove(0))) as ByteSourceHandle);
   }
 
   let cluster_size = boot_sector.cluster_size()?;
@@ -707,7 +707,7 @@ fn build_stream_data_source(
       valid_size,
       cluster_size,
       compression_unit_size,
-    )) as DataSourceHandle);
+    )) as ByteSourceHandle);
   }
 
   Ok(Arc::new(NtfsNonResidentDataSource::new(
@@ -715,7 +715,7 @@ fn build_stream_data_source(
     runs,
     stream_size,
     valid_size,
-  )) as DataSourceHandle)
+  )) as ByteSourceHandle)
 }
 
 fn primary_non_resident_sizes<'a>(
@@ -797,14 +797,14 @@ fn parse_attribute_runs(
 }
 
 fn read_file_record(
-  source: &dyn crate::DataSource, offset: u64, record_size: u64,
+  source: &dyn crate::ByteSource, offset: u64, record_size: u64,
 ) -> Result<Vec<u8>> {
   let record_size = usize::try_from(record_size)
     .map_err(|_| Error::InvalidRange("ntfs file-record size is too large".to_string()))?;
   source.read_bytes_at(offset, record_size)
 }
 
-fn decode_node_id(node_id: &FileSystemNodeId) -> Result<u64> {
+fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
     return Err(Error::InvalidSourceReference(
@@ -1027,7 +1027,7 @@ mod tests {
 
     let (kind, size) = classify_node(&record).unwrap();
 
-    assert_eq!(kind, FileSystemNodeKind::File);
+    assert_eq!(kind, NamespaceNodeKind::File);
     assert_eq!(size, 3);
   }
 
@@ -1039,11 +1039,11 @@ mod tests {
 
     assert_eq!(
       classify_node(&mount_point).unwrap().0,
-      FileSystemNodeKind::Symlink
+      NamespaceNodeKind::Symlink
     );
     assert_eq!(
       classify_node(&unknown).unwrap().0,
-      FileSystemNodeKind::Directory
+      NamespaceNodeKind::Directory
     );
   }
 
@@ -1052,7 +1052,7 @@ mod tests {
     let entry_bytes = synthetic_attribute_list_entry_bytes(0x80, 0, 42, 7);
     let mut source_bytes = vec![0u8; 2 * 4096];
     source_bytes[4096..4096 + entry_bytes.len()].copy_from_slice(&entry_bytes);
-    let source = Arc::new(BytesDataSource::new(source_bytes)) as DataSourceHandle;
+    let source = Arc::new(BytesDataSource::new(source_bytes)) as ByteSourceHandle;
     let record = NtfsFileRecord {
       flags: 0x0001,
       base_record_number: None,
@@ -1119,7 +1119,7 @@ mod tests {
     ));
     let mut bootstrap_bytes = vec![0u8; 1024];
     bootstrap_bytes[512..1024].copy_from_slice(&extension_record);
-    let bootstrap_stream = Arc::new(BytesDataSource::new(bootstrap_bytes)) as DataSourceHandle;
+    let bootstrap_stream = Arc::new(BytesDataSource::new(bootstrap_bytes)) as ByteSourceHandle;
 
     let resolved = resolve_bootstrap_mft_record(
       bootstrap_stream.clone(),
@@ -1148,7 +1148,7 @@ mod tests {
 
   #[test]
   fn build_stream_data_source_accepts_empty_nonresident_attributes() {
-    let source = Arc::new(BytesDataSource::new(Vec::<u8>::new())) as DataSourceHandle;
+    let source = Arc::new(BytesDataSource::new(Vec::<u8>::new())) as ByteSourceHandle;
     let attributes = [non_resident_data_attribute(0, u64::MAX, 0, 0, &[0], 1)];
 
     let stream = build_stream_data_source(source, &sample_boot_sector(), &attributes).unwrap();
@@ -1162,7 +1162,7 @@ mod tests {
     let mut bytes = vec![0u8; 3 * 4096];
     bytes[4096..8192].fill(b'A');
     bytes[8192..12288].fill(b'B');
-    let source = Arc::new(BytesDataSource::new(bytes)) as DataSourceHandle;
+    let source = Arc::new(BytesDataSource::new(bytes)) as ByteSourceHandle;
     let attributes = [
       non_resident_data_attribute(0, 0, 8192, 8192, &[0x11, 0x01, 0x01, 0x00], 1),
       non_resident_data_attribute(1, 1, 16384, 12288, &[0x11, 0x01, 0x02, 0x00], 2),
@@ -1181,7 +1181,7 @@ mod tests {
   fn build_stream_data_source_decompresses_lznt1_units() {
     let mut backing = vec![0u8; 2 * 4096];
     backing[4096..4104].copy_from_slice(&[0x05, 0xB0, 0x08, b'A', b'B', b'C', 0x06, 0x20]);
-    let source = Arc::new(BytesDataSource::new(backing)) as DataSourceHandle;
+    let source = Arc::new(BytesDataSource::new(backing)) as ByteSourceHandle;
     let attributes = [non_resident_data_attribute_with_flags(
       0,
       15,
@@ -1200,3 +1200,5 @@ mod tests {
     assert_eq!(stream.read_all().unwrap(), b"ABCABCABCABC");
   }
 }
+
+crate::filesystems::driver::impl_file_system_data_source!(NtfsFileSystem);

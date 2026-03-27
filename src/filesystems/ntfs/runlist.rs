@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result};
+use crate::{ByteSource, ByteSourceCapabilities, ByteSourceHandle, Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NtfsDataRun {
@@ -86,7 +86,7 @@ pub(crate) fn parse_runlist(bytes: &[u8], cluster_size: u64) -> Result<Vec<NtfsD
 }
 
 pub(crate) struct NtfsNonResidentDataSource {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   runs: Arc<[NtfsDataRun]>,
   size: u64,
   valid_size: u64,
@@ -94,7 +94,7 @@ pub(crate) struct NtfsNonResidentDataSource {
 
 impl NtfsNonResidentDataSource {
   pub fn new(
-    source: DataSourceHandle, runs: Arc<[NtfsDataRun]>, size: u64, valid_size: u64,
+    source: ByteSourceHandle, runs: Arc<[NtfsDataRun]>, size: u64, valid_size: u64,
   ) -> Self {
     Self {
       source,
@@ -116,7 +116,7 @@ impl NtfsNonResidentDataSource {
   }
 }
 
-impl DataSource for NtfsNonResidentDataSource {
+impl ByteSource for NtfsNonResidentDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.size || buf.is_empty() {
       return Ok(0);
@@ -170,7 +170,7 @@ impl DataSource for NtfsNonResidentDataSource {
     Ok(self.size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self
       .source
       .capabilities()
@@ -183,7 +183,7 @@ impl DataSource for NtfsNonResidentDataSource {
 }
 
 pub(crate) struct NtfsCompressedDataSource {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   runs: Arc<[NtfsDataRun]>,
   size: u64,
   valid_size: u64,
@@ -199,7 +199,7 @@ struct NtfsUnitSegment {
 
 impl NtfsCompressedDataSource {
   pub fn new(
-    source: DataSourceHandle, runs: Arc<[NtfsDataRun]>, size: u64, valid_size: u64,
+    source: ByteSourceHandle, runs: Arc<[NtfsDataRun]>, size: u64, valid_size: u64,
     cluster_size: u64, compression_unit_size: u64,
   ) -> Self {
     Self {
@@ -372,7 +372,7 @@ impl NtfsCompressedDataSource {
   }
 }
 
-impl DataSource for NtfsCompressedDataSource {
+impl ByteSource for NtfsCompressedDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.size || buf.is_empty() {
       return Ok(0);
@@ -423,7 +423,7 @@ impl DataSource for NtfsCompressedDataSource {
     Ok(self.size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.source.capabilities().with_preferred_chunk_size(
       usize::try_from(self.compression_unit_size.min(64 * 1024)).unwrap_or(64 * 1024),
     )

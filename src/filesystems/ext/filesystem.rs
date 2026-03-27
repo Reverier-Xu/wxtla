@@ -13,17 +13,17 @@ use super::{
   },
 };
 use crate::{
-  BytesDataSource, DataSource, DataSourceCapabilities, DataSourceHandle, Error, Result,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, Error, Result,
   SourceHints,
   filesystems::{
-    DirectoryEntry, FileSystem, FileSystemNodeId, FileSystemNodeKind, FileSystemNodeRecord,
+    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
   },
 };
 
 const ROOT_INODE: u32 = 2;
 
 type ExtNodeCache = Mutex<HashMap<u64, Arc<ExtNode>>>;
-type ExtChildrenCache = Mutex<HashMap<u64, Arc<[DirectoryEntry]>>>;
+type ExtChildrenCache = Mutex<HashMap<u64, Arc<[NamespaceDirectoryEntry]>>>;
 
 const MODE_TYPE_MASK: u16 = 0xF000;
 const MODE_FIFO: u16 = 0x1000;
@@ -35,7 +35,7 @@ const MODE_SYMLINK: u16 = 0xA000;
 const MODE_SOCKET: u16 = 0xC000;
 
 pub struct ExtFileSystem {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   superblock: ExtSuperblock,
   groups: Arc<[ExtGroupDescriptor]>,
   nodes: ExtNodeCache,
@@ -44,7 +44,7 @@ pub struct ExtFileSystem {
 
 #[derive(Clone)]
 struct ExtNode {
-  record: FileSystemNodeRecord,
+  record: NamespaceNodeRecord,
   inode: ExtInode,
 }
 
@@ -88,7 +88,7 @@ struct ExtByteRun {
 }
 
 struct ExtBlockDataSource {
-  source: DataSourceHandle,
+  source: ByteSourceHandle,
   runs: Arc<[ExtByteRun]>,
   size: u64,
 }
@@ -113,11 +113,11 @@ struct ExtDirectoryEntryRecord {
 }
 
 impl ExtFileSystem {
-  pub fn open(source: DataSourceHandle) -> Result<Self> {
+  pub fn open(source: ByteSourceHandle) -> Result<Self> {
     Self::open_with_hints(source, SourceHints::new())
   }
 
-  pub fn open_with_hints(source: DataSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
+  pub fn open_with_hints(source: ByteSourceHandle, _hints: SourceHints<'_>) -> Result<Self> {
     let superblock = ExtSuperblock::read(source.as_ref())?;
     let groups: Arc<[ExtGroupDescriptor]> =
       Arc::from(read_group_descriptors(source.as_ref(), &superblock)?.into_boxed_slice());
@@ -128,9 +128,9 @@ impl ExtFileSystem {
       nodes: Mutex::new(HashMap::new()),
       children: Mutex::new(HashMap::new()),
     };
-    let root_id = FileSystemNodeId::from_u64(u64::from(ROOT_INODE));
+    let root_id = NamespaceNodeId::from_u64(u64::from(ROOT_INODE));
     let root = file_system.lookup_node(&root_id)?;
-    if root.record.kind != FileSystemNodeKind::Directory {
+    if root.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::InvalidFormat(
         "ext root inode is not a directory".to_string(),
       ));
@@ -139,7 +139,7 @@ impl ExtFileSystem {
     Ok(file_system)
   }
 
-  pub fn node_details(&self, node_id: &FileSystemNodeId) -> Result<ExtNodeDetails> {
+  pub fn node_details(&self, node_id: &NamespaceNodeId) -> Result<ExtNodeDetails> {
     let node = self.lookup_node(node_id)?;
     let inode = &node.inode;
 
@@ -157,9 +157,9 @@ impl ExtFileSystem {
     })
   }
 
-  pub fn symlink_target(&self, node_id: &FileSystemNodeId) -> Result<Option<String>> {
+  pub fn symlink_target(&self, node_id: &NamespaceNodeId) -> Result<Option<String>> {
     let node = self.lookup_node(node_id)?;
-    if node.record.kind != FileSystemNodeKind::Symlink {
+    if node.record.kind != NamespaceNodeKind::Symlink {
       return Ok(None);
     }
 
@@ -168,7 +168,7 @@ impl ExtFileSystem {
   }
 
   pub fn extended_attributes(
-    &self, node_id: &FileSystemNodeId,
+    &self, node_id: &NamespaceNodeId,
   ) -> Result<Vec<ExtExtendedAttribute>> {
     let node = self.lookup_node(node_id)?;
     let inode = &node.inode;
@@ -205,7 +205,7 @@ impl ExtFileSystem {
     Ok(Arc::from(value.into_boxed_slice()))
   }
 
-  fn lookup_node(&self, node_id: &FileSystemNodeId) -> Result<Arc<ExtNode>> {
+  fn lookup_node(&self, node_id: &NamespaceNodeId) -> Result<Arc<ExtNode>> {
     let inode = decode_node_id(node_id)?;
     self
       .load_node(inode)?
@@ -232,8 +232,8 @@ impl ExtFileSystem {
       inode_number,
     )?;
     let node = Arc::new(ExtNode {
-      record: FileSystemNodeRecord::new(
-        FileSystemNodeId::from_u64(u64::from(inode_number)),
+      record: NamespaceNodeRecord::new(
+        NamespaceNodeId::from_u64(u64::from(inode_number)),
         kind_from_mode(inode.mode),
         inode.size,
       ),
@@ -254,7 +254,7 @@ impl ExtFileSystem {
 
   fn directory_children(
     &self, inode_number: u64, inode: &ExtInode,
-  ) -> Result<Arc<[DirectoryEntry]>> {
+  ) -> Result<Arc<[NamespaceDirectoryEntry]>> {
     if let Some(children) = self
       .children
       .lock()
@@ -271,14 +271,14 @@ impl ExtFileSystem {
       let child = self
         .load_node(u64::from(entry.inode))?
         .ok_or_else(|| Error::NotFound(format!("ext inode {} was not found", entry.inode)))?;
-      children.push(DirectoryEntry::new(
+      children.push(NamespaceDirectoryEntry::new(
         entry.name,
         child.record.id.clone(),
         child.record.kind,
       ));
     }
     children.sort_by(|left, right| left.name.cmp(&right.name));
-    let children = Arc::<[DirectoryEntry]>::from(children.into_boxed_slice());
+    let children = Arc::<[NamespaceDirectoryEntry]>::from(children.into_boxed_slice());
 
     let mut cached = self
       .children
@@ -292,10 +292,10 @@ impl ExtFileSystem {
     Ok(children)
   }
 
-  fn build_data_source(&self, inode: &ExtInode) -> Result<DataSourceHandle> {
+  fn build_data_source(&self, inode: &ExtInode) -> Result<ByteSourceHandle> {
     if inode.size == 0 {
       return Ok(
-        Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as DataSourceHandle,
+        Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as ByteSourceHandle,
       );
     }
     if inode.mode & MODE_TYPE_MASK == MODE_SYMLINK && inode.size <= 60 {
@@ -303,7 +303,7 @@ impl ExtFileSystem {
         .map_err(|_| Error::InvalidRange("ext inline symlink size is too large".to_string()))?;
       return Ok(Arc::new(BytesDataSource::new(Arc::<[u8]>::from(
         &inode.block_data[..size],
-      ))) as DataSourceHandle);
+      ))) as ByteSourceHandle);
     }
 
     let runs = if inode.flags & INODE_FLAG_EXTENTS != 0 {
@@ -315,7 +315,7 @@ impl ExtFileSystem {
       source: self.source.clone(),
       runs: Arc::from(runs.into_boxed_slice()),
       size: inode.size,
-    }) as DataSourceHandle)
+    }) as ByteSourceHandle)
   }
 
   fn read_extent_runs(&self, block_data: &[u8; 60], size: u64) -> Result<Vec<ExtByteRun>> {
@@ -460,18 +460,18 @@ impl FileSystem for ExtFileSystem {
     DESCRIPTOR
   }
 
-  fn root_node_id(&self) -> FileSystemNodeId {
-    FileSystemNodeId::from_u64(u64::from(ROOT_INODE))
+  fn root_node_id(&self) -> NamespaceNodeId {
+    NamespaceNodeId::from_u64(u64::from(ROOT_INODE))
   }
 
-  fn node(&self, node_id: &FileSystemNodeId) -> Result<FileSystemNodeRecord> {
+  fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
     self.lookup_node(node_id).map(|node| node.record.clone())
   }
 
-  fn read_dir(&self, directory_id: &FileSystemNodeId) -> Result<Vec<DirectoryEntry>> {
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let inode = decode_node_id(directory_id)?;
     let node = self.lookup_node(directory_id)?;
-    if node.record.kind != FileSystemNodeKind::Directory {
+    if node.record.kind != NamespaceNodeKind::Directory {
       return Err(Error::NotFound(format!(
         "ext inode {inode} is not a directory"
       )));
@@ -480,10 +480,10 @@ impl FileSystem for ExtFileSystem {
     Ok(self.directory_children(inode, &node.inode)?.to_vec())
   }
 
-  fn open_file(&self, file_id: &FileSystemNodeId) -> Result<DataSourceHandle> {
+  fn open_file(&self, file_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let inode = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
-    if node.record.kind != FileSystemNodeKind::File {
+    if node.record.kind != NamespaceNodeKind::File {
       return Err(Error::NotFound(format!(
         "ext inode {inode} is not a readable file"
       )));
@@ -492,7 +492,7 @@ impl FileSystem for ExtFileSystem {
   }
 }
 
-impl DataSource for ExtBlockDataSource {
+impl ByteSource for ExtBlockDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
     if offset >= self.size || buf.is_empty() {
       return Ok(0);
@@ -533,7 +533,7 @@ impl DataSource for ExtBlockDataSource {
     Ok(self.size)
   }
 
-  fn capabilities(&self) -> DataSourceCapabilities {
+  fn capabilities(&self) -> ByteSourceCapabilities {
     self.source.capabilities()
   }
 
@@ -543,7 +543,7 @@ impl DataSource for ExtBlockDataSource {
 }
 
 fn read_inode(
-  source: &dyn DataSource, superblock: &ExtSuperblock, groups: &[ExtGroupDescriptor],
+  source: &dyn ByteSource, superblock: &ExtSuperblock, groups: &[ExtGroupDescriptor],
   inode_number: u32,
 ) -> Result<ExtInode> {
   if inode_number == 0 {
@@ -719,17 +719,17 @@ fn parse_directory_entries(bytes: &[u8]) -> Result<Vec<ExtDirectoryEntryRecord>>
   Ok(entries)
 }
 
-fn kind_from_mode(mode: u16) -> FileSystemNodeKind {
+fn kind_from_mode(mode: u16) -> NamespaceNodeKind {
   match mode & MODE_TYPE_MASK {
-    MODE_DIRECTORY => FileSystemNodeKind::Directory,
-    MODE_SYMLINK => FileSystemNodeKind::Symlink,
-    MODE_REGULAR => FileSystemNodeKind::File,
-    MODE_FIFO | MODE_CHAR_DEVICE | MODE_BLOCK_DEVICE | MODE_SOCKET => FileSystemNodeKind::Special,
-    _ => FileSystemNodeKind::Special,
+    MODE_DIRECTORY => NamespaceNodeKind::Directory,
+    MODE_SYMLINK => NamespaceNodeKind::Symlink,
+    MODE_REGULAR => NamespaceNodeKind::File,
+    MODE_FIFO | MODE_CHAR_DEVICE | MODE_BLOCK_DEVICE | MODE_SOCKET => NamespaceNodeKind::Special,
+    _ => NamespaceNodeKind::Special,
   }
 }
 
-fn decode_node_id(node_id: &FileSystemNodeId) -> Result<u64> {
+fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
     return Err(Error::InvalidSourceReference(
@@ -764,12 +764,9 @@ mod tests {
 
   #[test]
   fn classifies_inode_modes() {
-    assert_eq!(
-      kind_from_mode(MODE_DIRECTORY),
-      FileSystemNodeKind::Directory
-    );
-    assert_eq!(kind_from_mode(MODE_SYMLINK), FileSystemNodeKind::Symlink);
-    assert_eq!(kind_from_mode(MODE_REGULAR), FileSystemNodeKind::File);
+    assert_eq!(kind_from_mode(MODE_DIRECTORY), NamespaceNodeKind::Directory);
+    assert_eq!(kind_from_mode(MODE_SYMLINK), NamespaceNodeKind::Symlink);
+    assert_eq!(kind_from_mode(MODE_REGULAR), NamespaceNodeKind::File);
   }
 
   #[test]
@@ -804,3 +801,5 @@ mod tests {
     assert!(buf.iter().all(|byte| *byte == 0x88));
   }
 }
+
+crate::filesystems::driver::impl_file_system_data_source!(ExtFileSystem);

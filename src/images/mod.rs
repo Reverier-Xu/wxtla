@@ -13,4 +13,4 @@ pub mod vhd;
 pub mod vhdx;
 pub mod vmdk;
 
-pub use driver::{Image, ImageDriver};
+pub(crate) use driver::Image;
