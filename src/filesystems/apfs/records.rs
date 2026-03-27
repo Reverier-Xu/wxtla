@@ -31,7 +31,10 @@ const INO_EXT_TYPE_NAME: u8 = 4;
 const INO_EXT_TYPE_DSTREAM: u8 = 8;
 
 pub(crate) const UF_COMPRESSED: u32 = 0x0000_0020;
+pub(crate) const SF_FIRMLINK: u32 = 0x0080_0000;
+pub(crate) const SF_DATALESS: u32 = 0x4000_0000;
 pub(crate) const XATTR_SYMLINK_NAME: &str = "com.apple.fs.symlink";
+pub(crate) const XATTR_FIRMLINK_NAME: &str = "com.apple.fs.firmlink";
 pub(crate) const XATTR_RESOURCE_FORK_NAME: &str = "com.apple.ResourceFork";
 
 const MODE_TYPE_MASK: u16 = 0xF000;

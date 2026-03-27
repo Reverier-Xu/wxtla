@@ -79,6 +79,11 @@ impl ApfsVolumeInfo {
       .collect()
   }
 
+  pub fn volume_group_id_string(&self) -> Option<String> {
+    (self.superblock.volume_group_id != [0; 16])
+      .then(|| format_uuid_le(&self.superblock.volume_group_id))
+  }
+
   pub fn is_case_insensitive(&self) -> bool {
     self.superblock.is_case_insensitive()
   }
@@ -148,6 +153,9 @@ impl ApfsVolumeInfo {
     )
     .with_tag("sealed", self.is_sealed().to_string())
     .with_tag("encrypted", self.is_encrypted().to_string());
+    if let Some(group_id) = self.volume_group_id_string() {
+      record = record.with_tag("volume_group_id", group_id);
+    }
     if !self.name().is_empty() {
       record = record.with_name(self.name().to_string());
     }

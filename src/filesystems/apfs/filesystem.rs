@@ -128,6 +128,7 @@ struct ApfsNode {
   record: NamespaceNodeRecord,
   private_id: u64,
   data_size: u64,
+  bsd_flags: u32,
   compressed: bool,
 }
 
@@ -188,6 +189,29 @@ impl ApfsVolume {
         .trim_end_matches('\0')
         .to_string(),
     ))
+  }
+
+  pub fn firmlink_target(&self, node_id: &NamespaceNodeId) -> Result<Option<String>> {
+    let firmlink_flag = (self.lookup_node(node_id)?.bsd_flags & super::records::SF_FIRMLINK) != 0;
+    let target = match self.lookup_xattr(node_id, super::records::XATTR_FIRMLINK_NAME) {
+      Ok(xattr) => self.open_storage(&xattr.storage)?.read_all()?,
+      Err(Error::NotFound(_)) if !firmlink_flag => return Ok(None),
+      Err(Error::NotFound(_)) => {
+        return Err(Error::InvalidFormat(
+          "apfs firmlink inode is missing the firmlink xattr".to_string(),
+        ));
+      }
+      Err(error) => return Err(error),
+    };
+    Ok(Some(
+      String::from_utf8_lossy(&target)
+        .trim_end_matches('\0')
+        .to_string(),
+    ))
+  }
+
+  pub fn is_dataless(&self, node_id: &NamespaceNodeId) -> Result<bool> {
+    Ok((self.lookup_node(node_id)?.bsd_flags & super::records::SF_DATALESS) != 0)
   }
 
   pub fn open_resource_fork(&self, node_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
@@ -253,7 +277,9 @@ impl ApfsVolume {
       .and_then(|state| state.password_hint.as_deref())
   }
 
-  fn clone_with_credentials(&self, credentials: &[crate::Credential<'_>]) -> Result<ApfsVolume> {
+  pub(crate) fn clone_with_credentials(
+    &self, credentials: &[crate::Credential<'_>],
+  ) -> Result<ApfsVolume> {
     if credentials.is_empty() || !self.info().is_encrypted() {
       return Ok(self.clone());
     }
@@ -348,6 +374,7 @@ impl ApfsVolume {
               .with_path(inode.name.unwrap_or_default()),
               private_id: inode.private_id,
               data_size: inode.dstream.map_or(0, |dstream| dstream.size),
+              bsd_flags: inode.bsd_flags,
               compressed: (inode.bsd_flags & UF_COMPRESSED) != 0,
             }),
           );

@@ -5,6 +5,7 @@ mod container;
 mod crypto;
 mod driver;
 mod filesystem;
+mod group;
 mod keybag;
 mod ondisk;
 mod records;
@@ -13,6 +14,7 @@ use container::probe_apfs_container;
 pub use container::{ApfsContainer, ApfsVolume, ApfsVolumeInfo};
 pub use driver::ApfsDriver;
 pub use filesystem::{ApfsExtendedAttribute, ApfsSnapshotInfo};
+pub use group::{ApfsFirmlink, ApfsVolumeGroupInfo, ApfsVolumeGroupMember, ApfsVolumeGroupView};
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
