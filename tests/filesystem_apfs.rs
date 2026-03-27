@@ -373,6 +373,20 @@ fn apfs_hardlinks_resolve_to_the_same_inode() {
 }
 
 #[test]
+fn apfs_special_files_are_classified_without_regular_content_streams() {
+  let file_system = open_gzip_volume("apfs/dissect.apfs/case_insensitive.bin.gz").unwrap();
+
+  for path in ["dir/fifo", "dir/blockdev", "dir/chardev-linux"] {
+    let node = file_system.resolve_path(path).unwrap();
+    assert_eq!(node.kind, wxtla::NamespaceNodeKind::Special);
+    assert!(matches!(
+      file_system.open_content(&node.id),
+      Err(wxtla::Error::InvalidFormat(_))
+    ));
+  }
+}
+
+#[test]
 fn apfs_fixture_unlocks_encrypted_volumes_with_password() {
   for relative_path in [
     "apfs/dissect.apfs/encrypted.bin.gz",

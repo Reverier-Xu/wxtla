@@ -6,7 +6,8 @@ use super::ondisk::{
   ApfsBtreeInfo, ApfsBtreeNodeHeader, ApfsObjectHeader, BTNODE_FIXED_KV_SIZE, BTNODE_HASHED,
   BTNODE_LEAF, BTNODE_NOHEADER, BTREE_HASHED, BTREE_INFO_SIZE, BTREE_NODE_HEADER_SIZE,
   BTREE_NOHEADER, BTREE_PHYSICAL, OBJECT_HEADER_SIZE, OBJECT_TYPE_BTREE, OBJECT_TYPE_BTREE_NODE,
-  OBJECT_TYPE_MASK, read_slice, read_u16_le, read_u64_le,
+  OBJECT_TYPE_FEXT_TREE, OBJECT_TYPE_MASK, OBJECT_TYPE_SNAP_META_TREE, read_slice, read_u16_le,
+  read_u64_le,
 };
 use crate::{ByteSourceHandle, Error, Result};
 
@@ -222,7 +223,14 @@ impl ApfsBTreeNode {
     let object_header = ApfsObjectHeader::parse(block)?;
     let type_code = object_header.object_type & OBJECT_TYPE_MASK;
     if root {
-      if type_code != OBJECT_TYPE_BTREE && type_code != OBJECT_TYPE_BTREE_NODE && type_code != 0 {
+      if !matches!(
+        type_code,
+        OBJECT_TYPE_BTREE
+          | OBJECT_TYPE_BTREE_NODE
+          | OBJECT_TYPE_SNAP_META_TREE
+          | OBJECT_TYPE_FEXT_TREE
+          | 0
+      ) {
         return Err(Error::InvalidFormat(format!(
           "invalid apfs btree root object type: 0x{:08x}",
           object_header.object_type
@@ -459,7 +467,7 @@ fn object_block_matches(block: &[u8]) -> bool {
   };
   matches!(
     header.type_code(),
-    OBJECT_TYPE_BTREE | OBJECT_TYPE_BTREE_NODE
+    OBJECT_TYPE_BTREE | OBJECT_TYPE_BTREE_NODE | OBJECT_TYPE_SNAP_META_TREE | OBJECT_TYPE_FEXT_TREE
   ) && header.validate_checksum(block)
 }
 

@@ -284,6 +284,37 @@ pub(crate) struct ApfsFileExtentRecord {
   pub crypto_id: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApfsFextRecord {
+  pub private_id: u64,
+  pub logical_address: u64,
+  pub length: u64,
+  pub physical_block_number: u64,
+}
+
+impl ApfsFextRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    if key.len() != 16 {
+      return Err(Error::InvalidFormat(
+        "apfs fext key must be 16 bytes".to_string(),
+      ));
+    }
+    if value.len() < 16 {
+      return Err(Error::InvalidFormat(
+        "apfs fext value is too short".to_string(),
+      ));
+    }
+
+    let len_and_flags = read_u64_le(value, 0)?;
+    Ok(Self {
+      private_id: read_u64_le(key, 0)?,
+      logical_address: read_u64_le(key, 8)?,
+      length: len_and_flags & J_FILE_EXTENT_LEN_MASK,
+      physical_block_number: read_u64_le(value, 8)?,
+    })
+  }
+}
+
 impl ApfsFileExtentRecord {
   pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
     let header = ApfsFsKeyHeader::parse(key)?;
@@ -396,4 +427,28 @@ fn parse_directory_name(bytes: &[u8]) -> Result<(String, bool)> {
 
 fn align_8(value: usize) -> usize {
   (value + 7) & !7
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parses_fext_records() {
+    let key = [
+      0x34, 0x12, 0, 0, 0, 0, 0, 0, // private id
+      0x78, 0x56, 0, 0, 0, 0, 0, 0, // logical addr
+    ];
+    let value = [
+      0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // length
+      0x9A, 0xBC, 0, 0, 0, 0, 0, 0, // phys
+    ];
+
+    let record = ApfsFextRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.private_id, 0x1234);
+    assert_eq!(record.logical_address, 0x5678);
+    assert_eq!(record.length, 0x2000);
+    assert_eq!(record.physical_block_number, 0xBC9A);
+  }
 }

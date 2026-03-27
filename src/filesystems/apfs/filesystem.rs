@@ -20,10 +20,10 @@ use super::{
   ondisk::read_u64_le,
   records::{
     APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE,
-    APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, ApfsDirectoryRecord, ApfsFileExtentRecord,
-    ApfsFsKeyHeader, ApfsInodeRecord, ApfsSnapshotMetadataRecord, ApfsStreamStorageSpec,
-    ApfsXattrRecord, UF_COMPRESSED, XATTR_RESOURCE_FORK_NAME, XATTR_SYMLINK_NAME,
-    directory_kind_from_flags, node_kind_from_mode,
+    APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, ApfsDirectoryRecord, ApfsFextRecord,
+    ApfsFileExtentRecord, ApfsFsKeyHeader, ApfsInodeRecord, ApfsSnapshotMetadataRecord,
+    ApfsStreamStorageSpec, ApfsXattrRecord, UF_COMPRESSED, XATTR_RESOURCE_FORK_NAME,
+    XATTR_SYMLINK_NAME, directory_kind_from_flags, node_kind_from_mode,
   },
 };
 use crate::{
@@ -386,6 +386,26 @@ impl ApfsVolume {
             });
         }
         _ => {}
+      }
+    }
+
+    if self.info().is_sealed() && self.info().fext_tree_oid() != 0 {
+      let fext_tree = ApfsBTree::open(
+        self.source.clone(),
+        self.block_size,
+        self.info().fext_tree_oid(),
+      )?;
+      for (key, value) in fext_tree.walk_records()? {
+        let extent = ApfsFextRecord::parse(&key, &value)?;
+        extents
+          .entry(extent.private_id)
+          .or_insert_with(Vec::new)
+          .push(ApfsExtent {
+            logical_address: extent.logical_address,
+            length: extent.length,
+            physical_block_number: extent.physical_block_number,
+            crypto_id: 0,
+          });
       }
     }
 

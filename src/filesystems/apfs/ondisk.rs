@@ -17,6 +17,8 @@ pub(crate) const OBJECT_TYPE_BTREE: u32 = 0x0000_0002;
 pub(crate) const OBJECT_TYPE_BTREE_NODE: u32 = 0x0000_0003;
 pub(crate) const OBJECT_TYPE_OMAP: u32 = 0x0000_000B;
 pub(crate) const OBJECT_TYPE_FS: u32 = 0x0000_000D;
+pub(crate) const OBJECT_TYPE_SNAP_META_TREE: u32 = 0x0000_0010;
+pub(crate) const OBJECT_TYPE_FEXT_TREE: u32 = 0x0000_001F;
 pub(crate) const APFS_OBJECT_TYPE_CONTAINER_KEYBAG: u32 = 0x6B65_7973;
 pub(crate) const APFS_OBJECT_TYPE_VOLUME_KEYBAG: u32 = 0x7265_6373;
 
