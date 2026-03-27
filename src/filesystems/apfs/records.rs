@@ -34,6 +34,7 @@ const DREC_EXT_TYPE_SIBLING_ID: u8 = 1;
 
 const INO_EXT_TYPE_NAME: u8 = 4;
 const INO_EXT_TYPE_DSTREAM: u8 = 8;
+const INO_EXT_TYPE_RDEV: u8 = 14;
 
 pub(crate) const UF_COMPRESSED: u32 = 0x0000_0020;
 pub(crate) const SF_FIRMLINK: u32 = 0x0080_0000;
@@ -97,6 +98,7 @@ pub(crate) struct ApfsInodeRecord {
   pub uncompressed_size: u64,
   pub name: Option<String>,
   pub dstream: Option<ApfsDstream>,
+  pub rdev: Option<u32>,
 }
 
 impl ApfsInodeRecord {
@@ -115,6 +117,7 @@ impl ApfsInodeRecord {
 
     let mut name = None;
     let mut dstream = None;
+    let mut rdev = None;
     for field in parse_xfields(&value[92..])? {
       match field.kind {
         INO_EXT_TYPE_NAME => {
@@ -122,6 +125,9 @@ impl ApfsInodeRecord {
         }
         INO_EXT_TYPE_DSTREAM => {
           dstream = Some(ApfsDstream::parse(&field.value)?);
+        }
+        INO_EXT_TYPE_RDEV if field.value.len() >= 4 => {
+          rdev = Some(read_u32_le(&field.value, 0)?);
         }
         _ => {}
       }
@@ -139,6 +145,7 @@ impl ApfsInodeRecord {
       uncompressed_size: read_u64_le(value, 84)?,
       name,
       dstream,
+      rdev,
     })
   }
 }

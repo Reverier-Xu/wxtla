@@ -13,7 +13,9 @@ mod records;
 use container::probe_apfs_container;
 pub use container::{ApfsContainer, ApfsVolume, ApfsVolumeInfo};
 pub use driver::ApfsDriver;
-pub use filesystem::{ApfsExtendedAttribute, ApfsSnapshotInfo};
+pub use filesystem::{
+  ApfsExtendedAttribute, ApfsNodeDetails, ApfsSnapshotInfo, ApfsSpecialFileKind,
+};
 pub use group::{ApfsFirmlink, ApfsVolumeGroupInfo, ApfsVolumeGroupMember, ApfsVolumeGroupView};
 pub use ondisk::ApfsIntegrityMetadata;
 pub use records::{APFS_FILE_INFO_DATA_HASH, ApfsFileInfoRecord};

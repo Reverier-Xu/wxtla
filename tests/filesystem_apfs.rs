@@ -8,8 +8,8 @@ use support::{FileDataSource, fixture_path};
 use wxtla::{
   ByteSourceHandle, BytesDataSource, Credential, DataSource, DataViewSelector, OpenOptions,
   filesystems::{
-    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceSource, NamespaceStreamKind,
-    apfs::ApfsDriver,
+    ApfsSpecialFileKind, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceSource,
+    NamespaceStreamKind, apfs::ApfsDriver,
   },
   volumes::gpt::GptDriver,
 };
@@ -386,9 +386,21 @@ fn apfs_hardlinks_resolve_to_the_same_inode() {
 fn apfs_special_files_are_classified_without_regular_content_streams() {
   let file_system = open_gzip_volume("apfs/dissect.apfs/case_insensitive.bin.gz").unwrap();
 
-  for path in ["dir/fifo", "dir/blockdev", "dir/chardev-linux"] {
+  for (path, expected_kind, expect_rdev) in [
+    ("dir/fifo", ApfsSpecialFileKind::Fifo, false),
+    ("dir/blockdev", ApfsSpecialFileKind::BlockDevice, true),
+    (
+      "dir/chardev-linux",
+      ApfsSpecialFileKind::CharacterDevice,
+      true,
+    ),
+  ] {
     let node = file_system.resolve_path(path).unwrap();
+    let details = file_system.node_details(&node.id).unwrap();
+
     assert_eq!(node.kind, wxtla::NamespaceNodeKind::Special);
+    assert_eq!(details.special_file_kind, Some(expected_kind));
+    assert_eq!(details.rdev.is_some(), expect_rdev);
     assert!(matches!(
       file_system.open_content(&node.id),
       Err(wxtla::Error::InvalidFormat(_))

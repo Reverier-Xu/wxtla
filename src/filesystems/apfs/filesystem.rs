@@ -60,6 +60,33 @@ pub struct ApfsExtendedAttribute {
   pub value: Arc<[u8]>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApfsSpecialFileKind {
+  BlockDevice,
+  CharacterDevice,
+  Fifo,
+  Socket,
+  Whiteout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApfsNodeDetails {
+  pub object_id: u64,
+  pub parent_id: u64,
+  pub private_id: u64,
+  pub owner: u32,
+  pub group: u32,
+  pub mode: u16,
+  pub internal_flags: u64,
+  pub bsd_flags: u32,
+  pub compressed: bool,
+  pub data_size: u64,
+  pub rdev: Option<u32>,
+  pub names: Vec<String>,
+  pub paths: Vec<String>,
+  pub special_file_kind: Option<ApfsSpecialFileKind>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApfsSnapshotInfo {
   parent_volume_object_id: u64,
@@ -128,9 +155,15 @@ pub(crate) struct ApfsVolumeIndex {
 
 struct ApfsNode {
   record: NamespaceNodeRecord,
+  parent_id: u64,
   private_id: u64,
+  owner: u32,
+  group: u32,
+  mode: u16,
+  internal_flags: u64,
   data_size: u64,
   bsd_flags: u32,
+  rdev: Option<u32>,
   compressed: bool,
 }
 
@@ -275,6 +308,30 @@ impl ApfsVolume {
     names.sort();
     names.dedup();
     Ok(names)
+  }
+
+  pub fn node_details(&self, node_id: &NamespaceNodeId) -> Result<ApfsNodeDetails> {
+    let identifier = decode_node_id(node_id)?;
+    let node = self.lookup_node(node_id)?;
+    let names = self.names(node_id)?;
+    let paths = self.paths(node_id)?;
+
+    Ok(ApfsNodeDetails {
+      object_id: identifier,
+      parent_id: node.parent_id,
+      private_id: node.private_id,
+      owner: node.owner,
+      group: node.group,
+      mode: node.mode,
+      internal_flags: node.internal_flags,
+      bsd_flags: node.bsd_flags,
+      compressed: node.compressed,
+      data_size: node.data_size,
+      rdev: node.rdev,
+      names,
+      paths,
+      special_file_kind: special_file_kind_from_mode(node.mode),
+    })
   }
 
   pub fn snapshots(&self) -> Result<Vec<ApfsSnapshotInfo>> {
@@ -462,9 +519,15 @@ impl ApfsVolume {
                 size,
               )
               .with_path(inode.name.unwrap_or_default()),
+              parent_id: inode.parent_id,
               private_id: inode.private_id,
+              owner: inode.owner,
+              group: inode.group,
+              mode: inode.mode,
+              internal_flags: inode.internal_flags,
               data_size: inode.dstream.map_or(0, |dstream| dstream.size),
               bsd_flags: inode.bsd_flags,
+              rdev: inode.rdev,
               compressed: (inode.bsd_flags & UF_COMPRESSED) != 0,
             }),
           );
@@ -1184,6 +1247,17 @@ fn apfs_lookup_name_key(
   }
 }
 
+fn special_file_kind_from_mode(mode: u16) -> Option<ApfsSpecialFileKind> {
+  match mode & 0xF000 {
+    0x1000 => Some(ApfsSpecialFileKind::Fifo),
+    0x2000 => Some(ApfsSpecialFileKind::CharacterDevice),
+    0x6000 => Some(ApfsSpecialFileKind::BlockDevice),
+    0xC000 => Some(ApfsSpecialFileKind::Socket),
+    0xE000 => Some(ApfsSpecialFileKind::Whiteout),
+    _ => None,
+  }
+}
+
 fn parse_decmpfs_header(bytes: &[u8]) -> Result<ApfsDecmpfsHeader> {
   if bytes.len() < 16 {
     return Err(Error::InvalidFormat(
@@ -1407,9 +1481,15 @@ mod tests {
   fn dataless_nodes_reject_regular_content_opens() {
     let node = ApfsNode {
       record: NamespaceNodeRecord::new(NamespaceNodeId::from_u64(1), NamespaceNodeKind::File, 0),
+      parent_id: 0,
       private_id: 0,
+      owner: 0,
+      group: 0,
+      mode: 0,
+      internal_flags: 0,
       data_size: 0,
       bsd_flags: crate::filesystems::apfs::records::SF_DATALESS,
+      rdev: None,
       compressed: false,
     };
 

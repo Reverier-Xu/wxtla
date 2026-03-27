@@ -12,8 +12,8 @@ pub mod xfs;
 
 pub use apfs::{
   APFS_FILE_INFO_DATA_HASH, ApfsContainer, ApfsDriver, ApfsExtendedAttribute, ApfsFileInfoRecord,
-  ApfsFirmlink, ApfsIntegrityMetadata, ApfsSnapshotInfo, ApfsVolume, ApfsVolumeGroupInfo,
-  ApfsVolumeGroupMember, ApfsVolumeGroupView, ApfsVolumeInfo,
+  ApfsFirmlink, ApfsIntegrityMetadata, ApfsNodeDetails, ApfsSnapshotInfo, ApfsSpecialFileKind,
+  ApfsVolume, ApfsVolumeGroupInfo, ApfsVolumeGroupMember, ApfsVolumeGroupView, ApfsVolumeInfo,
 };
 pub(crate) use driver::FileSystem;
 pub use ext::{ExtDriver, ExtExtendedAttribute, ExtFileSystem, ExtNodeDetails};
