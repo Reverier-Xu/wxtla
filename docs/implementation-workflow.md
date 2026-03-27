@@ -84,7 +84,8 @@ The active migration order is now image-first after the already-landed volume la
 
 ### Current next target
 
-- `apfs`
+- unified source/driver model for multi-view formats
+- then `apfs`
 
 ### Remaining image targets after that
 
@@ -158,6 +159,7 @@ The next agent should read, at minimum:
 
 - `docs/development-plan.md`
 - `docs/architecture.md`
+- `docs/unified-source-model.md`
 - `docs/format-inventory.md`
 - this file
 

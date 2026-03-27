@@ -2,7 +2,7 @@
 
 ## 0. Architectural stance
 
-`wxtla` is a concurrent, read-only parser backend. It is not a session layer, not a VFS, not a mount manager, and not a runtime bridge. Parsers receive positional byte sources and optional related-source hints, then expose typed read-only surfaces such as images, volumes, filesystems, or archives.
+`wxtla` is a concurrent, read-only parser backend. It is not a session layer, not a VFS, not a mount manager, and not a runtime bridge. Parsers receive positional byte sources and optional related-source hints, then expose unified read-only data sources with optional byte, namespace, table, and child-view facets.
 
 The current architecture deliberately avoids the state-machine cursor model used by `keramics`. `keramics` remains useful as a source of on-disk field definitions and format notes, but its runtime architecture must not be copied. All parser code in `wxtla` must be built around independent `read_at` operations, bounded caches, and layered source translation.
 
@@ -30,9 +30,9 @@ Each concrete format sits in its own module subtree, for example `src/images/ewf
 
 ## 2. Shared core model
 
-### 2.1 Data sources
+### 2.1 Byte sources
 
-All parsers consume `DataSource`, which provides positional reads with no shared cursor. The key requirements are:
+All parsers consume the current byte-level `DataSource`, which is best thought of as a `ByteSource`: positional reads with no shared cursor. The key requirements are:
 
 - thread-safe (`Send + Sync`)
 - immutable from the parser's point of view
@@ -41,9 +41,27 @@ All parsers consume `DataSource`, which provides positional reads with no shared
 
 Wrappers such as `SliceDataSource` and `ProbeCachedDataSource` stay in `src/core/` because they are backend primitives rather than format-specific logic.
 
-### 2.1b Planned `TableSource`
+### 2.1b Planned unified opened `DataSource`
 
-`DataSource` remains the correct abstraction for byte-addressable media and stream-like payloads. A second parser-facing abstraction is needed for database and table-oriented forensic formats where callers need schemas, rows, typed cells, and optional blob streaming rather than raw byte offsets.
+The byte primitive is not sufficient as the only public parser result. Advanced formats such as APFS, Btrfs, ZFS, VMFS, and snapshot-capable images can expose multiple logical views that share common structure:
+
+- child views such as partitions, volumes, snapshots, subvolumes, or datasets
+- optional byte-addressable payloads
+- optional namespace/tree access
+- optional table/row access
+- open-time selectors and credentials
+
+The long-term model should therefore distinguish the byte primitive from a higher-level opened `DataSource` surface. The opened `DataSource` should:
+
+- expose optional facets such as bytes, namespace, and tables
+- enumerate child views generically instead of inventing per-format side APIs
+- reopen or refine a view with additional credentials or selectors without mutating parser state in place
+
+`docs/unified-source-model.md` captures the target shape in more detail.
+
+### 2.1c `TableSource`
+
+`TableSource` remains the correct abstraction for database and table-oriented forensic formats where callers need schemas, rows, typed cells, and optional blob streaming rather than raw byte offsets. In the unified model it becomes one optional facet of an opened `DataSource` rather than a disconnected top-level world.
 
 The planned `TableSource` role is:
 
@@ -68,9 +86,20 @@ This keeps probe metadata close to the owning format instead of maintaining a ce
 
 ## 3. Domain-level interfaces
 
-### 3.1 Images
+### 3.1 Data views and facets
 
-Image drivers expose a logical random-access surface over an underlying container. They may internally translate chunk maps, backing chains, sparse allocations, compressed blocks, or split segments, but externally they still implement `DataSource`.
+The long-term public model should stop splitting opened results into separate image, volume-system, filesystem, and archive trait families. Instead, one opened `DataSource` should expose one or more of these facets:
+
+- byte facet for logical media or blob bytes
+- namespace facet for files, directories, streams, and forks
+- table facet for row/column oriented stores
+- child-view catalog for partitions, snapshots, subvolumes, datasets, and similar relationships
+
+That keeps APFS and later copy-on-write filesystems from needing format-specific top-level APIs.
+
+### 3.2 Images
+
+Image drivers expose a logical random-access byte facet over an underlying container. They may internally translate chunk maps, backing chains, sparse allocations, compressed blocks, or split segments, but externally they still provide byte-addressable reads.
 
 Current image-specific design patterns:
 
@@ -79,15 +108,15 @@ Current image-specific design patterns:
 - parent or sibling images are resolved through `SourceHints`
 - image drivers report logical and physical sector sizes when known
 
-### 3.2 Volumes
+### 3.3 Volumes
 
-Volume-system drivers expose discovered partitions or logical volumes as `VolumeRecord`s and can open each one as a slice-backed `DataSource`. This layer is already suitable for composition into later filesystem parsers.
+Volume-system drivers should primarily expose child views for discovered partitions or logical volumes. Each opened child view then exposes a byte facet for the sliced volume.
 
-### 3.3 Filesystems and archives
+### 3.4 Filesystems and archives
 
-Filesystem and archive drivers expose typed directory/file metadata and can open file contents as `DataSource`s. These higher layers should remain path-model agnostic and must not absorb VFS semantics from the application layer.
+Filesystem and archive drivers should converge on one namespace facet rather than maintaining nearly identical but separately named abstractions. That namespace facet should support generic directory traversal plus explicit stream catalogs for cases such as NTFS ADS, HFS resource forks, APFS named forks, and archive members with only a single unnamed stream.
 
-### 3.4 Tables and structured stores
+### 3.5 Tables and structured stores
 
 Database and table drivers should eventually expose `TableSource` instead of forcing all structured formats into filesystem or archive semantics. The first wave should focus on truly table-like forensic stores such as ESE, thumbnail caches, and other row/column oriented databases that already have mature `libyal` references.
 
@@ -160,6 +189,6 @@ As of the current handoff point:
 
 The next architecture expansion after the filesystem wave begins should be:
 
-- keep `DataSource` as the base byte model for media, files, and large cell/blob payloads
-- introduce `TableSource` for row/column oriented forensic databases
+- keep the current byte-level `DataSource` as the base byte model for media, files, and large cell/blob payloads
+- introduce a unified opened `DataSource` above it, with `TableSource` as one optional facet
 - keep registry/event-log/compound-storage formats out of `TableSource` until a separate structured-store abstraction is justified

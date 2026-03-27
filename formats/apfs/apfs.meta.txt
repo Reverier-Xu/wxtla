@@ -1,0 +1,21 @@
+APFS fixture sources for `wxtla`
+
+- `apfs.dmg`
+  - copied from `/home/reverier/Code/Python/plaso/test_data/apfs.dmg`
+  - used by Plaso APFS source-scanning tests
+  - contains a single APFS volume named `SingleVolume`
+
+- `apfs_encrypted.dmg`
+  - copied from `/home/reverier/Code/Python/plaso/test_data/apfs_encrypted.dmg`
+  - used by Plaso encrypted APFS source-scanning tests
+  - known password: `apfs-TEST`
+
+- `libfsapfs/*.1`
+  - copied from `/home/reverier/Code/C/libfsapfs/tests/data/`
+  - small structure fixtures for unit tests of headers, B-trees, checkpoint maps, key bags, and inode parsing
+
+- `dissect.apfs/*.bin.gz`
+  - downloaded from `https://media.githubusercontent.com/media/fox-it/dissect.apfs/main/tests/_data/`
+  - gzip-compressed APFS container fixtures used by `dissect.apfs/tests/test_apfs.py`
+  - coverage includes case-sensitive, case-insensitive, JHFS-converted, encrypted, snapshot, beta-era, and corrupt-checkpoint containers
+  - known password for `encrypted.bin.gz` and `jhfs_encrypted.bin.gz`: `password`

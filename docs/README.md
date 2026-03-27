@@ -4,9 +4,11 @@ These documents lock the current direction for `wxtla`.
 
 - `development-plan.md`: scope, boundaries, approved dependency set, concurrent read architecture, and migration phases.
 - `architecture.md`: current crate architecture, module layering, and parser implementation patterns.
+- `unified-source-model.md`: planned replacement for the split image/volume/filesystem/archive driver model.
 - `format-inventory.md`: complete format inventory gathered from `keramics` and `regressor`, with proposed WXTLA ownership.
 - `feature-completion-plan.md`: current unsupported or narrowly gated parser features that still need fixture-backed completion work.
 - `implementation-workflow.md`: non-negotiable migration workflow and quality rules for the next agent.
+- `apfs-phase-5a-plan.md`: APFS-specific research notes, staged fixture inventory, and a completeness-first implementation roadmap.
 
 Current design decisions:
 

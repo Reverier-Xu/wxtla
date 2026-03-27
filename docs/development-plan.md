@@ -121,20 +121,20 @@ These crates may be useful as references during implementation or for test cross
 
 That means the correct long-term split is:
 
-- `wxtla`: `DataSource` + future `TableSource` + `RelatedSourceResolver`
+- `wxtla`: byte source primitive + unified opened data-source model + `TableSource` facet + `RelatedSourceResolver`
 - `regressor`: local file opening, mount/session routing, and VFS behavior
 
 ## 3. Concurrent read architecture
 
-### 3.1 Core model
+### 3.1 Core byte model
 
-Every parser reads from a positional, immutable, thread-safe source.
+Every parser reads from a positional, immutable, thread-safe byte source. The current code calls this `DataSource`; architecturally it is the byte-level primitive beneath higher-level opened parser results.
 
 ```rust
-trait DataSource: Send + Sync {
+trait ByteSource: Send + Sync {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize>;
     fn size(&self) -> Result<u64>;
-    fn capabilities(&self) -> DataSourceCapabilities;
+    fn capabilities(&self) -> ByteSourceCapabilities;
     fn telemetry_name(&self) -> &'static str;
 }
 ```
@@ -148,9 +148,9 @@ Important properties:
 
 ### 3.2 Planned layering
 
-1. `DataSource`
-   - lowest-level positional byte source
-   - path-agnostic and storage-backend-agnostic
+1. byte source primitive
+    - lowest-level positional byte source
+    - path-agnostic and storage-backend-agnostic
 2. `RelatedSourceResolver`
    - parser-facing resolver for sibling files, split segments, backing files, and bundle bands
    - implemented by `regressor` or another host application
@@ -167,11 +167,11 @@ Important properties:
    - metadata table cache
    - runlist/extent cache
    - decompressed block cache where needed
-6. Typed parser APIs
-   - image/container readers
-   - partition/volume readers
-   - single-filesystem read-only readers
-   - future `TableSource`-backed database readers
+6. Unified opened data sources
+   - byte facet for logical media and blobs
+   - namespace facet for files/directories/streams
+   - table facet for row/column stores
+   - child-view catalog for partitions, snapshots, subvolumes, and datasets
 
 ### 3.3 Concurrency rules
 
@@ -190,18 +190,29 @@ VFS concerns compose multiple parsers into one product-level namespace. That is 
 
 The intended WXTLA stack is:
 
-- image/container parser -> yields logical readable address space and child descriptors
-- partition/volume parser -> yields partition slices / logical volumes
-- filesystem parser -> yields directory/file metadata and file content readers
-- table/database parser -> yields schemas, tables, rows, and typed cell/blob access through a future `TableSource`
+- image/container parser -> yields an opened data source with a byte facet and optional child views
+- partition/volume parser -> yields an opened data source with partition/logical-volume child views
+- filesystem parser -> yields an opened data source with a namespace facet and optional snapshot/subvolume child views
+- table/database parser -> yields an opened data source with a `TableSource` facet
 
-Each layer stays individually reusable. `regressor` can compose them into a VFS, but `wxtla` itself should stop at typed read-only parser outputs.
+Each layer stays individually reusable. `regressor` can compose them into a VFS, but `wxtla` itself should stop at typed read-only parser outputs and child-view relationships.
 
-### 4.1 Planned second core read interface: `TableSource`
+### 4.1 Unified opened data-source interface
 
-`DataSource` remains the correct primitive for byte-addressable media, files, archive members, image payloads, and filesystem file contents. It is not sufficient for structured forensic databases where the natural consumer model is tables, columns, rows, and large cell/blob payloads.
+The next core refactor should replace the split `ImageDriver` / `VolumeSystemDriver` / `FileSystemDriver` / `ArchiveDriver` model with one generic `Driver` that returns one opened `DataSource`. That opened `DataSource` should:
 
-The planned second core interface is therefore `TableSource`, which should model read-only structured stores such as ESE databases, thumbnail caches, browser cache databases, mail stores that can be projected into tables, and similar record-heavy formats.
+- expose optional byte, namespace, and table facets
+- enumerate child views generically
+- support open-time selectors and credentials in one place
+- avoid format-specific top-level side APIs for snapshots, subvolumes, or volume groups
+
+The design target is documented in `docs/unified-source-model.md`.
+
+### 4.2 `TableSource` as a facet
+
+The byte primitive remains the correct substrate for media, file contents, archive members, image payloads, and large blob cells. It is not sufficient for structured forensic databases where the natural consumer model is tables, columns, rows, and large cell/blob payloads.
+
+`TableSource` should model read-only structured stores such as ESE databases, thumbnail caches, browser cache databases, mail stores that can be projected into tables, and similar record-heavy formats. In the unified model it is one optional facet of an opened `DataSource`.
 
 The interface should stay intentionally small and parser-facing:
 
@@ -284,6 +295,8 @@ The filesystem wave should now follow common forensic prevalence instead of hist
 6. ReFS (`libfsrefs`)
 
 ### Phase 5a: long-term modern filesystem wave
+
+Before this wave starts, land the unified source/driver model described in `docs/unified-source-model.md`. APFS and the later modern copy-on-write filesystems should be the first real consumers of that model rather than each inventing custom side surfaces.
 
 The following newer copy-on-write or snapshot-heavy filesystems should be treated as a later long-term wave after the mainstream forensic set is stable:
 
