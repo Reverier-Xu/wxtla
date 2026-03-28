@@ -17,7 +17,11 @@ pub use filesystem::{
   ApfsExtendedAttribute, ApfsNodeDetails, ApfsSnapshotInfo, ApfsSpecialFileKind,
 };
 pub use group::{ApfsFirmlink, ApfsVolumeGroupInfo, ApfsVolumeGroupMember, ApfsVolumeGroupView};
-pub use ondisk::{ApfsChangeInfo, ApfsIntegrityMetadata, ApfsMetaCryptoState, ApfsPrange};
+pub use keybag::{ApfsKeybagEntryHeader, ApfsKeybagLockerHeader};
+pub use ondisk::{
+  ApfsChangeInfo, ApfsCheckpointMap, ApfsCheckpointMapping, ApfsIntegrityMetadata,
+  ApfsMetaCryptoState, ApfsPrange,
+};
 pub use records::{APFS_FILE_INFO_DATA_HASH, ApfsFileInfoRecord};
 
 use crate::{

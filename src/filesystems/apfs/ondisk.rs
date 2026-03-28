@@ -16,6 +16,7 @@ pub(crate) const OBJECT_TYPE_NX_SUPERBLOCK: u32 = 0x0000_0001;
 pub(crate) const OBJECT_TYPE_BTREE: u32 = 0x0000_0002;
 pub(crate) const OBJECT_TYPE_BTREE_NODE: u32 = 0x0000_0003;
 pub(crate) const OBJECT_TYPE_OMAP: u32 = 0x0000_000B;
+pub(crate) const OBJECT_TYPE_CHECKPOINT_MAP: u32 = 0x0000_000C;
 pub(crate) const OBJECT_TYPE_FS: u32 = 0x0000_000D;
 pub(crate) const OBJECT_TYPE_SNAP_META_TREE: u32 = 0x0000_0010;
 pub(crate) const OBJECT_TYPE_INTEGRITY_META: u32 = 0x0000_001E;
@@ -40,6 +41,7 @@ pub(crate) const BTNODE_NOHEADER: u16 = 0x0010;
 pub(crate) const CHECKPOINT_AREA_BTREE_FLAG: u32 = 0x8000_0000;
 
 pub(crate) const OMAP_VAL_DELETED: u32 = 0x0000_0001;
+pub(crate) const CHECKPOINT_MAP_LAST: u32 = 0x0000_0001;
 
 pub(crate) const APFS_INCOMPAT_CASE_INSENSITIVE: u64 = 0x0000_0001;
 pub(crate) const APFS_INCOMPAT_DATALESS_SNAPS: u64 = 0x0000_0002;
@@ -378,6 +380,102 @@ pub(crate) struct ApfsObjectMap {
   pub tree_oid: u64,
   pub snapshot_tree_oid: u64,
   pub most_recent_snapshot_xid: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApfsCheckpointMapping {
+  pub object_type: u32,
+  pub object_subtype: u32,
+  pub size: u32,
+  pub file_system_object_id: u64,
+  pub object_id: u64,
+  pub physical_address: u64,
+}
+
+impl ApfsCheckpointMapping {
+  pub fn parse(bytes: &[u8]) -> Result<Self> {
+    require_len(bytes, 40, "apfs checkpoint map entry")?;
+    Ok(Self {
+      object_type: read_u32_le(bytes, 0)?,
+      object_subtype: read_u32_le(bytes, 4)?,
+      size: read_u32_le(bytes, 8)?,
+      file_system_object_id: read_u64_le(bytes, 16)?,
+      object_id: read_u64_le(bytes, 24)?,
+      physical_address: read_u64_le(bytes, 32)?,
+    })
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApfsCheckpointMap {
+  header: ApfsObjectHeader,
+  pub flags: u32,
+  pub entry_count: u32,
+  pub entries: Vec<ApfsCheckpointMapping>,
+}
+
+impl ApfsCheckpointMap {
+  pub fn parse(block: &[u8]) -> Result<Self> {
+    require_len(block, 40, "apfs checkpoint map")?;
+    let header = ApfsObjectHeader::parse(block)?;
+    let entry_count = read_u32_le(block, 36)?;
+    let entries_offset = 40usize;
+    let entries_length = usize::try_from(entry_count)
+      .map_err(|_| {
+        Error::InvalidRange("apfs checkpoint map entry count exceeds usize".to_string())
+      })?
+      .checked_mul(40)
+      .ok_or_else(|| Error::InvalidRange("apfs checkpoint map size overflow".to_string()))?;
+    let entries_bytes = read_slice(
+      block,
+      entries_offset,
+      entries_length,
+      "apfs checkpoint map entries",
+    )?;
+    let mut entries = Vec::with_capacity(entry_count as usize);
+    for chunk in entries_bytes.chunks_exact(40) {
+      entries.push(ApfsCheckpointMapping::parse(chunk)?);
+    }
+
+    Ok(Self {
+      header,
+      flags: read_u32_le(block, 32)?,
+      entry_count,
+      entries,
+    })
+  }
+
+  pub fn validate(&self, block: &[u8]) -> Result<()> {
+    if self.header.type_code() != OBJECT_TYPE_CHECKPOINT_MAP {
+      return Err(Error::InvalidFormat(format!(
+        "invalid apfs checkpoint map type: 0x{:08x}",
+        self.header.object_type
+      )));
+    }
+    if !self.header.is_physical() {
+      return Err(Error::InvalidFormat(
+        "apfs checkpoint map must be physical".to_string(),
+      ));
+    }
+    if !self.header.validate_checksum(block) {
+      return Err(Error::InvalidFormat(
+        "invalid apfs checkpoint map checksum".to_string(),
+      ));
+    }
+    Ok(())
+  }
+
+  pub fn is_last(&self) -> bool {
+    (self.flags & CHECKPOINT_MAP_LAST) != 0
+  }
+
+  pub fn object_id(&self) -> u64 {
+    self.header.oid
+  }
+
+  pub fn xid(&self) -> u64 {
+    self.header.xid
+  }
 }
 
 impl ApfsObjectMap {
@@ -967,6 +1065,34 @@ mod tests {
     assert_eq!(omap.flags, 1);
     assert_eq!(omap.tree_type, OBJ_PHYSICAL | OBJECT_TYPE_BTREE);
     assert_eq!(omap.tree_oid, 84);
+  }
+
+  #[test]
+  fn parses_checkpoint_map_fixture() {
+    let fixture = fixture_bytes("checkpoint_map.1");
+    let map = ApfsCheckpointMap::parse(&fixture).unwrap();
+
+    map.validate(&fixture).unwrap();
+    assert!(map.is_last());
+    assert_eq!(map.entry_count, 2);
+    assert_eq!(map.entries[0].object_type, 0x8000_0005);
+    assert_eq!(map.entries[0].size, 0x1000);
+    assert_eq!(map.entries[0].object_id, 1024);
+    assert_eq!(map.entries[0].physical_address, 9);
+    assert_eq!(map.entries[1].object_type, 0x8000_0011);
+    assert_eq!(map.entries[1].physical_address, 10);
+  }
+
+  #[test]
+  fn parses_checkpoint_map_entry_fixture() {
+    let entry = ApfsCheckpointMapping::parse(&fixture_bytes("checkpoint_map_entry.1")).unwrap();
+
+    assert_eq!(entry.object_type, 0x8000_0005);
+    assert_eq!(entry.object_subtype, 0);
+    assert_eq!(entry.size, 0x1000);
+    assert_eq!(entry.file_system_object_id, 0);
+    assert_eq!(entry.object_id, 1024);
+    assert_eq!(entry.physical_address, 9);
   }
 
   #[test]

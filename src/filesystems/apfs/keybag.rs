@@ -34,6 +34,50 @@ struct ApfsKeybagEntry {
   data: Arc<[u8]>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApfsKeybagLockerHeader {
+  pub version: u16,
+  pub entry_count: u16,
+  pub byte_size: u32,
+}
+
+impl ApfsKeybagLockerHeader {
+  pub fn parse(bytes: &[u8]) -> Result<Self> {
+    if bytes.len() < 8 {
+      return Err(Error::InvalidFormat(
+        "apfs keybag locker header is too short".to_string(),
+      ));
+    }
+    Ok(Self {
+      version: read_u16_le(bytes, 0)?,
+      entry_count: read_u16_le(bytes, 2)?,
+      byte_size: read_u32_le(bytes, 4)?,
+    })
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApfsKeybagEntryHeader {
+  pub uuid: [u8; 16],
+  pub tag: u16,
+  pub key_length: u16,
+}
+
+impl ApfsKeybagEntryHeader {
+  pub fn parse(bytes: &[u8]) -> Result<Self> {
+    if bytes.len() < KEYBAG_ENTRY_HEADER_SIZE {
+      return Err(Error::InvalidFormat(
+        "apfs keybag entry header is too short".to_string(),
+      ));
+    }
+    Ok(Self {
+      uuid: read_array_16(bytes, 0)?,
+      tag: read_u16_le(bytes, 16)?,
+      key_length: read_u16_le(bytes, 18)?,
+    })
+  }
+}
+
 #[derive(Debug, Clone)]
 struct ApfsContainerKeybag {
   entries: HashMap<([u8; 16], u16), ApfsKeybagEntry>,
@@ -413,26 +457,26 @@ fn parse_keybag_entries(bytes: &[u8]) -> Result<Vec<ApfsKeybagEntry>> {
       "apfs keybag object is too short".to_string(),
     ));
   }
-  let version = read_u16_le(bytes, 32)?;
+  let locker = ApfsKeybagLockerHeader::parse(&bytes[32..40])?;
+  let version = locker.version;
   if version != KEYBAG_VERSION {
     return Err(Error::Unsupported(format!(
       "unsupported apfs keybag version: {version}"
     )));
   }
 
-  let entry_count = usize::from(read_u16_le(bytes, 34)?);
+  let entry_count = usize::from(locker.entry_count);
   let mut offset = 48usize;
   let mut entries = Vec::with_capacity(entry_count);
   for _ in 0..entry_count {
-    let uuid = read_array_16(bytes, offset)?;
-    let tag = read_u16_le(bytes, offset + 16)?;
-    let key_length = usize::from(read_u16_le(bytes, offset + 18)?);
+    let header = ApfsKeybagEntryHeader::parse(&bytes[offset..offset + KEYBAG_ENTRY_HEADER_SIZE])?;
+    let key_length = usize::from(header.key_length);
     let data = bytes
       .get(offset + KEYBAG_ENTRY_HEADER_SIZE..offset + KEYBAG_ENTRY_HEADER_SIZE + key_length)
       .ok_or_else(|| Error::InvalidFormat("apfs keybag entry data is truncated".to_string()))?;
     entries.push(ApfsKeybagEntry {
-      uuid,
-      tag,
+      uuid: header.uuid,
+      tag: header.tag,
       data: Arc::from(data.to_vec().into_boxed_slice()),
     });
     offset = align_16(
@@ -592,4 +636,46 @@ fn read_array_16(bytes: &[u8], offset: usize) -> Result<[u8; 16]> {
 
 fn align_16(value: usize) -> usize {
   (value + 15) & !15
+}
+
+#[cfg(test)]
+mod tests {
+  use std::path::Path;
+
+  use super::*;
+
+  fn fixture_bytes(name: &str) -> Vec<u8> {
+    std::fs::read(
+      Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formats")
+        .join("apfs")
+        .join("libfsapfs")
+        .join(name),
+    )
+    .expect("fixture bytes")
+  }
+
+  #[test]
+  fn parses_keybag_locker_header_fixture() {
+    let header = ApfsKeybagLockerHeader::parse(&fixture_bytes("key_bag_header.1")).unwrap();
+
+    assert_eq!(header.version, 2);
+    assert_eq!(header.entry_count, 2);
+    assert_eq!(header.byte_size, 224);
+  }
+
+  #[test]
+  fn parses_keybag_entry_header_fixture() {
+    let entry = ApfsKeybagEntryHeader::parse(&fixture_bytes("key_bag_entry.1")).unwrap();
+
+    assert_eq!(
+      entry.uuid,
+      [
+        0xDB, 0x27, 0xDA, 0xA6, 0x2F, 0xCE, 0x42, 0xF7, 0xB8, 0xDC, 0xFF, 0x65, 0x42, 0xB2, 0x11,
+        0x86,
+      ]
+    );
+    assert_eq!(entry.tag, 3);
+    assert_eq!(entry.key_length, 16);
+  }
 }

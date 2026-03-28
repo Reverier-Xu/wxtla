@@ -11,10 +11,11 @@ pub mod refs;
 pub mod xfs;
 
 pub use apfs::{
-  APFS_FILE_INFO_DATA_HASH, ApfsChangeInfo, ApfsContainer, ApfsDriver, ApfsExtendedAttribute,
-  ApfsFileInfoRecord, ApfsFirmlink, ApfsIntegrityMetadata, ApfsMetaCryptoState, ApfsNodeDetails,
-  ApfsPrange, ApfsSnapshotInfo, ApfsSpecialFileKind, ApfsVolume, ApfsVolumeGroupInfo,
-  ApfsVolumeGroupMember, ApfsVolumeGroupView, ApfsVolumeInfo,
+  APFS_FILE_INFO_DATA_HASH, ApfsChangeInfo, ApfsCheckpointMap, ApfsCheckpointMapping,
+  ApfsContainer, ApfsDriver, ApfsExtendedAttribute, ApfsFileInfoRecord, ApfsFirmlink,
+  ApfsIntegrityMetadata, ApfsKeybagEntryHeader, ApfsKeybagLockerHeader, ApfsMetaCryptoState,
+  ApfsNodeDetails, ApfsPrange, ApfsSnapshotInfo, ApfsSpecialFileKind, ApfsVolume,
+  ApfsVolumeGroupInfo, ApfsVolumeGroupMember, ApfsVolumeGroupView, ApfsVolumeInfo,
 };
 pub(crate) use driver::FileSystem;
 pub use ext::{ExtDriver, ExtExtendedAttribute, ExtFileSystem, ExtNodeDetails};
