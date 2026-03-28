@@ -112,6 +112,28 @@ fn apfs_enumerates_volume_metadata_from_gzip_fixtures() {
       expected_name,
       "fixture: {relative_path}"
     );
+    assert_eq!(
+      container
+        .open_volume_by_uuid(&info.uuid_string())
+        .unwrap()
+        .info()
+        .name(),
+      expected_name,
+      "fixture: {relative_path}"
+    );
+    assert_eq!(
+      container
+        .open_volume_by_role_name("none")
+        .unwrap()
+        .info()
+        .name(),
+      expected_name,
+      "fixture: {relative_path}"
+    );
+    assert_eq!(
+      container.open_only_volume().unwrap().info().name(),
+      expected_name
+    );
   }
 }
 

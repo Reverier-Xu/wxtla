@@ -515,6 +515,64 @@ impl ApfsContainer {
     ))
   }
 
+  pub fn open_volume_by_uuid(&self, uuid: &str) -> Result<ApfsVolume> {
+    let normalized = uuid.to_ascii_lowercase();
+    let info = self
+      .volumes
+      .iter()
+      .find(|volume| volume.uuid_string().to_ascii_lowercase() == normalized)
+      .cloned()
+      .ok_or_else(|| Error::NotFound(format!("apfs volume uuid was not found: {uuid}")))?;
+    Ok(ApfsVolume::new(
+      ApfsVolumeOpenContext {
+        source: self.source.clone(),
+        block_size: self.current_superblock.block_size,
+        container_xid: self.xid(),
+        container_uuid: self.current_superblock.uuid,
+        container_keybag_prange: self.current_superblock.container_keybag_prange,
+      },
+      info,
+      None,
+      None,
+      None,
+    ))
+  }
+
+  pub fn open_volume_by_role_name(&self, role_name: &str) -> Result<ApfsVolume> {
+    let normalized = role_name.to_ascii_lowercase();
+    let info = self
+      .volumes
+      .iter()
+      .find(|volume| volume.role_names().iter().any(|role| role == &normalized))
+      .cloned()
+      .ok_or_else(|| Error::NotFound(format!("apfs volume role was not found: {role_name}")))?;
+    Ok(ApfsVolume::new(
+      ApfsVolumeOpenContext {
+        source: self.source.clone(),
+        block_size: self.current_superblock.block_size,
+        container_xid: self.xid(),
+        container_uuid: self.current_superblock.uuid,
+        container_keybag_prange: self.current_superblock.container_keybag_prange,
+      },
+      info,
+      None,
+      None,
+      None,
+    ))
+  }
+
+  pub fn open_only_volume(&self) -> Result<ApfsVolume> {
+    match self.volumes.len() {
+      1 => self.open_volume_by_index(0),
+      0 => Err(Error::NotFound(
+        "apfs container has no readable volumes".to_string(),
+      )),
+      count => Err(Error::Unsupported(format!(
+        "apfs container exposes {count} volumes; choose one explicitly"
+      ))),
+    }
+  }
+
   fn open_volume_with_selector(&self, selector: &DataViewSelector<'_>) -> Result<ApfsVolume> {
     if let DataViewSelector::Name(name) = selector {
       return self.open_volume_by_name(name);
