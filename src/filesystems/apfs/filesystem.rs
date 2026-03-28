@@ -16,7 +16,7 @@ use super::{
   DESCRIPTOR,
   btree::ApfsBTree,
   container::{ApfsVolume, ApfsVolumeInfo, lookup_omap_address, read_blocks, read_object_map},
-  keybag::unlock_volume,
+  keybag::{password_hint_for_volume, unlock_volume},
   ondisk::{ApfsIntegrityMetadata, read_u64_le},
   records::{
     APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_FILE_INFO,
@@ -390,11 +390,30 @@ impl ApfsVolume {
     !self.info().is_encrypted() || self.unlock_state.is_some()
   }
 
-  pub fn password_hint(&self) -> Option<&str> {
-    self
+  pub fn password_hint(&self) -> Result<Option<String>> {
+    if let Some(password_hint) = self
       .unlock_state
       .as_ref()
-      .and_then(|state| state.password_hint.as_deref())
+      .and_then(|state| state.password_hint.clone())
+    {
+      return Ok(Some(password_hint));
+    }
+
+    if !self.info().is_encrypted() {
+      return Ok(None);
+    }
+
+    password_hint_for_volume(
+      self.source.clone(),
+      self.block_size,
+      self.container_uuid,
+      self.container_keybag_prange,
+      self.info().volume_uuid_raw(),
+    )
+  }
+
+  pub fn is_onekey(&self) -> bool {
+    (self.info().fs_flags() & crate::filesystems::apfs::ondisk::APFS_FS_ONEKEY) != 0
   }
 
   pub fn integrity_metadata(&self) -> Result<Option<ApfsIntegrityMetadata>> {

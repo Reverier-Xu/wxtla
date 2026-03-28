@@ -175,6 +175,49 @@ pub(crate) fn unlock_volume(
   ))
 }
 
+pub(crate) fn password_hint_for_volume(
+  source: ByteSourceHandle, block_size: u32, container_uuid: [u8; 16],
+  container_keybag_prange: Option<ApfsPrange>, volume_uuid: [u8; 16],
+) -> Result<Option<String>> {
+  let Some(container_keybag_prange) = container_keybag_prange else {
+    return Ok(None);
+  };
+
+  let container_keybag_cipher = ApfsXtsCipher::new(Arc::<[u8]>::from(
+    container_uuid
+      .iter()
+      .copied()
+      .chain(container_uuid)
+      .collect::<Vec<_>>()
+      .into_boxed_slice(),
+  ))?;
+  let container_keybag = read_container_keybag(
+    source.as_ref(),
+    block_size,
+    container_keybag_prange,
+    &container_keybag_cipher,
+  )?;
+  let Some(volume_keybag_prange) = container_keybag.volume_keybag_prange(volume_uuid)? else {
+    return Ok(None);
+  };
+
+  let volume_keybag_cipher = ApfsXtsCipher::new(Arc::<[u8]>::from(
+    volume_uuid
+      .iter()
+      .copied()
+      .chain(volume_uuid)
+      .collect::<Vec<_>>()
+      .into_boxed_slice(),
+  ))?;
+  let volume_keybag = read_volume_keybag(
+    source.as_ref(),
+    block_size,
+    volume_keybag_prange,
+    &volume_keybag_cipher,
+  )?;
+  volume_keybag.password_hint(volume_uuid)
+}
+
 fn read_container_keybag(
   source: &dyn ByteSource, block_size: u32, prange: ApfsPrange, decryptor: &ApfsXtsCipher,
 ) -> Result<ApfsContainerKeybag> {

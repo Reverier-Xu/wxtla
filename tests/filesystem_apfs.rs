@@ -414,6 +414,19 @@ fn apfs_fixture_unlocks_encrypted_volumes_with_password() {
     "apfs/dissect.apfs/encrypted.bin.gz",
     "apfs/dissect.apfs/jhfs_encrypted.bin.gz",
   ] {
+    let container = open_gzip_fixture(relative_path).unwrap();
+    let metadata_only = container.open_volume_by_index(0).unwrap();
+    assert!(metadata_only.is_onekey());
+    let expected_hint = if relative_path == "apfs/dissect.apfs/encrypted.bin.gz" {
+      Some("It's 'password'")
+    } else {
+      None
+    };
+    assert_eq!(
+      metadata_only.password_hint().unwrap().as_deref(),
+      expected_hint
+    );
+
     let volume = open_gzip_volume_with_password(relative_path, "password").unwrap();
     let namespace = volume.namespace().unwrap();
     let root_id = namespace.root_node_id();
@@ -451,6 +464,9 @@ fn apfs_encrypted_dmg_opens_through_gpt_with_password() {
     Arc::new(FileDataSource::open(fixture_path("apfs/apfs_encrypted.dmg")).unwrap());
   let gpt = GptDriver::open(source).unwrap();
   let container = ApfsDriver::open(gpt.open_volume(0).unwrap()).unwrap();
+  let volume_meta = container.open_volume_by_index(0).unwrap();
+  assert!(volume_meta.is_onekey());
+  assert_eq!(volume_meta.password_hint().unwrap(), None);
   let credentials = [Credential::Password("apfs-TEST")];
   let volume = container
     .open_view(
