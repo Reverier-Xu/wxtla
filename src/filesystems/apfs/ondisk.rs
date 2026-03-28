@@ -434,6 +434,7 @@ pub(crate) struct ApfsVolumeSuperblock {
   pub reserve_block_count: u64,
   pub quota_block_count: u64,
   pub alloc_block_count: u64,
+  pub meta_crypto: ApfsMetaCryptoState,
   pub volume_uuid: [u8; 16],
   pub root_tree_type: u32,
   pub extentref_tree_type: u32,
@@ -499,9 +500,15 @@ impl ApfsVolumeSuperblock {
       reserve_block_count: read_u64_le(block, 68)?,
       quota_block_count: read_u64_le(block, 76)?,
       alloc_block_count: read_u64_le(block, 84)?,
-      root_tree_type: read_u32_le(block, 112)?,
-      extentref_tree_type: read_u32_le(block, 116)?,
-      snap_meta_tree_type: read_u32_le(block, 120)?,
+      meta_crypto: ApfsMetaCryptoState::parse(read_slice(
+        block,
+        96,
+        20,
+        "apfs meta crypto state",
+      )?)?,
+      root_tree_type: read_u32_le(block, 116)?,
+      extentref_tree_type: read_u32_le(block, 120)?,
+      snap_meta_tree_type: read_u32_le(block, 124)?,
       omap_oid: read_u64_le(block, 128)?,
       root_tree_oid: read_u64_le(block, 136)?,
       extentref_tree_oid: read_u64_le(block, 144)?,
@@ -604,6 +611,30 @@ pub struct ApfsChangeInfo {
   pub application_id: String,
   pub timestamp: u64,
   pub last_xid: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApfsMetaCryptoState {
+  pub major_version: u16,
+  pub minor_version: u16,
+  pub flags: u32,
+  pub persistent_class: u32,
+  pub key_os_version: u32,
+  pub key_revision: u16,
+}
+
+impl ApfsMetaCryptoState {
+  pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
+    require_len(bytes, 20, "apfs meta crypto state")?;
+    Ok(Self {
+      major_version: read_u16_le(bytes, 0)?,
+      minor_version: read_u16_le(bytes, 2)?,
+      flags: read_u32_le(bytes, 4)?,
+      persistent_class: read_u32_le(bytes, 8)?,
+      key_os_version: read_u32_le(bytes, 12)?,
+      key_revision: read_u16_le(bytes, 16)?,
+    })
+  }
 }
 
 impl ApfsChangeInfo {
@@ -1002,6 +1033,15 @@ mod tests {
       | APFS_INCOMPAT_SECONDARY_FSROOT)
       .to_le_bytes();
     block[56..64].copy_from_slice(&incompat);
+    block[96..98].copy_from_slice(&1u16.to_le_bytes());
+    block[98..100].copy_from_slice(&2u16.to_le_bytes());
+    block[100..104].copy_from_slice(&3u32.to_le_bytes());
+    block[104..108].copy_from_slice(&4u32.to_le_bytes());
+    block[108..112].copy_from_slice(&5u32.to_le_bytes());
+    block[112..114].copy_from_slice(&6u16.to_le_bytes());
+    block[116..120].copy_from_slice(&2u32.to_le_bytes());
+    block[120..124].copy_from_slice(&3u32.to_le_bytes());
+    block[124..128].copy_from_slice(&4u32.to_le_bytes());
     block[1056..1064].copy_from_slice(&55u64.to_le_bytes());
     block[1064..1068].copy_from_slice(&7u32.to_le_bytes());
     block[1068..1072].copy_from_slice(&9u32.to_le_bytes());
@@ -1019,6 +1059,12 @@ mod tests {
     assert!(superblock.has_dataless_snapshots());
     assert!(superblock.has_secondary_fs_root());
     assert!(superblock.uses_volume_group_system_inode_space());
+    assert_eq!(superblock.meta_crypto.major_version, 1);
+    assert_eq!(superblock.meta_crypto.minor_version, 2);
+    assert_eq!(superblock.meta_crypto.flags, 3);
+    assert_eq!(superblock.meta_crypto.persistent_class, 4);
+    assert_eq!(superblock.meta_crypto.key_os_version, 5);
+    assert_eq!(superblock.meta_crypto.key_revision, 6);
     assert_eq!(superblock.doc_id_index_xid, 55);
     assert_eq!(superblock.doc_id_index_flags, 7);
     assert_eq!(superblock.doc_id_tree_type, 9);
@@ -1036,9 +1082,9 @@ mod tests {
     block[68..76].copy_from_slice(&11u64.to_le_bytes());
     block[76..84].copy_from_slice(&13u64.to_le_bytes());
     block[84..92].copy_from_slice(&17u64.to_le_bytes());
-    block[112..116].copy_from_slice(&2u32.to_le_bytes());
-    block[116..120].copy_from_slice(&3u32.to_le_bytes());
-    block[120..124].copy_from_slice(&4u32.to_le_bytes());
+    block[116..120].copy_from_slice(&2u32.to_le_bytes());
+    block[120..124].copy_from_slice(&3u32.to_le_bytes());
+    block[124..128].copy_from_slice(&4u32.to_le_bytes());
     block[160..168].copy_from_slice(&19u64.to_le_bytes());
     block[168..176].copy_from_slice(&23u64.to_le_bytes());
     block[184..192].copy_from_slice(&29u64.to_le_bytes());

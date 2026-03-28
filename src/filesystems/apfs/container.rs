@@ -104,6 +104,10 @@ impl ApfsVolumeInfo {
     self.superblock.has_secondary_fs_root()
   }
 
+  pub fn meta_crypto(&self) -> super::ondisk::ApfsMetaCryptoState {
+    self.superblock.meta_crypto
+  }
+
   pub fn unmount_time(&self) -> u64 {
     self.superblock.unmount_time
   }
