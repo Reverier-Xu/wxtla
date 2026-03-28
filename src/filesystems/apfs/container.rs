@@ -391,6 +391,38 @@ impl ApfsContainer {
     self.current_superblock.header.xid
   }
 
+  pub fn test_type(&self) -> u32 {
+    self.current_superblock.test_type
+  }
+
+  pub fn counters(&self) -> &[u64; 32] {
+    &self.current_superblock.counters
+  }
+
+  pub fn checksum_set_count(&self) -> u64 {
+    self.current_superblock.counters[0]
+  }
+
+  pub fn checksum_failure_count(&self) -> u64 {
+    self.current_superblock.counters[1]
+  }
+
+  pub fn evict_mapping_tree_oid(&self) -> u64 {
+    self.current_superblock.evict_mapping_tree_oid
+  }
+
+  pub fn test_oid(&self) -> u64 {
+    self.current_superblock.test_oid
+  }
+
+  pub fn ephemeral_info(&self) -> &[u64; 4] {
+    &self.current_superblock.ephemeral_info
+  }
+
+  pub fn container_keybag_prange(&self) -> Option<ApfsPrange> {
+    self.current_superblock.container_keybag_prange
+  }
+
   pub fn is_fusion(&self) -> bool {
     self.current_superblock.is_fusion()
   }

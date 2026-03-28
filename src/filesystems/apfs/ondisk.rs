@@ -147,6 +147,8 @@ pub(crate) struct ApfsContainerSuperblock {
   pub spaceman_oid: u64,
   pub omap_oid: u64,
   pub reaper_oid: u64,
+  pub test_type: u32,
+  pub counters: [u64; 32],
   pub blocked_out_prange: Option<ApfsPrange>,
   pub evict_mapping_tree_oid: u64,
   pub flags: u64,
@@ -221,6 +223,8 @@ impl ApfsContainerSuperblock {
       spaceman_oid: read_u64_le(block, 152)?,
       omap_oid: read_u64_le(block, 160)?,
       reaper_oid: read_u64_le(block, 168)?,
+      test_type: read_u32_le(block, 176)?,
+      counters: read_u64_array::<32>(block, 984)?,
       blocked_out_prange: {
         let prange = ApfsPrange::parse(read_slice(block, 1240, 16, "apfs blocked out prange")?)?;
         (prange.start_paddr != 0 || prange.block_count != 0).then_some(prange)
@@ -1002,6 +1006,14 @@ pub(crate) fn read_i64_le(bytes: &[u8], offset: usize) -> Result<i64> {
   Ok(i64::from_le_bytes(read_array(bytes, offset)?))
 }
 
+fn read_u64_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u64; N]> {
+  let mut values = [0u64; N];
+  for (index, slot) in values.iter_mut().enumerate() {
+    *slot = read_u64_le(bytes, offset + index * 8)?;
+  }
+  Ok(values)
+}
+
 fn require_len(bytes: &[u8], length: usize, what: &str) -> Result<()> {
   if bytes.len() < length {
     return Err(Error::InvalidFormat(format!(
@@ -1264,6 +1276,9 @@ mod tests {
     let mut block = fixture_bytes("container_superblock.1");
     let incompat = (APFS_INCOMPAT_CASE_INSENSITIVE | NX_INCOMPAT_FUSION).to_le_bytes();
     block[64..72].copy_from_slice(&incompat);
+    block[176..180].copy_from_slice(&67u32.to_le_bytes());
+    block[984..992].copy_from_slice(&71u64.to_le_bytes());
+    block[992..1000].copy_from_slice(&73u64.to_le_bytes());
     block[1240..1248].copy_from_slice(&71u64.to_le_bytes());
     block[1248..1256].copy_from_slice(&73u64.to_le_bytes());
     block[1256..1264].copy_from_slice(&79u64.to_le_bytes());
@@ -1292,6 +1307,9 @@ mod tests {
 
     assert!(superblock.is_fusion());
     assert!(superblock.uses_software_crypto());
+    assert_eq!(superblock.test_type, 67);
+    assert_eq!(superblock.counters[0], 71);
+    assert_eq!(superblock.counters[1], 73);
     assert_eq!(superblock.blocked_out_prange.unwrap().start_paddr, 71);
     assert_eq!(superblock.blocked_out_prange.unwrap().block_count, 73);
     assert_eq!(superblock.evict_mapping_tree_oid, 79);
