@@ -5,7 +5,7 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use super::{btree::ApfsBTree, keybag::ApfsUnlockState, ondisk::*, DESCRIPTOR};
+use super::{DESCRIPTOR, btree::ApfsBTree, keybag::ApfsUnlockState, ondisk::*};
 use crate::{
   ByteSource, ByteSourceHandle, DataSource, DataSourceFacets, DataViewId, DataViewKind,
   DataViewRecord, DataViewSelector, Error, Result,
@@ -33,6 +33,26 @@ pub struct ApfsObjectMapInfo {
 impl ApfsObjectMapInfo {
   pub fn flag_names(&self) -> Vec<&'static str> {
     apfs_omap_flag_names(self.flags)
+  }
+
+  pub fn tree_type_name(&self) -> &'static str {
+    apfs_object_type_name(self.tree_type)
+  }
+
+  pub fn tree_storage_kind_name(&self) -> &'static str {
+    apfs_object_storage_kind_name(self.tree_type)
+  }
+
+  pub fn tree_flag_names(&self) -> Vec<&'static str> {
+    apfs_object_flag_names(self.tree_type)
+  }
+
+  pub fn snapshot_tree_type_name(&self) -> &'static str {
+    apfs_object_type_name(self.snapshot_tree_type)
+  }
+
+  pub fn snapshot_tree_storage_kind_name(&self) -> &'static str {
+    apfs_object_storage_kind_name(self.snapshot_tree_type)
   }
 }
 

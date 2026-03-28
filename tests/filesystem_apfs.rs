@@ -4,14 +4,14 @@ use std::{fs::File, io::Read, sync::Arc};
 
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
-use support::{fixture_path, FileDataSource};
+use support::{FileDataSource, fixture_path};
 use wxtla::{
+  ByteSourceHandle, BytesDataSource, Credential, DataSource, DataViewSelector, OpenOptions,
   filesystems::{
-    apfs::ApfsDriver, ApfsSpecialFileKind, NamespaceDirectoryEntry, NamespaceNodeId,
-    NamespaceSource, NamespaceStreamKind,
+    ApfsSpecialFileKind, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceSource,
+    NamespaceStreamKind, apfs::ApfsDriver,
   },
   volumes::gpt::GptDriver,
-  ByteSourceHandle, BytesDataSource, Credential, DataSource, DataViewSelector, OpenOptions,
 };
 
 fn open_gzip_fixture(
@@ -116,6 +116,9 @@ fn apfs_enumerates_volume_metadata_from_gzip_fixtures() {
     assert_eq!(volume_omap.flag_names(), Vec::<&str>::new());
     assert_eq!(volume_omap.snapshot_count, 0);
     assert_eq!(volume_omap.tree_type, 0x4000_0002);
+    assert_eq!(volume_omap.tree_type_name(), "btree");
+    assert_eq!(volume_omap.tree_storage_kind_name(), "physical");
+    assert_eq!(volume_omap.tree_flag_names(), Vec::<&str>::new());
     assert_eq!(
       container
         .open_volume_by_uuid(&info.uuid_string())
@@ -180,6 +183,10 @@ fn apfs_prefers_latest_valid_checkpoint_superblock() {
   assert_eq!(omap.flag_names(), vec!["manually_managed"]);
   assert_eq!(omap.snapshot_count, 0);
   assert_eq!(omap.tree_type, 0x4000_0002);
+  assert_eq!(omap.tree_type_name(), "btree");
+  assert_eq!(omap.tree_storage_kind_name(), "physical");
+  assert_eq!(omap.snapshot_tree_type_name(), "btree");
+  assert_eq!(omap.snapshot_tree_storage_kind_name(), "physical");
   assert_eq!(container.volumes().len(), 1);
 }
 
@@ -262,9 +269,11 @@ fn apfs_fixture_reads_regular_files_symlinks_and_streams() {
   assert!(root_entries.iter().any(|entry| entry.name == "dir"));
   assert!(root_entries.iter().any(|entry| entry.name == "empty"));
   assert!(root_entries.iter().any(|entry| entry.name == "hardlink"));
-  assert!(root_entries
-    .iter()
-    .any(|entry| entry.name == "symlink-file"));
+  assert!(
+    root_entries
+      .iter()
+      .any(|entry| entry.name == "symlink-file")
+  );
 
   let empty_entry = child_named(&file_system, &root_id, "empty").unwrap();
   assert_eq!(file_system.node(&empty_entry.node_id).unwrap().size, 0);
@@ -586,8 +595,10 @@ fn apfs_encrypted_dmg_opens_through_gpt_with_password() {
     .unwrap();
   let namespace = volume.namespace().unwrap();
 
-  assert!(!namespace
-    .read_dir(&namespace.root_node_id())
-    .unwrap()
-    .is_empty());
+  assert!(
+    !namespace
+      .read_dir(&namespace.root_node_id())
+      .unwrap()
+      .is_empty()
+  );
 }

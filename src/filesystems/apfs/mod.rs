@@ -22,7 +22,7 @@ pub use ondisk::{
   ApfsChangeInfo, ApfsCheckpointMap, ApfsCheckpointMapping, ApfsIntegrityMetadata,
   ApfsMetaCryptoState, ApfsPrange,
 };
-pub use records::{ApfsFileInfoRecord, APFS_FILE_INFO_DATA_HASH};
+pub use records::{APFS_FILE_INFO_DATA_HASH, ApfsFileInfoRecord};
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
@@ -68,7 +68,7 @@ mod tests {
   use flate2::read::GzDecoder;
 
   use super::*;
-  use crate::{formats, ByteSource, BytesDataSource};
+  use crate::{ByteSource, BytesDataSource, formats};
 
   fn fixture_gzip_bytes(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

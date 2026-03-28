@@ -13,19 +13,18 @@ use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
 use super::{
-  btree::ApfsBTree,
-  container::{lookup_omap_address, read_blocks, read_object_map, ApfsVolume, ApfsVolumeInfo},
-  keybag::{password_hint_for_volume, unlock_volume},
-  ondisk::{read_u64_le, ApfsIntegrityMetadata},
-  records::{
-    directory_kind_from_flags, node_kind_from_mode, ApfsDirectoryRecord, ApfsFextRecord,
-    ApfsFileExtentRecord, ApfsFileInfoRecord, ApfsFsKeyHeader, ApfsInodeRecord,
-    ApfsSnapshotMetadataRecord, ApfsStreamStorageSpec, ApfsXattrRecord,
-    APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_FILE_INFO,
-    APFS_TYPE_INODE, APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, UF_COMPRESSED,
-    XATTR_RESOURCE_FORK_NAME, XATTR_SYMLINK_NAME,
-  },
   DESCRIPTOR,
+  btree::ApfsBTree,
+  container::{ApfsVolume, ApfsVolumeInfo, lookup_omap_address, read_blocks, read_object_map},
+  keybag::{password_hint_for_volume, unlock_volume},
+  ondisk::{ApfsIntegrityMetadata, read_u64_le},
+  records::{
+    APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_FILE_INFO,
+    APFS_TYPE_INODE, APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, ApfsDirectoryRecord, ApfsFextRecord,
+    ApfsFileExtentRecord, ApfsFileInfoRecord, ApfsFsKeyHeader, ApfsInodeRecord,
+    ApfsSnapshotMetadataRecord, ApfsStreamStorageSpec, ApfsXattrRecord, UF_COMPRESSED,
+    XATTR_RESOURCE_FORK_NAME, XATTR_SYMLINK_NAME, directory_kind_from_flags, node_kind_from_mode,
+  },
 };
 use crate::{
   ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, DataSource,

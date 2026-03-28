@@ -18,14 +18,35 @@ pub(crate) const OBJECT_TYPE_BTREE_NODE: u32 = 0x0000_0003;
 pub(crate) const OBJECT_TYPE_OMAP: u32 = 0x0000_000B;
 pub(crate) const OBJECT_TYPE_CHECKPOINT_MAP: u32 = 0x0000_000C;
 pub(crate) const OBJECT_TYPE_FS: u32 = 0x0000_000D;
+pub(crate) const OBJECT_TYPE_FSTREE: u32 = 0x0000_000E;
+pub(crate) const OBJECT_TYPE_BLOCKREFTREE: u32 = 0x0000_000F;
 pub(crate) const OBJECT_TYPE_SNAP_META_TREE: u32 = 0x0000_0010;
+pub(crate) const OBJECT_TYPE_NX_REAPER: u32 = 0x0000_0011;
+pub(crate) const OBJECT_TYPE_OMAP_SNAPSHOT: u32 = 0x0000_0013;
+pub(crate) const OBJECT_TYPE_EFI_JUMPSTART: u32 = 0x0000_0014;
+pub(crate) const OBJECT_TYPE_FUSION_MIDDLE_TREE: u32 = 0x0000_0015;
+pub(crate) const OBJECT_TYPE_NX_FUSION_WBC: u32 = 0x0000_0016;
+pub(crate) const OBJECT_TYPE_NX_FUSION_WBC_LIST: u32 = 0x0000_0017;
+pub(crate) const OBJECT_TYPE_ER_STATE: u32 = 0x0000_0018;
+pub(crate) const OBJECT_TYPE_GBITMAP: u32 = 0x0000_0019;
+pub(crate) const OBJECT_TYPE_GBITMAP_TREE: u32 = 0x0000_001A;
+pub(crate) const OBJECT_TYPE_GBITMAP_BLOCK: u32 = 0x0000_001B;
+pub(crate) const OBJECT_TYPE_ER_RECOVERY_BLOCK: u32 = 0x0000_001C;
+pub(crate) const OBJECT_TYPE_SNAP_META_EXT: u32 = 0x0000_001D;
 pub(crate) const OBJECT_TYPE_INTEGRITY_META: u32 = 0x0000_001E;
 pub(crate) const OBJECT_TYPE_FEXT_TREE: u32 = 0x0000_001F;
+pub(crate) const OBJECT_TYPE_RESERVED_20: u32 = 0x0000_0020;
+pub(crate) const OBJECT_TYPE_TEST: u32 = 0x0000_00FF;
 pub(crate) const APFS_OBJECT_TYPE_CONTAINER_KEYBAG: u32 = 0x6B65_7973;
 pub(crate) const APFS_OBJECT_TYPE_VOLUME_KEYBAG: u32 = 0x7265_6373;
+pub(crate) const APFS_OBJECT_TYPE_MEDIA_KEYBAG: u32 = 0x6D6B_6579;
 
+pub(crate) const OBJ_VIRTUAL: u32 = 0x0000_0000;
 pub(crate) const OBJ_PHYSICAL: u32 = 0x4000_0000;
 pub(crate) const OBJ_EPHEMERAL: u32 = 0x8000_0000;
+pub(crate) const OBJ_NOHEADER: u32 = 0x2000_0000;
+pub(crate) const OBJ_ENCRYPTED: u32 = 0x1000_0000;
+pub(crate) const OBJ_NONPERSISTENT: u32 = 0x0800_0000;
 
 pub(crate) const BTREE_PHYSICAL: u32 = 0x0000_0010;
 pub(crate) const BTREE_HASHED: u32 = 0x0000_0080;
@@ -486,6 +507,68 @@ pub(crate) fn apfs_omap_flag_names(flags: u32) -> Vec<&'static str> {
   )
 }
 
+pub fn apfs_object_type_name(object_type: u32) -> &'static str {
+  match object_type & OBJECT_TYPE_MASK {
+    0 => "invalid",
+    OBJECT_TYPE_NX_SUPERBLOCK => "nx_superblock",
+    OBJECT_TYPE_BTREE => "btree",
+    OBJECT_TYPE_BTREE_NODE => "btree_node",
+    0x0000_0005 => "spaceman",
+    0x0000_0006 => "spaceman_cab",
+    0x0000_0007 => "spaceman_cib",
+    0x0000_0008 => "spaceman_bitmap",
+    0x0000_0009 => "spaceman_free_queue",
+    0x0000_000A => "extent_list_tree",
+    OBJECT_TYPE_OMAP => "omap",
+    OBJECT_TYPE_CHECKPOINT_MAP => "checkpoint_map",
+    OBJECT_TYPE_FS => "fs",
+    OBJECT_TYPE_FSTREE => "fstree",
+    OBJECT_TYPE_BLOCKREFTREE => "blockreftree",
+    OBJECT_TYPE_SNAP_META_TREE => "snap_meta_tree",
+    OBJECT_TYPE_NX_REAPER => "nx_reaper",
+    0x0000_0012 => "nx_reap_list",
+    OBJECT_TYPE_OMAP_SNAPSHOT => "omap_snapshot",
+    OBJECT_TYPE_EFI_JUMPSTART => "efi_jumpstart",
+    OBJECT_TYPE_FUSION_MIDDLE_TREE => "fusion_middle_tree",
+    OBJECT_TYPE_NX_FUSION_WBC => "nx_fusion_wbc",
+    OBJECT_TYPE_NX_FUSION_WBC_LIST => "nx_fusion_wbc_list",
+    OBJECT_TYPE_ER_STATE => "er_state",
+    OBJECT_TYPE_GBITMAP => "gbitmap",
+    OBJECT_TYPE_GBITMAP_TREE => "gbitmap_tree",
+    OBJECT_TYPE_GBITMAP_BLOCK => "gbitmap_block",
+    OBJECT_TYPE_ER_RECOVERY_BLOCK => "er_recovery_block",
+    OBJECT_TYPE_SNAP_META_EXT => "snap_meta_ext",
+    OBJECT_TYPE_INTEGRITY_META => "integrity_meta",
+    OBJECT_TYPE_FEXT_TREE => "fext_tree",
+    OBJECT_TYPE_RESERVED_20 => "reserved_20",
+    OBJECT_TYPE_TEST => "test",
+    APFS_OBJECT_TYPE_CONTAINER_KEYBAG => "container_keybag",
+    APFS_OBJECT_TYPE_VOLUME_KEYBAG => "volume_keybag",
+    APFS_OBJECT_TYPE_MEDIA_KEYBAG => "media_keybag",
+    _ => "unknown",
+  }
+}
+
+pub fn apfs_object_storage_kind_name(object_type: u32) -> &'static str {
+  match object_type & OBJ_STORAGETYPE_MASK {
+    OBJ_VIRTUAL => "virtual",
+    OBJ_PHYSICAL => "physical",
+    OBJ_EPHEMERAL => "ephemeral",
+    _ => "unknown",
+  }
+}
+
+pub fn apfs_object_flag_names(object_type: u32) -> Vec<&'static str> {
+  bit_names_u32(
+    object_type,
+    &[
+      (OBJ_NONPERSISTENT, "nonpersistent"),
+      (OBJ_ENCRYPTED, "encrypted"),
+      (OBJ_NOHEADER, "noheader"),
+    ],
+  )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApfsObjectMap {
   pub header: ApfsObjectHeader,
@@ -519,6 +602,18 @@ impl ApfsCheckpointMapping {
       object_id: read_u64_le(bytes, 24)?,
       physical_address: read_u64_le(bytes, 32)?,
     })
+  }
+
+  pub fn object_type_name(&self) -> &'static str {
+    apfs_object_type_name(self.object_type)
+  }
+
+  pub fn object_storage_kind_name(&self) -> &'static str {
+    apfs_object_storage_kind_name(self.object_type)
+  }
+
+  pub fn object_flag_names(&self) -> Vec<&'static str> {
+    apfs_object_flag_names(self.object_type)
   }
 }
 
@@ -1220,10 +1315,15 @@ mod tests {
     assert!(map.is_last());
     assert_eq!(map.entry_count, 2);
     assert_eq!(map.entries[0].object_type, 0x8000_0005);
+    assert_eq!(map.entries[0].object_type_name(), "spaceman");
+    assert_eq!(map.entries[0].object_storage_kind_name(), "ephemeral");
+    assert_eq!(map.entries[0].object_flag_names(), Vec::<&str>::new());
     assert_eq!(map.entries[0].size, 0x1000);
     assert_eq!(map.entries[0].object_id, 1024);
     assert_eq!(map.entries[0].physical_address, 9);
     assert_eq!(map.entries[1].object_type, 0x8000_0011);
+    assert_eq!(map.entries[1].object_type_name(), "nx_reaper");
+    assert_eq!(map.entries[1].object_storage_kind_name(), "ephemeral");
     assert_eq!(map.entries[1].physical_address, 10);
   }
 

@@ -1,16 +1,16 @@
 //! APFS encryption helpers.
 
 use aes::{
-  cipher::{
-    consts::U16 as BlockU16, generic_array::GenericArray, BlockCipher, BlockDecrypt, BlockEncrypt,
-    BlockSizeUser, KeyInit,
-  },
   Aes128, Aes256,
+  cipher::{
+    BlockCipher, BlockDecrypt, BlockEncrypt, BlockSizeUser, KeyInit, consts::U16 as BlockU16,
+    generic_array::GenericArray,
+  },
 };
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac_array;
 use sha2::{Digest, Sha256};
-use xts_mode::{get_tweak_default, Xts128};
+use xts_mode::{Xts128, get_tweak_default};
 
 use crate::{Error, Result};
 
@@ -110,8 +110,7 @@ where
     + BlockCipher
     + KeyInit
     + Clone
-    + BlockSizeUser<BlockSize = BlockU16>,
-{
+    + BlockSizeUser<BlockSize = BlockU16>, {
   let half = key.len() / 2;
   let cipher_1 = C::new_from_slice(&key[..half]).map_err(|_| {
     Error::InvalidFormat("apfs xts key length does not match the AES mode".to_string())
@@ -135,8 +134,7 @@ where
 
 fn aes_unwrap_inner<C>(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>>
 where
-  C: BlockDecrypt + KeyInit,
-{
+  C: BlockDecrypt + KeyInit, {
   let cipher = C::new_from_slice(kek)
     .map_err(|_| Error::InvalidFormat("apfs KEK length does not match AES mode".to_string()))?;
 
