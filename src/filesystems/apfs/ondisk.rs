@@ -48,6 +48,8 @@ pub(crate) const APFS_INCOMPAT_SEALED_VOLUME: u64 = 0x0000_0020;
 pub(crate) const APFS_INCOMPAT_SECONDARY_FSROOT: u64 = 0x0000_0100;
 
 pub(crate) const APFS_FEATURE_VOLGRP_SYSTEM_INO_SPACE: u64 = 0x0000_0010;
+pub(crate) const NX_INCOMPAT_FUSION: u64 = 0x0000_0100;
+pub(crate) const NX_CRYPTO_SW: u64 = 0x0000_0004;
 
 pub(crate) const APFS_FS_UNENCRYPTED: u64 = 0x0000_0001;
 pub(crate) const APFS_FS_ONEKEY: u64 = 0x0000_0008;
@@ -143,15 +145,26 @@ pub(crate) struct ApfsContainerSuperblock {
   pub spaceman_oid: u64,
   pub omap_oid: u64,
   pub reaper_oid: u64,
+  pub blocked_out_prange: Option<ApfsPrange>,
+  pub evict_mapping_tree_oid: u64,
   pub flags: u64,
+  pub efi_jumpstart_oid: u64,
+  pub fusion_uuid: [u8; 16],
   pub container_keybag_prange: Option<ApfsPrange>,
+  pub ephemeral_info: [u64; 4],
+  pub test_oid: u64,
+  pub fusion_middle_tree_oid: u64,
+  pub fusion_wbc_oid: u64,
+  pub fusion_wbc_prange: Option<ApfsPrange>,
+  pub newest_mounted_version: u64,
+  pub media_keybag_prange: Option<ApfsPrange>,
   pub max_file_systems: u32,
   pub file_system_oids: Vec<u64>,
 }
 
 impl ApfsContainerSuperblock {
   pub(crate) fn parse(block: &[u8]) -> Result<Self> {
-    require_len(block, 1312, "apfs container superblock")?;
+    require_len(block, 1408, "apfs container superblock")?;
     let header = ApfsObjectHeader::parse(block)?;
     let magic = read_array::<4>(block, 32)?;
     if &magic != NX_MAGIC {
@@ -206,11 +219,36 @@ impl ApfsContainerSuperblock {
       spaceman_oid: read_u64_le(block, 152)?,
       omap_oid: read_u64_le(block, 160)?,
       reaper_oid: read_u64_le(block, 168)?,
+      blocked_out_prange: {
+        let prange = ApfsPrange::parse(read_slice(block, 1240, 16, "apfs blocked out prange")?)?;
+        (prange.start_paddr != 0 || prange.block_count != 0).then_some(prange)
+      },
+      evict_mapping_tree_oid: read_u64_le(block, 1256)?,
       flags: read_u64_le(block, 1264)?,
+      efi_jumpstart_oid: read_u64_le(block, 1272)?,
+      fusion_uuid: read_array(block, 1280)?,
       container_keybag_prange: {
         let prange =
           ApfsPrange::parse(read_slice(block, 1296, 16, "apfs container keybag prange")?)?;
         (prange.start_paddr != 0 && prange.block_count != 0).then_some(prange)
+      },
+      ephemeral_info: [
+        read_u64_le(block, 1312)?,
+        read_u64_le(block, 1320)?,
+        read_u64_le(block, 1328)?,
+        read_u64_le(block, 1336)?,
+      ],
+      test_oid: read_u64_le(block, 1344)?,
+      fusion_middle_tree_oid: read_u64_le(block, 1352)?,
+      fusion_wbc_oid: read_u64_le(block, 1360)?,
+      fusion_wbc_prange: {
+        let prange = ApfsPrange::parse(read_slice(block, 1368, 16, "apfs fusion wbc prange")?)?;
+        (prange.start_paddr != 0 || prange.block_count != 0).then_some(prange)
+      },
+      newest_mounted_version: read_u64_le(block, 1384)?,
+      media_keybag_prange: {
+        let prange = ApfsPrange::parse(read_slice(block, 1392, 16, "apfs media keybag prange")?)?;
+        (prange.start_paddr != 0 || prange.block_count != 0).then_some(prange)
       },
       max_file_systems,
       file_system_oids,
@@ -252,6 +290,18 @@ impl ApfsContainerSuperblock {
       }
     }
 
+    for (name, left, right) in [(
+      "fusion_uuid",
+      self.fusion_uuid.as_slice(),
+      other.fusion_uuid.as_slice(),
+    )] {
+      if left != right {
+        return Err(Error::InvalidFormat(format!(
+          "apfs container superblock {name} does not match"
+        )));
+      }
+    }
+
     for (name, left, right) in [
       (
         "block_size",
@@ -279,7 +329,17 @@ impl ApfsContainerSuperblock {
         self.checkpoint_data_base,
         other.checkpoint_data_base,
       ),
+      (
+        "evict_mapping_tree_oid",
+        self.evict_mapping_tree_oid,
+        other.evict_mapping_tree_oid,
+      ),
       ("flags", self.flags, other.flags),
+      (
+        "efi_jumpstart_oid",
+        self.efi_jumpstart_oid,
+        other.efi_jumpstart_oid,
+      ),
     ] {
       if left != right {
         return Err(Error::InvalidFormat(format!(
@@ -297,6 +357,14 @@ impl ApfsContainerSuperblock {
 
   pub(crate) fn descriptor_area_block_count(&self) -> u32 {
     self.checkpoint_descriptor_blocks & !CHECKPOINT_AREA_BTREE_FLAG
+  }
+
+  pub(crate) fn is_fusion(&self) -> bool {
+    (self.incompatible_features & NX_INCOMPAT_FUSION) != 0
+  }
+
+  pub(crate) fn uses_software_crypto(&self) -> bool {
+    (self.flags & NX_CRYPTO_SW) != 0
   }
 }
 
@@ -615,7 +683,7 @@ fn parse_change_info(block: &[u8], offset: usize) -> Result<ApfsChangeInfo> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ApfsPrange {
+pub struct ApfsPrange {
   pub start_paddr: u64,
   pub block_count: u64,
 }
@@ -854,6 +922,9 @@ mod tests {
     assert_eq!(superblock.checkpoint_data_base, 9);
     assert_eq!(superblock.omap_oid, 90);
     assert_eq!(superblock.file_system_oids, vec![1026]);
+    assert_eq!(superblock.blocked_out_prange, None);
+    assert_eq!(superblock.fusion_middle_tree_oid, 0);
+    assert_eq!(superblock.media_keybag_prange, None);
   }
 
   #[test]
@@ -1014,5 +1085,56 @@ mod tests {
     assert_eq!(superblock.modified_by[0].timestamp, 61);
     assert_eq!(superblock.modified_by[0].last_xid, 67);
     assert!(superblock.modified_by[1].is_empty());
+  }
+
+  #[test]
+  fn parses_container_fusion_and_auxiliary_metadata() {
+    let mut block = fixture_bytes("container_superblock.1");
+    let incompat = (APFS_INCOMPAT_CASE_INSENSITIVE | NX_INCOMPAT_FUSION).to_le_bytes();
+    block[64..72].copy_from_slice(&incompat);
+    block[1240..1248].copy_from_slice(&71u64.to_le_bytes());
+    block[1248..1256].copy_from_slice(&73u64.to_le_bytes());
+    block[1256..1264].copy_from_slice(&79u64.to_le_bytes());
+    block[1264..1272].copy_from_slice(&NX_CRYPTO_SW.to_le_bytes());
+    block[1272..1280].copy_from_slice(&83u64.to_le_bytes());
+    block[1280..1296].copy_from_slice(&[0x55; 16]);
+    block[1296..1304].copy_from_slice(&89u64.to_le_bytes());
+    block[1304..1312].copy_from_slice(&97u64.to_le_bytes());
+    block[1312..1320].copy_from_slice(&101u64.to_le_bytes());
+    block[1320..1328].copy_from_slice(&103u64.to_le_bytes());
+    block[1328..1336].copy_from_slice(&107u64.to_le_bytes());
+    block[1336..1344].copy_from_slice(&109u64.to_le_bytes());
+    block[1344..1352].copy_from_slice(&113u64.to_le_bytes());
+    block[1352..1360].copy_from_slice(&127u64.to_le_bytes());
+    block[1360..1368].copy_from_slice(&131u64.to_le_bytes());
+    block[1368..1376].copy_from_slice(&137u64.to_le_bytes());
+    block[1376..1384].copy_from_slice(&139u64.to_le_bytes());
+    block[1384..1392].copy_from_slice(&149u64.to_le_bytes());
+    block[1392..1400].copy_from_slice(&151u64.to_le_bytes());
+    block[1400..1408].copy_from_slice(&157u64.to_le_bytes());
+    let checksum = fletcher64(&block[8..]);
+    block[0..8].copy_from_slice(&checksum.to_le_bytes());
+
+    let superblock = ApfsContainerSuperblock::parse(&block).unwrap();
+    superblock.validate(&block, 1).unwrap();
+
+    assert!(superblock.is_fusion());
+    assert!(superblock.uses_software_crypto());
+    assert_eq!(superblock.blocked_out_prange.unwrap().start_paddr, 71);
+    assert_eq!(superblock.blocked_out_prange.unwrap().block_count, 73);
+    assert_eq!(superblock.evict_mapping_tree_oid, 79);
+    assert_eq!(superblock.efi_jumpstart_oid, 83);
+    assert_eq!(superblock.fusion_uuid, [0x55; 16]);
+    assert_eq!(superblock.container_keybag_prange.unwrap().start_paddr, 89);
+    assert_eq!(superblock.container_keybag_prange.unwrap().block_count, 97);
+    assert_eq!(superblock.ephemeral_info, [101, 103, 107, 109]);
+    assert_eq!(superblock.test_oid, 113);
+    assert_eq!(superblock.fusion_middle_tree_oid, 127);
+    assert_eq!(superblock.fusion_wbc_oid, 131);
+    assert_eq!(superblock.fusion_wbc_prange.unwrap().start_paddr, 137);
+    assert_eq!(superblock.fusion_wbc_prange.unwrap().block_count, 139);
+    assert_eq!(superblock.newest_mounted_version, 149);
+    assert_eq!(superblock.media_keybag_prange.unwrap().start_paddr, 151);
+    assert_eq!(superblock.media_keybag_prange.unwrap().block_count, 157);
   }
 }

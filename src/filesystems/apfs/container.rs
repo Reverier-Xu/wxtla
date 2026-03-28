@@ -385,6 +385,43 @@ impl ApfsContainer {
     self.current_superblock.header.xid
   }
 
+  pub fn is_fusion(&self) -> bool {
+    self.current_superblock.is_fusion()
+  }
+
+  pub fn uses_software_crypto(&self) -> bool {
+    self.current_superblock.uses_software_crypto()
+  }
+
+  pub fn blocked_out_prange(&self) -> Option<ApfsPrange> {
+    self.current_superblock.blocked_out_prange
+  }
+
+  pub fn fusion_uuid_string(&self) -> Option<String> {
+    (self.current_superblock.fusion_uuid != [0; 16])
+      .then(|| format_uuid_le(&self.current_superblock.fusion_uuid))
+  }
+
+  pub fn fusion_middle_tree_oid(&self) -> u64 {
+    self.current_superblock.fusion_middle_tree_oid
+  }
+
+  pub fn fusion_wbc_oid(&self) -> u64 {
+    self.current_superblock.fusion_wbc_oid
+  }
+
+  pub fn fusion_wbc_prange(&self) -> Option<ApfsPrange> {
+    self.current_superblock.fusion_wbc_prange
+  }
+
+  pub fn newest_mounted_version(&self) -> u64 {
+    self.current_superblock.newest_mounted_version
+  }
+
+  pub fn media_keybag_prange(&self) -> Option<ApfsPrange> {
+    self.current_superblock.media_keybag_prange
+  }
+
   pub fn checkpoint_superblock_xids(&self) -> &[u64] {
     &self.checkpoint_superblock_xids
   }
