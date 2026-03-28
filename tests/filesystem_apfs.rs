@@ -124,6 +124,8 @@ fn apfs_prefers_latest_valid_checkpoint_superblock() {
     container.checkpoint_superblock_xids(),
     &[304, 303, 302, 301]
   );
+  assert!(!container.checkpoint_maps().is_empty());
+  assert!(container.checkpoint_maps()[0].is_last());
   assert_eq!(container.volumes().len(), 1);
 }
 

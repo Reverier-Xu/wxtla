@@ -327,6 +327,7 @@ pub struct ApfsContainer {
   #[allow(dead_code)]
   current_omap: ApfsObjectMap,
   checkpoint_superblock_xids: Vec<u64>,
+  checkpoint_maps: Vec<ApfsCheckpointMap>,
   volumes: Vec<ApfsVolumeInfo>,
 }
 
@@ -335,7 +336,7 @@ impl ApfsContainer {
     let (primary_superblock, primary_block) = read_primary_superblock(source.as_ref())?;
     primary_superblock.validate(&primary_block, primary_superblock.header.oid)?;
 
-    let (checkpoint_superblock_xids, checkpoint_superblocks) =
+    let (checkpoint_superblock_xids, checkpoint_superblocks, checkpoint_maps) =
       read_checkpoint_superblocks(source.clone(), &primary_superblock)?;
 
     let mut current_superblock = primary_superblock.clone();
@@ -366,6 +367,7 @@ impl ApfsContainer {
       current_superblock,
       current_omap,
       checkpoint_superblock_xids,
+      checkpoint_maps,
       volumes,
     })
   }
@@ -428,6 +430,10 @@ impl ApfsContainer {
 
   pub fn checkpoint_superblock_xids(&self) -> &[u64] {
     &self.checkpoint_superblock_xids
+  }
+
+  pub fn checkpoint_maps(&self) -> &[ApfsCheckpointMap] {
+    &self.checkpoint_maps
   }
 
   pub fn volumes(&self) -> &[ApfsVolumeInfo] {
@@ -597,31 +603,48 @@ fn read_primary_superblock(source: &dyn ByteSource) -> Result<(ApfsContainerSupe
 
 fn read_checkpoint_superblocks(
   source: ByteSourceHandle, primary: &ApfsContainerSuperblock,
-) -> Result<(Vec<u64>, Vec<ApfsContainerSuperblock>)> {
+) -> Result<(
+  Vec<u64>,
+  Vec<ApfsContainerSuperblock>,
+  Vec<ApfsCheckpointMap>,
+)> {
   let mut objects = read_checkpoint_object_blocks(source.clone(), primary)?;
   let mut xids = Vec::new();
   let mut superblocks = Vec::new();
+  let mut maps = Vec::new();
   for (address, block) in objects.drain(..) {
     let Ok(header) = ApfsObjectHeader::parse(&block) else {
       continue;
     };
-    if header.type_code() != OBJECT_TYPE_NX_SUPERBLOCK {
-      continue;
-    }
-    xids.push(header.xid);
+    match header.type_code() {
+      OBJECT_TYPE_NX_SUPERBLOCK => {
+        xids.push(header.xid);
 
-    let Ok(superblock) = ApfsContainerSuperblock::parse(&block) else {
-      continue;
-    };
-    if superblock.validate(&block, address).is_err() {
-      continue;
+        let Ok(superblock) = ApfsContainerSuperblock::parse(&block) else {
+          continue;
+        };
+        if superblock.validate(&block, address).is_err() {
+          continue;
+        }
+        superblocks.push(superblock);
+      }
+      OBJECT_TYPE_CHECKPOINT_MAP => {
+        let Ok(map) = ApfsCheckpointMap::parse(&block) else {
+          continue;
+        };
+        if map.validate(&block).is_err() {
+          continue;
+        }
+        maps.push(map);
+      }
+      _ => {}
     }
-    superblocks.push(superblock);
   }
 
   superblocks.sort_by_key(|superblock| std::cmp::Reverse(superblock.header.xid));
+  maps.sort_by_key(|map| std::cmp::Reverse(map.xid()));
   xids.sort_by(|left, right| right.cmp(left));
-  Ok((xids, superblocks))
+  Ok((xids, superblocks, maps))
 }
 
 fn read_checkpoint_object_blocks(
