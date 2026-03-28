@@ -152,6 +152,58 @@ fn apfs_prefers_latest_valid_checkpoint_superblock() {
 }
 
 #[test]
+fn apfs_exposes_volume_tree_and_document_metadata() {
+  let container = open_gzip_fixture("apfs/dissect.apfs/case_insensitive.bin.gz").unwrap();
+  let info = &container.volumes()[0];
+  let view = &container.views().unwrap()[0];
+
+  assert_eq!(info.root_tree_type(), 2);
+  assert_eq!(info.extentref_tree_type(), 0x4000_0002);
+  assert_eq!(info.snap_meta_tree_type(), 0x4000_0002);
+  assert_eq!(info.root_tree_oid(), 1028);
+  assert_eq!(info.snap_meta_tree_oid(), 88);
+  assert_eq!(info.revert_to_xid(), 0);
+  assert_eq!(info.revert_to_superblock_oid(), 0);
+  assert_eq!(info.next_object_id(), 66);
+  assert_eq!(info.next_document_id(), 3);
+  assert_eq!(info.root_to_xid(), 0);
+  assert_eq!(info.fext_tree_type(), 0x4000_0002);
+  assert_eq!(info.pfkur_tree_type(), 0x4000_0002);
+  assert_eq!(info.pfkur_tree_oid(), 0);
+  assert_eq!(info.doc_id_index_xid(), 4);
+  assert_eq!(info.doc_id_index_flags(), 16);
+  assert_eq!(info.doc_id_tree_type(), 2);
+  assert_eq!(info.doc_id_tree_oid(), 0);
+  assert_eq!(info.previous_doc_id_tree_oid(), 0);
+  assert_eq!(info.doc_id_fixup_cursor(), 0);
+  assert_eq!(view.tag_value("root_tree_type"), Some("2"));
+  assert_eq!(view.tag_value("doc_id_index_xid"), Some("4"));
+}
+
+#[test]
+fn apfs_exposes_snapshot_volume_tail_metadata() {
+  let container = open_gzip_fixture("apfs/dissect.apfs/snapshot.bin.gz").unwrap();
+  let info = &container.volumes()[0];
+  let view = &container.views().unwrap()[0];
+
+  assert_eq!(info.number_of_files(), 1027);
+  assert_eq!(info.number_of_directories(), 1);
+  assert_eq!(info.number_of_symlinks(), 0);
+  assert_eq!(info.number_of_other_fsobjects(), 0);
+  assert_eq!(info.number_of_snapshots(), 512);
+  assert_eq!(info.total_blocks_allocated(), 1539);
+  assert_eq!(info.total_blocks_freed(), 0);
+  assert_eq!(info.snap_meta_ext_oid(), 1030);
+  assert_eq!(info.fext_tree_type(), 0x4000_0002);
+  assert_eq!(info.pfkur_tree_type(), 0x4000_0002);
+  assert_eq!(info.doc_id_index_xid(), 2573);
+  assert_eq!(info.doc_id_index_flags(), 16);
+  assert_eq!(info.doc_id_tree_type(), 2);
+  assert_eq!(view.tag_value("snap_meta_ext_oid"), Some("1030"));
+  assert_eq!(view.tag_value("doc_id_index_xid"), Some("2573"));
+}
+
+#[test]
 fn apfs_opens_through_gpt_stack_from_raw_dmg_fixture() {
   let source: ByteSourceHandle =
     Arc::new(FileDataSource::open(fixture_path("apfs/apfs.dmg")).unwrap());

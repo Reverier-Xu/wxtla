@@ -178,12 +178,60 @@ impl ApfsVolumeInfo {
     self.superblock.root_tree_oid
   }
 
+  pub fn root_tree_type(&self) -> u32 {
+    self.superblock.root_tree_type
+  }
+
+  pub fn extentref_tree_type(&self) -> u32 {
+    self.superblock.extentref_tree_type
+  }
+
+  pub fn snap_meta_tree_type(&self) -> u32 {
+    self.superblock.snap_meta_tree_type
+  }
+
   pub fn snap_meta_tree_oid(&self) -> u64 {
     self.superblock.snap_meta_tree_oid
   }
 
+  pub fn revert_to_xid(&self) -> u64 {
+    self.superblock.revert_to_xid
+  }
+
+  pub fn revert_to_superblock_oid(&self) -> u64 {
+    self.superblock.revert_to_sblock_oid
+  }
+
+  pub fn next_object_id(&self) -> u64 {
+    self.superblock.next_object_id
+  }
+
+  pub fn last_modification_time(&self) -> u64 {
+    self.superblock.last_modification_time
+  }
+
+  pub fn next_document_id(&self) -> u32 {
+    self.superblock.next_document_id
+  }
+
+  pub fn root_to_xid(&self) -> u64 {
+    self.superblock.root_to_xid
+  }
+
+  pub fn encryption_rolling_state_oid(&self) -> u64 {
+    self.superblock.encryption_rolling_state_oid
+  }
+
+  pub fn snap_meta_ext_oid(&self) -> u64 {
+    self.superblock.snap_meta_ext_oid
+  }
+
   pub fn fext_tree_oid(&self) -> u64 {
     self.superblock.fext_tree_oid
+  }
+
+  pub fn fext_tree_type(&self) -> u32 {
+    self.superblock.fext_tree_type
   }
 
   pub fn pfkur_tree_type(&self) -> u32 {
@@ -200,6 +248,30 @@ impl ApfsVolumeInfo {
 
   pub fn clone_group_tree_flags(&self) -> u32 {
     self.superblock.clone_group_tree_flags
+  }
+
+  pub fn doc_id_index_xid(&self) -> u64 {
+    self.superblock.doc_id_index_xid
+  }
+
+  pub fn doc_id_index_flags(&self) -> u32 {
+    self.superblock.doc_id_index_flags
+  }
+
+  pub fn doc_id_tree_type(&self) -> u32 {
+    self.superblock.doc_id_tree_type
+  }
+
+  pub fn doc_id_tree_oid(&self) -> u64 {
+    self.superblock.doc_id_tree_oid
+  }
+
+  pub fn previous_doc_id_tree_oid(&self) -> u64 {
+    self.superblock.prev_doc_id_tree_oid
+  }
+
+  pub fn doc_id_fixup_cursor(&self) -> u64 {
+    self.superblock.doc_id_fixup_cursor
   }
 
   pub fn integrity_meta_oid(&self) -> u64 {
@@ -235,6 +307,15 @@ impl ApfsVolumeInfo {
     .with_tag("uuid", self.uuid_string())
     .with_tag("role", self.role_names().join(","))
     .with_tag("role_mask", format!("0x{:04x}", self.superblock.role))
+    .with_tag("root_tree_type", self.root_tree_type().to_string())
+    .with_tag(
+      "extentref_tree_type",
+      self.extentref_tree_type().to_string(),
+    )
+    .with_tag(
+      "snap_meta_tree_type",
+      self.snap_meta_tree_type().to_string(),
+    )
     .with_tag("superblock_address", self.superblock_address.to_string())
     .with_tag("case_insensitive", self.is_case_insensitive().to_string())
     .with_tag(
@@ -243,6 +324,13 @@ impl ApfsVolumeInfo {
     )
     .with_tag("sealed", self.is_sealed().to_string())
     .with_tag("encrypted", self.is_encrypted().to_string())
+    .with_tag(
+      "last_modification_time",
+      self.last_modification_time().to_string(),
+    )
+    .with_tag("next_object_id", self.next_object_id().to_string())
+    .with_tag("next_document_id", self.next_document_id().to_string())
+    .with_tag("root_to_xid", self.root_to_xid().to_string())
     .with_tag(
       "dataless_snapshots",
       self.has_dataless_snapshots().to_string(),
@@ -263,11 +351,57 @@ impl ApfsVolumeInfo {
         "secondary_root_tree_oid",
         self.secondary_root_tree_oid().to_string(),
       );
+      record = record.with_tag(
+        "secondary_root_tree_type",
+        self.superblock.secondary_root_tree_type.to_string(),
+      );
     }
     if self.pfkur_tree_oid() != 0 {
       record = record
         .with_tag("pfkur_tree_type", self.pfkur_tree_type().to_string())
         .with_tag("pfkur_tree_oid", self.pfkur_tree_oid().to_string());
+    }
+    if self.doc_id_tree_oid() != 0 {
+      record = record
+        .with_tag("doc_id_tree_type", self.doc_id_tree_type().to_string())
+        .with_tag("doc_id_tree_oid", self.doc_id_tree_oid().to_string())
+        .with_tag(
+          "previous_doc_id_tree_oid",
+          self.previous_doc_id_tree_oid().to_string(),
+        )
+        .with_tag(
+          "doc_id_fixup_cursor",
+          self.doc_id_fixup_cursor().to_string(),
+        );
+    }
+    if self.doc_id_index_xid() != 0
+      || self.doc_id_index_flags() != 0
+      || self.doc_id_tree_type() != 0
+    {
+      record = record
+        .with_tag("doc_id_index_xid", self.doc_id_index_xid().to_string())
+        .with_tag("doc_id_index_flags", self.doc_id_index_flags().to_string())
+        .with_tag("doc_id_tree_type", self.doc_id_tree_type().to_string());
+    }
+    if self.fext_tree_oid() != 0 {
+      record = record.with_tag("fext_tree_type", self.fext_tree_type().to_string());
+    }
+    if self.snap_meta_ext_oid() != 0 {
+      record = record.with_tag("snap_meta_ext_oid", self.snap_meta_ext_oid().to_string());
+    }
+    if self.encryption_rolling_state_oid() != 0 {
+      record = record.with_tag(
+        "encryption_rolling_state_oid",
+        self.encryption_rolling_state_oid().to_string(),
+      );
+    }
+    if self.revert_to_xid() != 0 || self.revert_to_superblock_oid() != 0 {
+      record = record
+        .with_tag("revert_to_xid", self.revert_to_xid().to_string())
+        .with_tag(
+          "revert_to_superblock_oid",
+          self.revert_to_superblock_oid().to_string(),
+        );
     }
     if self.clone_group_tree_flags() != 0 {
       record = record.with_tag(
