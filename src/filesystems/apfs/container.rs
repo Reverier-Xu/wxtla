@@ -186,8 +186,20 @@ impl ApfsVolumeInfo {
     self.superblock.fext_tree_oid
   }
 
+  pub fn pfkur_tree_type(&self) -> u32 {
+    self.superblock.pfkur_tree_type
+  }
+
+  pub fn pfkur_tree_oid(&self) -> u64 {
+    self.superblock.pfkur_tree_oid
+  }
+
   pub fn secondary_root_tree_oid(&self) -> u64 {
     self.superblock.secondary_root_tree_oid
+  }
+
+  pub fn clone_group_tree_flags(&self) -> u32 {
+    self.superblock.clone_group_tree_flags
   }
 
   pub fn integrity_meta_oid(&self) -> u64 {
@@ -250,6 +262,17 @@ impl ApfsVolumeInfo {
       record = record.with_tag(
         "secondary_root_tree_oid",
         self.secondary_root_tree_oid().to_string(),
+      );
+    }
+    if self.pfkur_tree_oid() != 0 {
+      record = record
+        .with_tag("pfkur_tree_type", self.pfkur_tree_type().to_string())
+        .with_tag("pfkur_tree_oid", self.pfkur_tree_oid().to_string());
+    }
+    if self.clone_group_tree_flags() != 0 {
+      record = record.with_tag(
+        "clone_group_tree_flags",
+        self.clone_group_tree_flags().to_string(),
       );
     }
     if !self.name().is_empty() {

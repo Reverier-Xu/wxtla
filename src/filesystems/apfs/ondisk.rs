@@ -569,6 +569,8 @@ pub(crate) struct ApfsVolumeSuperblock {
   pub integrity_meta_oid: u64,
   pub fext_tree_oid: u64,
   pub fext_tree_type: u32,
+  pub pfkur_tree_type: u32,
+  pub pfkur_tree_oid: u64,
   pub doc_id_index_xid: u64,
   pub doc_id_index_flags: u32,
   pub doc_id_tree_type: u32,
@@ -577,11 +579,12 @@ pub(crate) struct ApfsVolumeSuperblock {
   pub doc_id_fixup_cursor: u64,
   pub secondary_root_tree_oid: u64,
   pub secondary_root_tree_type: u32,
+  pub clone_group_tree_flags: u32,
 }
 
 impl ApfsVolumeSuperblock {
   pub(crate) fn parse(block: &[u8]) -> Result<Self> {
-    require_len(block, 1108, "apfs volume superblock")?;
+    require_len(block, 1112, "apfs volume superblock")?;
     let header = ApfsObjectHeader::parse(block)?;
     let magic = read_array::<4>(block, 32)?;
     if &magic != APFS_MAGIC {
@@ -642,6 +645,8 @@ impl ApfsVolumeSuperblock {
       integrity_meta_oid: read_u64_le(block, 1024)?,
       fext_tree_oid: read_u64_le(block, 1032)?,
       fext_tree_type: read_u32_le(block, 1040)?,
+      pfkur_tree_type: read_u32_le(block, 1044)?,
+      pfkur_tree_oid: read_u64_le(block, 1048)?,
       doc_id_index_xid: read_u64_le(block, 1056)?,
       doc_id_index_flags: read_u32_le(block, 1064)?,
       doc_id_tree_type: read_u32_le(block, 1068)?,
@@ -650,6 +655,7 @@ impl ApfsVolumeSuperblock {
       doc_id_fixup_cursor: read_u64_le(block, 1088)?,
       secondary_root_tree_oid: read_u64_le(block, 1096)?,
       secondary_root_tree_type: read_u32_le(block, 1104)?,
+      clone_group_tree_flags: read_u32_le(block, 1108)?,
     })
   }
 
@@ -1188,6 +1194,9 @@ mod tests {
     block[1088..1096].copy_from_slice(&102u64.to_le_bytes());
     block[1096..1104].copy_from_slice(&103u64.to_le_bytes());
     block[1104..1108].copy_from_slice(&11u32.to_le_bytes());
+    block[1044..1048].copy_from_slice(&13u32.to_le_bytes());
+    block[1048..1056].copy_from_slice(&104u64.to_le_bytes());
+    block[1108..1112].copy_from_slice(&17u32.to_le_bytes());
     let checksum = fletcher64(&block[8..]);
     block[0..8].copy_from_slice(&checksum.to_le_bytes());
 
@@ -1203,6 +1212,8 @@ mod tests {
     assert_eq!(superblock.meta_crypto.persistent_class, 4);
     assert_eq!(superblock.meta_crypto.key_os_version, 5);
     assert_eq!(superblock.meta_crypto.key_revision, 6);
+    assert_eq!(superblock.pfkur_tree_type, 13);
+    assert_eq!(superblock.pfkur_tree_oid, 104);
     assert_eq!(superblock.doc_id_index_xid, 55);
     assert_eq!(superblock.doc_id_index_flags, 7);
     assert_eq!(superblock.doc_id_tree_type, 9);
@@ -1211,6 +1222,7 @@ mod tests {
     assert_eq!(superblock.doc_id_fixup_cursor, 102);
     assert_eq!(superblock.secondary_root_tree_oid, 103);
     assert_eq!(superblock.secondary_root_tree_type, 11);
+    assert_eq!(superblock.clone_group_tree_flags, 17);
   }
 
   #[test]

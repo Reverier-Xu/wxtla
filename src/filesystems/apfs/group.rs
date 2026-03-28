@@ -348,6 +348,8 @@ mod tests {
         integrity_meta_oid: 0,
         fext_tree_oid: 0,
         fext_tree_type: 0,
+        pfkur_tree_type: 0,
+        pfkur_tree_oid: 0,
         doc_id_index_xid: 0,
         doc_id_index_flags: 0,
         doc_id_tree_type: 0,
@@ -356,6 +358,7 @@ mod tests {
         doc_id_fixup_cursor: 0,
         secondary_root_tree_oid: 0,
         secondary_root_tree_type: 0,
+        clone_group_tree_flags: 0,
       },
     )
   }
