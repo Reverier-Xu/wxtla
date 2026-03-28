@@ -104,6 +104,60 @@ impl ApfsVolumeInfo {
     self.superblock.has_secondary_fs_root()
   }
 
+  pub fn unmount_time(&self) -> u64 {
+    self.superblock.unmount_time
+  }
+
+  pub fn reserve_block_count(&self) -> u64 {
+    self.superblock.reserve_block_count
+  }
+
+  pub fn quota_block_count(&self) -> u64 {
+    self.superblock.quota_block_count
+  }
+
+  pub fn alloc_block_count(&self) -> u64 {
+    self.superblock.alloc_block_count
+  }
+
+  pub fn number_of_files(&self) -> u64 {
+    self.superblock.number_of_files
+  }
+
+  pub fn number_of_directories(&self) -> u64 {
+    self.superblock.number_of_directories
+  }
+
+  pub fn number_of_symlinks(&self) -> u64 {
+    self.superblock.number_of_symlinks
+  }
+
+  pub fn number_of_other_fsobjects(&self) -> u64 {
+    self.superblock.number_of_other_fsobjects
+  }
+
+  pub fn total_blocks_allocated(&self) -> u64 {
+    self.superblock.total_blocks_allocated
+  }
+
+  pub fn total_blocks_freed(&self) -> u64 {
+    self.superblock.total_blocks_freed
+  }
+
+  pub fn formatted_by(&self) -> Option<super::ondisk::ApfsChangeInfo> {
+    (!self.superblock.formatted_by.is_empty()).then(|| self.superblock.formatted_by.clone())
+  }
+
+  pub fn modified_by(&self) -> Vec<super::ondisk::ApfsChangeInfo> {
+    self
+      .superblock
+      .modified_by
+      .iter()
+      .filter(|entry| !entry.is_empty())
+      .cloned()
+      .collect()
+  }
+
   pub fn uses_volume_group_system_inode_space(&self) -> bool {
     self.superblock.uses_volume_group_system_inode_space()
   }

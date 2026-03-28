@@ -362,15 +362,32 @@ pub(crate) struct ApfsVolumeSuperblock {
   pub features: u64,
   pub readonly_compatible_features: u64,
   pub incompatible_features: u64,
+  pub unmount_time: u64,
+  pub reserve_block_count: u64,
+  pub quota_block_count: u64,
+  pub alloc_block_count: u64,
   pub volume_uuid: [u8; 16],
+  pub root_tree_type: u32,
+  pub extentref_tree_type: u32,
+  pub snap_meta_tree_type: u32,
   pub omap_oid: u64,
   pub root_tree_oid: u64,
   pub extentref_tree_oid: u64,
   pub snap_meta_tree_oid: u64,
+  pub revert_to_xid: u64,
+  pub revert_to_sblock_oid: u64,
   pub next_object_id: u64,
+  pub number_of_files: u64,
+  pub number_of_directories: u64,
+  pub number_of_symlinks: u64,
+  pub number_of_other_fsobjects: u64,
   pub number_of_snapshots: u64,
+  pub total_blocks_allocated: u64,
+  pub total_blocks_freed: u64,
   pub last_modification_time: u64,
   pub fs_flags: u64,
+  pub formatted_by: ApfsChangeInfo,
+  pub modified_by: Vec<ApfsChangeInfo>,
   pub volume_name: String,
   pub next_document_id: u32,
   pub role: u16,
@@ -410,15 +427,34 @@ impl ApfsVolumeSuperblock {
       features: read_u64_le(block, 40)?,
       readonly_compatible_features: read_u64_le(block, 48)?,
       incompatible_features: read_u64_le(block, 56)?,
+      unmount_time: read_u64_le(block, 60)?,
+      reserve_block_count: read_u64_le(block, 68)?,
+      quota_block_count: read_u64_le(block, 76)?,
+      alloc_block_count: read_u64_le(block, 84)?,
+      root_tree_type: read_u32_le(block, 112)?,
+      extentref_tree_type: read_u32_le(block, 116)?,
+      snap_meta_tree_type: read_u32_le(block, 120)?,
       omap_oid: read_u64_le(block, 128)?,
       root_tree_oid: read_u64_le(block, 136)?,
       extentref_tree_oid: read_u64_le(block, 144)?,
       snap_meta_tree_oid: read_u64_le(block, 152)?,
+      revert_to_xid: read_u64_le(block, 160)?,
+      revert_to_sblock_oid: read_u64_le(block, 168)?,
       next_object_id: read_u64_le(block, 176)?,
+      number_of_files: read_u64_le(block, 184)?,
+      number_of_directories: read_u64_le(block, 192)?,
+      number_of_symlinks: read_u64_le(block, 200)?,
+      number_of_other_fsobjects: read_u64_le(block, 208)?,
       number_of_snapshots: read_u64_le(block, 216)?,
+      total_blocks_allocated: read_u64_le(block, 224)?,
+      total_blocks_freed: read_u64_le(block, 232)?,
       volume_uuid: read_array(block, 240)?,
       last_modification_time: read_u64_le(block, 256)?,
       fs_flags: read_u64_le(block, 264)?,
+      formatted_by: parse_change_info(block, 272)?,
+      modified_by: (0..8)
+        .map(|index| parse_change_info(block, 320 + index * 48))
+        .collect::<Result<Vec<_>>>()?,
       volume_name,
       next_document_id: read_u32_le(block, 960)?,
       role: read_u16_le(block, 964)?,
@@ -495,6 +531,19 @@ pub struct ApfsIntegrityMetadata {
   pub root_hash: Box<[u8]>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApfsChangeInfo {
+  pub application_id: String,
+  pub timestamp: u64,
+  pub last_xid: u64,
+}
+
+impl ApfsChangeInfo {
+  pub fn is_empty(&self) -> bool {
+    self.application_id.is_empty() && self.timestamp == 0 && self.last_xid == 0
+  }
+}
+
 impl ApfsIntegrityMetadata {
   pub(crate) fn parse(block: &[u8]) -> Result<Self> {
     require_len(block, 112, "apfs integrity metadata")?;
@@ -555,6 +604,14 @@ pub(crate) fn apfs_hash_size(hash_type: u32) -> Result<usize> {
       "unsupported apfs integrity hash type: {hash_type}"
     ))),
   }
+}
+
+fn parse_change_info(block: &[u8], offset: usize) -> Result<ApfsChangeInfo> {
+  Ok(ApfsChangeInfo {
+    application_id: bytes_to_cstring(read_slice(block, offset, 32, "apfs change info id")?),
+    timestamp: read_u64_le(block, offset + 32)?,
+    last_xid: read_u64_le(block, offset + 40)?,
+  })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -899,5 +956,63 @@ mod tests {
     assert_eq!(superblock.doc_id_fixup_cursor, 102);
     assert_eq!(superblock.secondary_root_tree_oid, 103);
     assert_eq!(superblock.secondary_root_tree_type, 11);
+  }
+
+  #[test]
+  fn parses_volume_change_history_and_counters() {
+    let mut block = fixture_bytes("volume_superblock.1");
+    block[60..68].copy_from_slice(&7u64.to_le_bytes());
+    block[68..76].copy_from_slice(&11u64.to_le_bytes());
+    block[76..84].copy_from_slice(&13u64.to_le_bytes());
+    block[84..92].copy_from_slice(&17u64.to_le_bytes());
+    block[112..116].copy_from_slice(&2u32.to_le_bytes());
+    block[116..120].copy_from_slice(&3u32.to_le_bytes());
+    block[120..124].copy_from_slice(&4u32.to_le_bytes());
+    block[160..168].copy_from_slice(&19u64.to_le_bytes());
+    block[168..176].copy_from_slice(&23u64.to_le_bytes());
+    block[184..192].copy_from_slice(&29u64.to_le_bytes());
+    block[192..200].copy_from_slice(&31u64.to_le_bytes());
+    block[200..208].copy_from_slice(&37u64.to_le_bytes());
+    block[208..216].copy_from_slice(&41u64.to_le_bytes());
+    block[224..232].copy_from_slice(&43u64.to_le_bytes());
+    block[232..240].copy_from_slice(&47u64.to_le_bytes());
+    let mut formatted_id = [0u8; 32];
+    formatted_id[..13].copy_from_slice(b"mkfs.apfs 123");
+    block[272..304].copy_from_slice(&formatted_id);
+    block[304..312].copy_from_slice(&53u64.to_le_bytes());
+    block[312..320].copy_from_slice(&59u64.to_le_bytes());
+    let mut modified_id = [0u8; 32];
+    modified_id[..15].copy_from_slice(b"diskmanagementd");
+    block[320..352].copy_from_slice(&modified_id);
+    block[352..360].copy_from_slice(&61u64.to_le_bytes());
+    block[360..368].copy_from_slice(&67u64.to_le_bytes());
+    let checksum = fletcher64(&block[8..]);
+    block[0..8].copy_from_slice(&checksum.to_le_bytes());
+
+    let superblock = ApfsVolumeSuperblock::parse(&block).unwrap();
+    superblock.validate(&block).unwrap();
+
+    assert_eq!(superblock.unmount_time, 7);
+    assert_eq!(superblock.reserve_block_count, 11);
+    assert_eq!(superblock.quota_block_count, 13);
+    assert_eq!(superblock.alloc_block_count, 17);
+    assert_eq!(superblock.root_tree_type, 2);
+    assert_eq!(superblock.extentref_tree_type, 3);
+    assert_eq!(superblock.snap_meta_tree_type, 4);
+    assert_eq!(superblock.revert_to_xid, 19);
+    assert_eq!(superblock.revert_to_sblock_oid, 23);
+    assert_eq!(superblock.number_of_files, 29);
+    assert_eq!(superblock.number_of_directories, 31);
+    assert_eq!(superblock.number_of_symlinks, 37);
+    assert_eq!(superblock.number_of_other_fsobjects, 41);
+    assert_eq!(superblock.total_blocks_allocated, 43);
+    assert_eq!(superblock.total_blocks_freed, 47);
+    assert_eq!(superblock.formatted_by.application_id, "mkfs.apfs 123");
+    assert_eq!(superblock.formatted_by.timestamp, 53);
+    assert_eq!(superblock.formatted_by.last_xid, 59);
+    assert_eq!(superblock.modified_by[0].application_id, "diskmanagementd");
+    assert_eq!(superblock.modified_by[0].timestamp, 61);
+    assert_eq!(superblock.modified_by[0].last_xid, 67);
+    assert!(superblock.modified_by[1].is_empty());
   }
 }
