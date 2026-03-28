@@ -42,19 +42,38 @@ pub(crate) const CHECKPOINT_AREA_BTREE_FLAG: u32 = 0x8000_0000;
 
 pub(crate) const OMAP_VAL_DELETED: u32 = 0x0000_0001;
 pub(crate) const CHECKPOINT_MAP_LAST: u32 = 0x0000_0001;
+pub(crate) const OMAP_MANUALLY_MANAGED: u32 = 0x0000_0001;
+pub(crate) const OMAP_ENCRYPTING: u32 = 0x0000_0002;
+pub(crate) const OMAP_DECRYPTING: u32 = 0x0000_0004;
+pub(crate) const OMAP_KEYROLLING: u32 = 0x0000_0008;
+pub(crate) const OMAP_CRYPTO_GENERATION: u32 = 0x0000_0010;
 
+pub(crate) const NX_FEATURE_DEFRAG: u64 = 0x0000_0001;
+pub(crate) const NX_FEATURE_LCFD: u64 = 0x0000_0002;
 pub(crate) const APFS_INCOMPAT_CASE_INSENSITIVE: u64 = 0x0000_0001;
 pub(crate) const APFS_INCOMPAT_DATALESS_SNAPS: u64 = 0x0000_0002;
+pub(crate) const APFS_INCOMPAT_ENC_ROLLED: u64 = 0x0000_0004;
 pub(crate) const APFS_INCOMPAT_NORMALIZATION_INSENSITIVE: u64 = 0x0000_0008;
+pub(crate) const APFS_INCOMPAT_INCOMPLETE_RESTORE: u64 = 0x0000_0010;
 pub(crate) const APFS_INCOMPAT_SEALED_VOLUME: u64 = 0x0000_0020;
+pub(crate) const APFS_INCOMPAT_PFK_VOL: u64 = 0x0000_0040;
+pub(crate) const APFS_INCOMPAT_RESERVED_80: u64 = 0x0000_0080;
 pub(crate) const APFS_INCOMPAT_SECONDARY_FSROOT: u64 = 0x0000_0100;
 
+pub(crate) const APFS_FEATURE_DEFRAG_PRERELEASE: u64 = 0x0000_0001;
+pub(crate) const APFS_FEATURE_HARDLINK_MAP_RECORDS: u64 = 0x0000_0002;
+pub(crate) const APFS_FEATURE_DEFRAG: u64 = 0x0000_0004;
+pub(crate) const APFS_FEATURE_STRICTATIME: u64 = 0x0000_0008;
 pub(crate) const APFS_FEATURE_VOLGRP_SYSTEM_INO_SPACE: u64 = 0x0000_0010;
 pub(crate) const NX_INCOMPAT_FUSION: u64 = 0x0000_0100;
 pub(crate) const NX_CRYPTO_SW: u64 = 0x0000_0004;
 
 pub(crate) const APFS_FS_UNENCRYPTED: u64 = 0x0000_0001;
 pub(crate) const APFS_FS_ONEKEY: u64 = 0x0000_0008;
+pub(crate) const APFS_FS_SPILLEDOVER: u64 = 0x0000_0010;
+pub(crate) const APFS_FS_RUN_SPILLOVER_CLEANER: u64 = 0x0000_0020;
+pub(crate) const APFS_FS_ALWAYS_CHECK_EXTENTREF: u64 = 0x0000_0040;
+pub(crate) const APFS_FS_PREVIOUSLY_SEALED: u64 = 0x0000_0080;
 pub(crate) const APFS_FS_PFK: u64 = 0x0000_0100;
 
 pub(crate) const APFS_VOL_ROLE_SYSTEM: u16 = 0x0001;
@@ -372,6 +391,99 @@ impl ApfsContainerSuperblock {
   pub(crate) fn uses_software_crypto(&self) -> bool {
     (self.flags & NX_CRYPTO_SW) != 0
   }
+}
+
+pub(crate) fn nx_feature_names(flags: u64) -> Vec<&'static str> {
+  bit_names_u64(
+    flags,
+    &[(NX_FEATURE_DEFRAG, "defrag"), (NX_FEATURE_LCFD, "lcfd")],
+  )
+}
+
+pub(crate) fn nx_incompat_feature_names(flags: u64) -> Vec<&'static str> {
+  bit_names_u64(
+    flags,
+    &[
+      (1, "version1"),
+      (2, "version2"),
+      (NX_INCOMPAT_FUSION, "fusion"),
+    ],
+  )
+}
+
+pub(crate) fn nx_flag_names(flags: u64) -> Vec<&'static str> {
+  bit_names_u64(
+    flags,
+    &[
+      (1, "reserved_1"),
+      (2, "reserved_2"),
+      (NX_CRYPTO_SW, "crypto_sw"),
+    ],
+  )
+}
+
+pub(crate) fn apfs_feature_names(flags: u64) -> Vec<&'static str> {
+  bit_names_u64(
+    flags,
+    &[
+      (APFS_FEATURE_DEFRAG_PRERELEASE, "defrag_prerelease"),
+      (APFS_FEATURE_HARDLINK_MAP_RECORDS, "hardlink_map_records"),
+      (APFS_FEATURE_DEFRAG, "defrag"),
+      (APFS_FEATURE_STRICTATIME, "strictatime"),
+      (
+        APFS_FEATURE_VOLGRP_SYSTEM_INO_SPACE,
+        "volgrp_system_ino_space",
+      ),
+    ],
+  )
+}
+
+pub(crate) fn apfs_incompat_feature_names(flags: u64) -> Vec<&'static str> {
+  bit_names_u64(
+    flags,
+    &[
+      (APFS_INCOMPAT_CASE_INSENSITIVE, "case_insensitive"),
+      (APFS_INCOMPAT_DATALESS_SNAPS, "dataless_snaps"),
+      (APFS_INCOMPAT_ENC_ROLLED, "enc_rolled"),
+      (
+        APFS_INCOMPAT_NORMALIZATION_INSENSITIVE,
+        "normalization_insensitive",
+      ),
+      (APFS_INCOMPAT_INCOMPLETE_RESTORE, "incomplete_restore"),
+      (APFS_INCOMPAT_SEALED_VOLUME, "sealed_volume"),
+      (APFS_INCOMPAT_PFK_VOL, "pfk"),
+      (APFS_INCOMPAT_RESERVED_80, "reserved_80"),
+      (APFS_INCOMPAT_SECONDARY_FSROOT, "secondary_fsroot"),
+    ],
+  )
+}
+
+pub(crate) fn apfs_fs_flag_names(flags: u64) -> Vec<&'static str> {
+  bit_names_u64(
+    flags,
+    &[
+      (APFS_FS_UNENCRYPTED, "unencrypted"),
+      (APFS_FS_ONEKEY, "onekey"),
+      (APFS_FS_SPILLEDOVER, "spilledover"),
+      (APFS_FS_RUN_SPILLOVER_CLEANER, "run_spillover_cleaner"),
+      (APFS_FS_ALWAYS_CHECK_EXTENTREF, "always_check_extentref"),
+      (APFS_FS_PREVIOUSLY_SEALED, "previously_sealed"),
+      (APFS_FS_PFK, "pfk"),
+    ],
+  )
+}
+
+pub(crate) fn apfs_omap_flag_names(flags: u32) -> Vec<&'static str> {
+  bit_names_u32(
+    flags,
+    &[
+      (OMAP_MANUALLY_MANAGED, "manually_managed"),
+      (OMAP_ENCRYPTING, "encrypting"),
+      (OMAP_DECRYPTING, "decrypting"),
+      (OMAP_KEYROLLING, "keyrolling"),
+      (OMAP_CRYPTO_GENERATION, "crypto_generation"),
+    ],
+  )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1018,6 +1130,20 @@ fn read_u64_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u64; N
     *slot = read_u64_le(bytes, offset + index * 8)?;
   }
   Ok(values)
+}
+
+fn bit_names_u64(flags: u64, mapping: &[(u64, &'static str)]) -> Vec<&'static str> {
+  mapping
+    .iter()
+    .filter_map(|(mask, name)| ((flags & *mask) != 0).then_some(*name))
+    .collect()
+}
+
+fn bit_names_u32(flags: u32, mapping: &[(u32, &'static str)]) -> Vec<&'static str> {
+  mapping
+    .iter()
+    .filter_map(|(mask, name)| ((flags & *mask) != 0).then_some(*name))
+    .collect()
 }
 
 fn require_len(bytes: &[u8], length: usize, what: &str) -> Result<()> {

@@ -13,18 +13,19 @@ use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
 use super::{
-  DESCRIPTOR,
   btree::ApfsBTree,
-  container::{ApfsVolume, ApfsVolumeInfo, lookup_omap_address, read_blocks, read_object_map},
+  container::{lookup_omap_address, read_blocks, read_object_map, ApfsVolume, ApfsVolumeInfo},
   keybag::{password_hint_for_volume, unlock_volume},
-  ondisk::{ApfsIntegrityMetadata, read_u64_le},
+  ondisk::{read_u64_le, ApfsIntegrityMetadata},
   records::{
-    APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_FILE_INFO,
-    APFS_TYPE_INODE, APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, ApfsDirectoryRecord, ApfsFextRecord,
+    directory_kind_from_flags, node_kind_from_mode, ApfsDirectoryRecord, ApfsFextRecord,
     ApfsFileExtentRecord, ApfsFileInfoRecord, ApfsFsKeyHeader, ApfsInodeRecord,
-    ApfsSnapshotMetadataRecord, ApfsStreamStorageSpec, ApfsXattrRecord, UF_COMPRESSED,
-    XATTR_RESOURCE_FORK_NAME, XATTR_SYMLINK_NAME, directory_kind_from_flags, node_kind_from_mode,
+    ApfsSnapshotMetadataRecord, ApfsStreamStorageSpec, ApfsXattrRecord,
+    APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_FILE_INFO,
+    APFS_TYPE_INODE, APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, UF_COMPRESSED,
+    XATTR_RESOURCE_FORK_NAME, XATTR_SYMLINK_NAME,
   },
+  DESCRIPTOR,
 };
 use crate::{
   ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, DataSource,
@@ -414,6 +415,25 @@ impl ApfsVolume {
 
   pub fn is_onekey(&self) -> bool {
     (self.info().fs_flags() & crate::filesystems::apfs::ondisk::APFS_FS_ONEKEY) != 0
+  }
+
+  pub fn object_map(&self) -> Result<super::container::ApfsObjectMapInfo> {
+    let volume_omap = read_object_map(
+      self.source.as_ref(),
+      self.block_size,
+      self
+        .omap_oid_override
+        .unwrap_or_else(|| self.info().omap_oid()),
+    )?;
+    Ok(super::container::ApfsObjectMapInfo {
+      flags: volume_omap.flags,
+      snapshot_count: volume_omap.snapshot_count,
+      tree_type: volume_omap.tree_type,
+      snapshot_tree_type: volume_omap.snapshot_tree_type,
+      tree_oid: volume_omap.tree_oid,
+      snapshot_tree_oid: volume_omap.snapshot_tree_oid,
+      most_recent_snapshot_xid: volume_omap.most_recent_snapshot_xid,
+    })
   }
 
   pub fn integrity_metadata(&self) -> Result<Option<ApfsIntegrityMetadata>> {

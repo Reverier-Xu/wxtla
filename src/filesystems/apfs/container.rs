@@ -5,7 +5,7 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use super::{DESCRIPTOR, btree::ApfsBTree, keybag::ApfsUnlockState, ondisk::*};
+use super::{btree::ApfsBTree, keybag::ApfsUnlockState, ondisk::*, DESCRIPTOR};
 use crate::{
   ByteSource, ByteSourceHandle, DataSource, DataSourceFacets, DataViewId, DataViewKind,
   DataViewRecord, DataViewSelector, Error, Result,
@@ -17,6 +17,23 @@ pub struct ApfsVolumeInfo {
   fs_oid: u64,
   superblock_address: u64,
   superblock: ApfsVolumeSuperblock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApfsObjectMapInfo {
+  pub flags: u32,
+  pub snapshot_count: u32,
+  pub tree_type: u32,
+  pub snapshot_tree_type: u32,
+  pub tree_oid: u64,
+  pub snapshot_tree_oid: u64,
+  pub most_recent_snapshot_xid: u64,
+}
+
+impl ApfsObjectMapInfo {
+  pub fn flag_names(&self) -> Vec<&'static str> {
+    apfs_omap_flag_names(self.flags)
+  }
 }
 
 #[derive(Clone)]
@@ -166,6 +183,18 @@ impl ApfsVolumeInfo {
     self.superblock.uses_volume_group_system_inode_space()
   }
 
+  pub fn feature_names(&self) -> Vec<&'static str> {
+    apfs_feature_names(self.superblock.features)
+  }
+
+  pub fn incompat_feature_names(&self) -> Vec<&'static str> {
+    apfs_incompat_feature_names(self.superblock.incompatible_features)
+  }
+
+  pub fn fs_flag_names(&self) -> Vec<&'static str> {
+    apfs_fs_flag_names(self.superblock.fs_flags)
+  }
+
   pub fn is_encrypted(&self) -> bool {
     self.superblock.is_encrypted()
   }
@@ -306,6 +335,9 @@ impl ApfsVolumeInfo {
     .with_tag("xid", self.superblock.header.xid.to_string())
     .with_tag("uuid", self.uuid_string())
     .with_tag("role", self.role_names().join(","))
+    .with_tag("features", self.feature_names().join(","))
+    .with_tag("incompat_features", self.incompat_feature_names().join(","))
+    .with_tag("fs_flags", self.fs_flag_names().join(","))
     .with_tag("role_mask", format!("0x{:04x}", self.superblock.role))
     .with_tag("root_tree_type", self.root_tree_type().to_string())
     .with_tag(
@@ -546,6 +578,54 @@ impl ApfsContainer {
 
   pub fn xid(&self) -> u64 {
     self.current_superblock.header.xid
+  }
+
+  pub fn block_size(&self) -> u32 {
+    self.current_superblock.block_size
+  }
+
+  pub fn block_count(&self) -> u64 {
+    self.current_superblock.block_count
+  }
+
+  pub fn uuid_string(&self) -> String {
+    format_uuid_le(&self.current_superblock.uuid)
+  }
+
+  pub fn features(&self) -> u64 {
+    self.current_superblock.features
+  }
+
+  pub fn readonly_compatible_features(&self) -> u64 {
+    self.current_superblock.readonly_compatible_features
+  }
+
+  pub fn incompatible_features(&self) -> u64 {
+    self.current_superblock.incompatible_features
+  }
+
+  pub fn feature_names(&self) -> Vec<&'static str> {
+    nx_feature_names(self.current_superblock.features)
+  }
+
+  pub fn incompat_feature_names(&self) -> Vec<&'static str> {
+    nx_incompat_feature_names(self.current_superblock.incompatible_features)
+  }
+
+  pub fn flag_names(&self) -> Vec<&'static str> {
+    nx_flag_names(self.current_superblock.flags)
+  }
+
+  pub fn current_object_map(&self) -> ApfsObjectMapInfo {
+    ApfsObjectMapInfo {
+      flags: self.current_omap.flags,
+      snapshot_count: self.current_omap.snapshot_count,
+      tree_type: self.current_omap.tree_type,
+      snapshot_tree_type: self.current_omap.snapshot_tree_type,
+      tree_oid: self.current_omap.tree_oid,
+      snapshot_tree_oid: self.current_omap.snapshot_tree_oid,
+      most_recent_snapshot_xid: self.current_omap.most_recent_snapshot_xid,
+    }
   }
 
   pub fn test_type(&self) -> u32 {

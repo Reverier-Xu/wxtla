@@ -1,6 +1,6 @@
 //! APFS driver open flow.
 
-use super::{DESCRIPTOR, container::ApfsContainer};
+use super::{container::ApfsContainer, DESCRIPTOR};
 use crate::{ByteSourceHandle, DataSource, Driver, OpenOptions, Result};
 
 /// Driver for Apple File System containers.

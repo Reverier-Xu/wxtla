@@ -4,14 +4,14 @@ use std::{fs::File, io::Read, sync::Arc};
 
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
-use support::{FileDataSource, fixture_path};
+use support::{fixture_path, FileDataSource};
 use wxtla::{
-  ByteSourceHandle, BytesDataSource, Credential, DataSource, DataViewSelector, OpenOptions,
   filesystems::{
-    ApfsSpecialFileKind, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceSource,
-    NamespaceStreamKind, apfs::ApfsDriver,
+    apfs::ApfsDriver, ApfsSpecialFileKind, NamespaceDirectoryEntry, NamespaceNodeId,
+    NamespaceSource, NamespaceStreamKind,
   },
   volumes::gpt::GptDriver,
+  ByteSourceHandle, BytesDataSource, Credential, DataSource, DataViewSelector, OpenOptions,
 };
 
 fn open_gzip_fixture(
@@ -112,6 +112,10 @@ fn apfs_enumerates_volume_metadata_from_gzip_fixtures() {
       expected_name,
       "fixture: {relative_path}"
     );
+    let volume_omap = opened.object_map().unwrap();
+    assert_eq!(volume_omap.flag_names(), Vec::<&str>::new());
+    assert_eq!(volume_omap.snapshot_count, 0);
+    assert_eq!(volume_omap.tree_type, 0x4000_0002);
     assert_eq!(
       container
         .open_volume_by_uuid(&info.uuid_string())
@@ -134,6 +138,27 @@ fn apfs_enumerates_volume_metadata_from_gzip_fixtures() {
       container.open_only_volume().unwrap().info().name(),
       expected_name
     );
+    assert_eq!(info.feature_names(), vec!["hardlink_map_records"]);
+    assert_eq!(
+      info.incompat_feature_names(),
+      if encrypted {
+        vec!["case_insensitive", "enc_rolled"]
+      } else {
+        vec![if case_insensitive {
+          "case_insensitive"
+        } else {
+          "normalization_insensitive"
+        }]
+      }
+    );
+    assert_eq!(
+      info.fs_flag_names(),
+      if encrypted {
+        vec!["onekey"]
+      } else {
+        vec!["unencrypted"]
+      }
+    );
   }
 }
 
@@ -148,6 +173,13 @@ fn apfs_prefers_latest_valid_checkpoint_superblock() {
   );
   assert!(!container.checkpoint_maps().is_empty());
   assert!(container.checkpoint_maps()[0].is_last());
+  assert_eq!(container.feature_names(), Vec::<&str>::new());
+  assert_eq!(container.incompat_feature_names(), vec!["version2"]);
+  assert_eq!(container.flag_names(), Vec::<&str>::new());
+  let omap = container.current_object_map();
+  assert_eq!(omap.flag_names(), vec!["manually_managed"]);
+  assert_eq!(omap.snapshot_count, 0);
+  assert_eq!(omap.tree_type, 0x4000_0002);
   assert_eq!(container.volumes().len(), 1);
 }
 
@@ -156,6 +188,7 @@ fn apfs_exposes_volume_tree_and_document_metadata() {
   let container = open_gzip_fixture("apfs/dissect.apfs/case_insensitive.bin.gz").unwrap();
   let info = &container.volumes()[0];
   let view = &container.views().unwrap()[0];
+  let omap = container.current_object_map();
 
   assert_eq!(info.root_tree_type(), 2);
   assert_eq!(info.extentref_tree_type(), 0x4000_0002);
@@ -176,6 +209,9 @@ fn apfs_exposes_volume_tree_and_document_metadata() {
   assert_eq!(info.doc_id_tree_oid(), 0);
   assert_eq!(info.previous_doc_id_tree_oid(), 0);
   assert_eq!(info.doc_id_fixup_cursor(), 0);
+  assert_eq!(omap.flag_names(), vec!["manually_managed"]);
+  assert_eq!(omap.tree_type, 0x4000_0002);
+  assert_eq!(omap.snapshot_tree_type, 0x4000_0002);
   assert_eq!(view.tag_value("root_tree_type"), Some("2"));
   assert_eq!(view.tag_value("doc_id_index_xid"), Some("4"));
 }
@@ -226,11 +262,9 @@ fn apfs_fixture_reads_regular_files_symlinks_and_streams() {
   assert!(root_entries.iter().any(|entry| entry.name == "dir"));
   assert!(root_entries.iter().any(|entry| entry.name == "empty"));
   assert!(root_entries.iter().any(|entry| entry.name == "hardlink"));
-  assert!(
-    root_entries
-      .iter()
-      .any(|entry| entry.name == "symlink-file")
-  );
+  assert!(root_entries
+    .iter()
+    .any(|entry| entry.name == "symlink-file"));
 
   let empty_entry = child_named(&file_system, &root_id, "empty").unwrap();
   assert_eq!(file_system.node(&empty_entry.node_id).unwrap().size, 0);
@@ -552,10 +586,8 @@ fn apfs_encrypted_dmg_opens_through_gpt_with_password() {
     .unwrap();
   let namespace = volume.namespace().unwrap();
 
-  assert!(
-    !namespace
-      .read_dir(&namespace.root_node_id())
-      .unwrap()
-      .is_empty()
-  );
+  assert!(!namespace
+    .read_dir(&namespace.root_node_id())
+    .unwrap()
+    .is_empty());
 }

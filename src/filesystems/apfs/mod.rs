@@ -11,7 +11,7 @@ mod ondisk;
 mod records;
 
 use container::probe_apfs_container;
-pub use container::{ApfsContainer, ApfsVolume, ApfsVolumeInfo};
+pub use container::{ApfsContainer, ApfsObjectMapInfo, ApfsVolume, ApfsVolumeInfo};
 pub use driver::ApfsDriver;
 pub use filesystem::{
   ApfsExtendedAttribute, ApfsNodeDetails, ApfsSnapshotInfo, ApfsSpecialFileKind,
@@ -22,7 +22,7 @@ pub use ondisk::{
   ApfsChangeInfo, ApfsCheckpointMap, ApfsCheckpointMapping, ApfsIntegrityMetadata,
   ApfsMetaCryptoState, ApfsPrange,
 };
-pub use records::{APFS_FILE_INFO_DATA_HASH, ApfsFileInfoRecord};
+pub use records::{ApfsFileInfoRecord, APFS_FILE_INFO_DATA_HASH};
 
 use crate::{
   FormatDescriptor, FormatKind, FormatProbe, ProbeConfidence, ProbeContext, ProbeMatch,
@@ -68,7 +68,7 @@ mod tests {
   use flate2::read::GzDecoder;
 
   use super::*;
-  use crate::{ByteSource, BytesDataSource, formats};
+  use crate::{formats, ByteSource, BytesDataSource};
 
   fn fixture_gzip_bytes(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

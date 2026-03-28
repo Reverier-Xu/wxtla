@@ -3,11 +3,10 @@
 use std::{cmp::Ordering, sync::Arc};
 
 use super::ondisk::{
-  ApfsBtreeInfo, ApfsBtreeNodeHeader, ApfsObjectHeader, BTNODE_FIXED_KV_SIZE, BTNODE_HASHED,
-  BTNODE_LEAF, BTNODE_NOHEADER, BTREE_HASHED, BTREE_INFO_SIZE, BTREE_NODE_HEADER_SIZE,
-  BTREE_NOHEADER, BTREE_PHYSICAL, OBJECT_HEADER_SIZE, OBJECT_TYPE_BTREE, OBJECT_TYPE_BTREE_NODE,
-  OBJECT_TYPE_FEXT_TREE, OBJECT_TYPE_MASK, OBJECT_TYPE_SNAP_META_TREE, read_slice, read_u16_le,
-  read_u64_le,
+  read_slice, read_u16_le, read_u64_le, ApfsBtreeInfo, ApfsBtreeNodeHeader, ApfsObjectHeader,
+  BTNODE_FIXED_KV_SIZE, BTNODE_HASHED, BTNODE_LEAF, BTNODE_NOHEADER, BTREE_HASHED, BTREE_INFO_SIZE,
+  BTREE_NODE_HEADER_SIZE, BTREE_NOHEADER, BTREE_PHYSICAL, OBJECT_HEADER_SIZE, OBJECT_TYPE_BTREE,
+  OBJECT_TYPE_BTREE_NODE, OBJECT_TYPE_FEXT_TREE, OBJECT_TYPE_MASK, OBJECT_TYPE_SNAP_META_TREE,
 };
 use crate::{ByteSourceHandle, Error, Result};
 
@@ -102,7 +101,8 @@ impl ApfsBTree {
 
   pub(crate) fn search_floor<F>(&self, compare: F) -> Result<(Vec<u8>, Vec<u8>)>
   where
-    F: Fn(&[u8]) -> Ordering, {
+    F: Fn(&[u8]) -> Ordering,
+  {
     let record = self.search_floor_at(self.root_address, &compare)?;
     record.ok_or_else(|| Error::NotFound("apfs btree record was not found".to_string()))
   }
@@ -115,7 +115,8 @@ impl ApfsBTree {
 
   fn search_floor_at<F>(&self, address: u64, compare: &F) -> Result<Option<(Vec<u8>, Vec<u8>)>>
   where
-    F: Fn(&[u8]) -> Ordering, {
+    F: Fn(&[u8]) -> Ordering,
+  {
     let node = self.node(address)?;
     let Some(index) = node.floor_index(compare)? else {
       return Ok(None);
@@ -345,7 +346,8 @@ impl ApfsBTreeNode {
 
   fn floor_index<F>(&self, compare: &F) -> Result<Option<usize>>
   where
-    F: Fn(&[u8]) -> Ordering, {
+    F: Fn(&[u8]) -> Ordering,
+  {
     let key_count = self.key_count();
     if key_count == 0 {
       return Ok(None);
