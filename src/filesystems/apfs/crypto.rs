@@ -1,5 +1,7 @@
 //! APFS encryption helpers.
 
+use std::sync::Arc;
+
 use aes::{
   Aes128, Aes256,
   cipher::{
@@ -24,8 +26,6 @@ type HmacSha256 = Hmac<Sha256>;
 pub(crate) struct ApfsXtsCipher {
   key: Arc<[u8]>,
 }
-
-use std::sync::Arc;
 
 impl ApfsXtsCipher {
   pub(crate) fn new(key: impl Into<Arc<[u8]>>) -> Result<Self> {

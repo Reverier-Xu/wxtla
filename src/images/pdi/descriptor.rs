@@ -1,7 +1,6 @@
 //! PDI descriptor parsing.
 
-use quick_xml::de::from_str;
-use serde::Deserialize;
+use roxmltree::{Document, Node};
 
 use crate::{Error, Result};
 
@@ -46,60 +45,79 @@ pub struct PdiDescriptor {
 
 impl PdiDescriptor {
   pub fn from_xml(text: &str) -> Result<Self> {
-    let raw: RawPdiDescriptor = from_str(text).map_err(|error| {
+    let document = Document::parse(text).map_err(|error| {
       Error::InvalidFormat(format!("unable to parse pdi descriptor XML: {error}"))
     })?;
-    if raw.version.trim() != "1.0" {
+    let root = document.root_element();
+    if root.tag_name().name() != "Parallels_disk_image" {
+      return Err(Error::InvalidFormat(
+        "pdi descriptor root element must be Parallels_disk_image".to_string(),
+      ));
+    }
+
+    let version = root.attribute("Version").map(str::trim).ok_or_else(|| {
+      Error::InvalidFormat("pdi descriptor is missing the Version attribute".to_string())
+    })?;
+    if version != "1.0" {
       return Err(Error::InvalidFormat(format!(
         "unsupported pdi descriptor version: {}",
-        raw.version.trim()
+        version
       )));
     }
 
-    let logical_sector_size = raw.disk_parameters.logical_sector_size.unwrap_or(512);
+    let disk_parameters = child_element(root, "Disk_Parameters")?;
+    let logical_sector_size =
+      optional_child_number(disk_parameters, "LogicSectorSize")?.unwrap_or(512);
     if logical_sector_size == 0 {
       return Err(Error::InvalidFormat(
         "pdi logical sector size must be non-zero".to_string(),
       ));
     }
-    let physical_sector_size = raw.disk_parameters.physical_sector_size.unwrap_or(4096);
+    let physical_sector_size =
+      optional_child_number(disk_parameters, "PhysicalSectorSize")?.unwrap_or(4096);
     if physical_sector_size == 0 {
       return Err(Error::InvalidFormat(
         "pdi physical sector size must be non-zero".to_string(),
       ));
     }
 
-    let disk_size_sectors = raw.disk_parameters.disk_size;
+    let disk_size_sectors = child_number(disk_parameters, "Disk_size")?;
     if disk_size_sectors == 0 {
       return Err(Error::InvalidFormat(
         "pdi disk size must be non-zero".to_string(),
       ));
     }
 
-    let mut extents = Vec::with_capacity(raw.storage_data.storages.len());
-    for storage in raw.storage_data.storages {
-      if storage.start >= storage.end {
+    let storage_data = child_element(root, "StorageData")?;
+    let storages = child_elements(storage_data, "Storage");
+    let mut extents = Vec::with_capacity(storages.len());
+    for storage in storages {
+      let start_sector = child_number(storage, "Start")?;
+      let end_sector = child_number(storage, "End")?;
+      let block_size_sectors = child_number(storage, "Blocksize")?;
+      if start_sector >= end_sector {
         return Err(Error::InvalidFormat(format!(
           "pdi storage start sector {} must be smaller than end sector {}",
-          storage.start, storage.end
+          start_sector, end_sector
         )));
       }
-      if storage.block_size == 0 {
+      if block_size_sectors == 0 {
         return Err(Error::InvalidFormat(
           "pdi storage block size must be non-zero".to_string(),
         ));
       }
 
-      let mut images = Vec::with_capacity(storage.images.len());
-      for image in storage.images {
-        let file_name = image.file.trim();
+      let image_nodes = child_elements(storage, "Image");
+      let mut images = Vec::with_capacity(image_nodes.len());
+      for image in image_nodes {
+        let file_name = child_text(image, "File")?;
         if file_name.is_empty() {
           return Err(Error::InvalidFormat(
             "pdi storage image file name must not be empty".to_string(),
           ));
         }
-        let snapshot_identifier = normalize_guid(&image.guid)?;
-        let image_type = match image.image_type.trim() {
+        let snapshot_identifier = normalize_guid(child_text(image, "GUID")?)?;
+        let image_type = match child_text(image, "Type")? {
           "Compressed" => PdiDescriptorImageType::Compressed,
           "Plain" => PdiDescriptorImageType::Plain,
           other => {
@@ -122,9 +140,9 @@ impl PdiDescriptor {
       }
 
       extents.push(PdiStorageExtent {
-        start_sector: storage.start,
-        end_sector: storage.end,
-        block_size_sectors: storage.block_size,
+        start_sector,
+        end_sector,
+        block_size_sectors,
         images,
       });
     }
@@ -134,10 +152,12 @@ impl PdiDescriptor {
       ));
     }
 
-    let mut snapshots = Vec::with_capacity(raw.snapshots.shots.len());
-    for shot in raw.snapshots.shots {
-      let identifier = normalize_guid(&shot.guid)?;
-      let parent_identifier = match normalize_guid(&shot.parent_guid)? {
+    let snapshots_node = child_element(root, "Snapshots")?;
+    let shot_nodes = child_elements(snapshots_node, "Shot");
+    let mut snapshots = Vec::with_capacity(shot_nodes.len());
+    for shot in shot_nodes {
+      let identifier = normalize_guid(child_text(shot, "GUID")?)?;
+      let parent_identifier = match normalize_guid(child_text(shot, "ParentGUID")?)? {
         guid if guid == NIL_GUID => None,
         guid => Some(guid),
       };
@@ -162,6 +182,57 @@ impl PdiDescriptor {
       .checked_mul(FIXED_SECTOR_SIZE)
       .ok_or_else(|| Error::InvalidRange("pdi media size overflow".to_string()))
   }
+}
+
+fn child_element<'a, 'input>(parent: Node<'a, 'input>, name: &str) -> Result<Node<'a, 'input>> {
+  parent
+    .children()
+    .find(|child| child.is_element() && child.tag_name().name() == name)
+    .ok_or_else(|| Error::InvalidFormat(format!("pdi descriptor is missing {name}")))
+}
+
+fn child_elements<'a, 'input>(parent: Node<'a, 'input>, name: &str) -> Vec<Node<'a, 'input>> {
+  parent
+    .children()
+    .filter(|child| child.is_element() && child.tag_name().name() == name)
+    .collect()
+}
+
+fn child_text<'a, 'input>(parent: Node<'a, 'input>, name: &str) -> Result<&'a str> {
+  let child = child_element(parent, name)?;
+  child
+    .text()
+    .map(str::trim)
+    .ok_or_else(|| Error::InvalidFormat(format!("pdi descriptor {name} is missing text")))
+}
+
+fn child_number<T>(parent: Node<'_, '_>, name: &str) -> Result<T>
+where
+  T: std::str::FromStr,
+  T::Err: std::fmt::Display, {
+  child_text(parent, name)?
+    .parse::<T>()
+    .map_err(|error| Error::InvalidFormat(format!("invalid pdi descriptor {name} value: {error}")))
+}
+
+fn optional_child_number<T>(parent: Node<'_, '_>, name: &str) -> Result<Option<T>>
+where
+  T: std::str::FromStr,
+  T::Err: std::fmt::Display, {
+  let Some(child) = parent
+    .children()
+    .find(|child| child.is_element() && child.tag_name().name() == name)
+  else {
+    return Ok(None);
+  };
+  let text = child
+    .text()
+    .map(str::trim)
+    .ok_or_else(|| Error::InvalidFormat(format!("pdi descriptor {name} is missing text")))?;
+  text
+    .parse::<T>()
+    .map(Some)
+    .map_err(|error| Error::InvalidFormat(format!("invalid pdi descriptor {name} value: {error}")))
 }
 
 fn normalize_guid(value: &str) -> Result<String> {
@@ -202,71 +273,6 @@ fn normalize_guid(value: &str) -> Result<String> {
     return Err(Error::InvalidFormat(format!("invalid pdi guid: {value}")));
   }
   Ok(value)
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename = "Parallels_disk_image")]
-struct RawPdiDescriptor {
-  #[serde(rename = "@Version")]
-  version: String,
-  #[serde(rename = "Disk_Parameters")]
-  disk_parameters: RawDiskParameters,
-  #[serde(rename = "StorageData")]
-  storage_data: RawStorageData,
-  #[serde(rename = "Snapshots")]
-  snapshots: RawSnapshots,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawDiskParameters {
-  #[serde(rename = "Disk_size")]
-  disk_size: u64,
-  #[serde(rename = "LogicSectorSize")]
-  logical_sector_size: Option<u32>,
-  #[serde(rename = "PhysicalSectorSize")]
-  physical_sector_size: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawStorageData {
-  #[serde(rename = "Storage")]
-  storages: Vec<RawStorage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawStorage {
-  #[serde(rename = "Start")]
-  start: u64,
-  #[serde(rename = "End")]
-  end: u64,
-  #[serde(rename = "Blocksize")]
-  block_size: u32,
-  #[serde(rename = "Image")]
-  images: Vec<RawImage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawImage {
-  #[serde(rename = "GUID")]
-  guid: String,
-  #[serde(rename = "Type")]
-  image_type: String,
-  #[serde(rename = "File")]
-  file: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawSnapshots {
-  #[serde(rename = "Shot")]
-  shots: Vec<RawSnapshot>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawSnapshot {
-  #[serde(rename = "GUID")]
-  guid: String,
-  #[serde(rename = "ParentGUID")]
-  parent_guid: String,
 }
 
 #[cfg(test)]
