@@ -110,7 +110,7 @@ impl<'a> SplitSegmentSequence<'a> {
           value /= 26;
         }
         if value != 0 {
-          return Err(crate::Error::InvalidSourceReference(
+          return Err(crate::Error::invalid_source_reference(
             "split raw alphabetic segment index exceeds the supported width".to_string(),
           ));
         }

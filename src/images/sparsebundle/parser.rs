@@ -13,22 +13,22 @@ pub(super) struct ParsedSparseBundle {
 
 pub(super) fn parse_info_plist(data: &[u8]) -> Result<ParsedSparseBundle> {
   let plist = Value::from_reader_xml(Cursor::new(data)).map_err(|error| {
-    Error::InvalidFormat(format!("unable to parse sparsebundle plist: {error}"))
+    Error::invalid_format(format!("unable to parse sparsebundle plist: {error}"))
   })?;
-  let root = plist.as_dictionary().ok_or_else(|| {
-    Error::InvalidFormat("sparsebundle plist root must be a dictionary".to_string())
-  })?;
+  let root = plist
+    .as_dictionary()
+    .ok_or_else(|| Error::invalid_format("sparsebundle plist root must be a dictionary"))?;
 
   let info_version = root
     .get("CFBundleInfoDictionaryVersion")
     .and_then(Value::as_string)
     .ok_or_else(|| {
-      Error::InvalidFormat(
+      Error::invalid_format(
         "sparsebundle plist is missing CFBundleInfoDictionaryVersion".to_string(),
       )
     })?;
   if info_version != "6.0" {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported sparsebundle plist dictionary version: {info_version}"
     )));
   }
@@ -36,41 +36,40 @@ pub(super) fn parse_info_plist(data: &[u8]) -> Result<ParsedSparseBundle> {
   let bundle_type = root
     .get("diskimage-bundle-type")
     .and_then(Value::as_string)
-    .ok_or_else(|| {
-      Error::InvalidFormat("sparsebundle plist is missing diskimage-bundle-type".to_string())
-    })?;
+    .ok_or_else(|| Error::invalid_format("sparsebundle plist is missing diskimage-bundle-type"))?;
   if bundle_type != "com.apple.diskimage.sparsebundle" {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported sparsebundle bundle type: {bundle_type}"
     )));
   }
 
   let backingstore_version =
     integer_value(root.get("bundle-backingstore-version").ok_or_else(|| {
-      Error::InvalidFormat("sparsebundle plist is missing bundle-backingstore-version".to_string())
+      Error::invalid_format("sparsebundle plist is missing bundle-backingstore-version")
     })?)?;
   if backingstore_version != 1 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported sparsebundle backingstore version: {backingstore_version}"
     )));
   }
 
-  let band_size =
-    integer_value(root.get("band-size").ok_or_else(|| {
-      Error::InvalidFormat("sparsebundle plist is missing band-size".to_string())
-    })?)?;
+  let band_size = integer_value(
+    root
+      .get("band-size")
+      .ok_or_else(|| Error::invalid_format("sparsebundle plist is missing band-size"))?,
+  )?;
   if band_size == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "sparsebundle band size must be non-zero".to_string(),
     ));
   }
   let media_size = integer_value(
     root
       .get("size")
-      .ok_or_else(|| Error::InvalidFormat("sparsebundle plist is missing size".to_string()))?,
+      .ok_or_else(|| Error::invalid_format("sparsebundle plist is missing size"))?,
   )?;
   if media_size == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "sparsebundle media size must be non-zero".to_string(),
     ));
   }
@@ -83,15 +82,14 @@ pub(super) fn parse_info_plist(data: &[u8]) -> Result<ParsedSparseBundle> {
 
 fn integer_value(value: &Value) -> Result<u64> {
   if let Some(integer) = value.as_signed_integer() {
-    return u64::try_from(integer).map_err(|_| {
-      Error::InvalidFormat("sparsebundle integer value must be non-negative".to_string())
-    });
+    return u64::try_from(integer)
+      .map_err(|_| Error::invalid_format("sparsebundle integer value must be non-negative"));
   }
   if let Some(integer) = value.as_unsigned_integer() {
     return Ok(integer);
   }
 
-  Err(Error::InvalidFormat(
+  Err(Error::invalid_format(
     "sparsebundle plist integer value is invalid".to_string(),
   ))
 }

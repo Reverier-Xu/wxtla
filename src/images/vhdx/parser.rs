@@ -63,7 +63,7 @@ pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedVhdx> {
   validate_region_bounds(source_size, bat_region, "BAT")?;
 
   let metadata_region_size = usize::try_from(metadata_region.length)
-    .map_err(|_| Error::InvalidRange("vhdx metadata region length is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("vhdx metadata region length is too large"))?;
   let metadata_bytes = source.read_bytes_at(metadata_region.file_offset, metadata_region_size)?;
   let metadata = VhdxMetadata::from_region(&metadata_bytes)?;
   let payload_block_count = metadata
@@ -108,27 +108,27 @@ pub(super) fn payload_bat_index(
       chunk_index
         .checked_mul(entries_per_chunk + 1)
         .and_then(|value| value.checked_add(within_chunk))
-        .ok_or_else(|| Error::InvalidRange("vhdx BAT payload index overflow".to_string()))?
+        .ok_or_else(|| Error::invalid_range("vhdx BAT payload index overflow"))?
     }
   };
 
   usize::try_from(raw_index)
-    .map_err(|_| Error::InvalidRange("vhdx BAT payload index is too large".to_string()))
+    .map_err(|_| Error::invalid_range("vhdx BAT payload index is too large"))
 }
 
 pub(super) fn sector_bitmap_bat_index(chunk_index: u64, entries_per_chunk: u64) -> Result<usize> {
   let raw_index = (chunk_index + 1)
     .checked_mul(entries_per_chunk + 1)
     .and_then(|value| value.checked_sub(1))
-    .ok_or_else(|| Error::InvalidRange("vhdx BAT sector bitmap index overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhdx BAT sector bitmap index overflow"))?;
   usize::try_from(raw_index)
-    .map_err(|_| Error::InvalidRange("vhdx BAT sector bitmap index is too large".to_string()))
+    .map_err(|_| Error::invalid_range("vhdx BAT sector bitmap index is too large"))
 }
 
 pub(super) fn bat_file_offset(entry: u64) -> Result<u64> {
   let reserved = (entry >> 3) & 0x1_FFFF;
   if reserved != 0 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "vhdx BAT entry reserved bits are not zero: 0x{entry:016x}"
     )));
   }
@@ -136,7 +136,7 @@ pub(super) fn bat_file_offset(entry: u64) -> Result<u64> {
   let offset_units = entry >> 20;
   offset_units
     .checked_mul(constants::VHDX_ALIGNMENT)
-    .ok_or_else(|| Error::InvalidRange("vhdx BAT file offset overflow".to_string()))
+    .ok_or_else(|| Error::invalid_range("vhdx BAT file offset overflow"))
 }
 
 pub(super) fn payload_block_state(entry: u64) -> Result<VhdxPayloadBlockState> {
@@ -148,7 +148,7 @@ pub(super) fn payload_block_state(entry: u64) -> Result<VhdxPayloadBlockState> {
     5 => Ok(VhdxPayloadBlockState::Unmapped),
     6 => Ok(VhdxPayloadBlockState::FullyPresent),
     7 => Ok(VhdxPayloadBlockState::PartiallyPresent),
-    state => Err(Error::InvalidFormat(format!(
+    state => Err(Error::invalid_format(format!(
       "unsupported vhdx payload BAT state: {state}"
     ))),
   }
@@ -158,7 +158,7 @@ pub(super) fn sector_bitmap_state(entry: u64) -> Result<VhdxSectorBitmapState> {
   match entry & 0x7 {
     0 => Ok(VhdxSectorBitmapState::NotPresent),
     6 => Ok(VhdxSectorBitmapState::Present),
-    state => Err(Error::InvalidFormat(format!(
+    state => Err(Error::invalid_format(format!(
       "unsupported vhdx sector bitmap BAT state: {state}"
     ))),
   }
@@ -176,7 +176,7 @@ fn read_active_image_header(source: &dyn ByteSource) -> Result<(VhdxImageHeader,
     }),
     (Ok(header), Err(_)) => Ok((header, constants::PRIMARY_IMAGE_HEADER_OFFSET)),
     (Err(_), Ok(header)) => Ok((header, constants::SECONDARY_IMAGE_HEADER_OFFSET)),
-    (Err(_), Err(_)) => Err(Error::InvalidFormat(
+    (Err(_), Err(_)) => Err(Error::invalid_format(
       "no valid vhdx image header copy was found".to_string(),
     )),
   }
@@ -191,7 +191,7 @@ fn read_region_table_pair(source: &dyn ByteSource) -> Result<VhdxRegionTable> {
       validate_known_required_regions(&left)?;
       validate_known_required_regions(&right)?;
       if left.entries() != right.entries() {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "primary and secondary vhdx region tables differ".to_string(),
         ));
       }
@@ -201,7 +201,7 @@ fn read_region_table_pair(source: &dyn ByteSource) -> Result<VhdxRegionTable> {
       validate_known_required_regions(&table)?;
       Ok(table)
     }
-    (Err(_), Err(_)) => Err(Error::InvalidFormat(
+    (Err(_), Err(_)) => Err(Error::invalid_format(
       "no valid vhdx region table copy was found".to_string(),
     )),
   }
@@ -214,7 +214,7 @@ fn validate_known_required_regions(table: &VhdxRegionTable) -> Result<()> {
       constants::BAT_REGION_GUID | constants::METADATA_REGION_GUID
     );
     if entry.is_required && !is_known {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported required vhdx region: {}",
         entry.type_identifier
       )));
@@ -222,10 +222,10 @@ fn validate_known_required_regions(table: &VhdxRegionTable) -> Result<()> {
   }
 
   if table.entry(constants::BAT_REGION_GUID).is_none() {
-    return Err(Error::InvalidFormat("missing vhdx BAT region".to_string()));
+    return Err(Error::invalid_format("missing vhdx BAT region"));
   }
   if table.entry(constants::METADATA_REGION_GUID).is_none() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "missing vhdx metadata region".to_string(),
     ));
   }
@@ -236,9 +236,9 @@ fn validate_known_required_regions(table: &VhdxRegionTable) -> Result<()> {
 fn require_known_region(
   table: &VhdxRegionTable, type_identifier: super::guid::VhdxGuid,
 ) -> Result<&VhdxRegionTableEntry> {
-  table
-    .entry(type_identifier)
-    .ok_or_else(|| Error::InvalidFormat(format!("missing required vhdx region: {type_identifier}")))
+  table.entry(type_identifier).ok_or_else(|| {
+    Error::invalid_format(format!("missing required vhdx region: {type_identifier}"))
+  })
 }
 
 fn validate_region_bounds(
@@ -247,9 +247,9 @@ fn validate_region_bounds(
   let end = region
     .file_offset
     .checked_add(u64::from(region.length))
-    .ok_or_else(|| Error::InvalidRange(format!("vhdx {label} region end overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("vhdx {label} region end overflow")))?;
   if end > source_size {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "vhdx {label} region exceeds the source size"
     )));
   }
@@ -259,11 +259,11 @@ fn validate_region_bounds(
 fn compute_entries_per_chunk(metadata: &VhdxMetadata) -> Result<u64> {
   let numerator = constants::SECTORS_PER_BITMAP_BLOCK
     .checked_mul(u64::from(metadata.logical_sector_size))
-    .ok_or_else(|| Error::InvalidRange("vhdx entries-per-chunk overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhdx entries-per-chunk overflow"))?;
   let denominator = u64::from(metadata.block_size);
   let entries_per_chunk = numerator / denominator;
   if entries_per_chunk == 0 || !numerator.is_multiple_of(denominator) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhdx block geometry does not produce integral chunk entries".to_string(),
     ));
   }
@@ -272,7 +272,7 @@ fn compute_entries_per_chunk(metadata: &VhdxMetadata) -> Result<u64> {
 
 fn compute_sector_bitmap_size(entries_per_chunk: u64) -> Result<u64> {
   if !constants::SECTOR_BITMAP_BLOCK_SIZE.is_multiple_of(entries_per_chunk) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhdx sector bitmap size is not integral".to_string(),
     ));
   }
@@ -288,21 +288,20 @@ fn compute_bat_entry_count(
       let chunk_count = payload_block_count.div_ceil(entries_per_chunk);
       chunk_count
         .checked_mul(entries_per_chunk + 1)
-        .ok_or_else(|| Error::InvalidRange("vhdx BAT entry count overflow".to_string()))?
+        .ok_or_else(|| Error::invalid_range("vhdx BAT entry count overflow"))?
     }
   };
 
-  usize::try_from(raw_count)
-    .map_err(|_| Error::InvalidRange("vhdx BAT entry count is too large".to_string()))
+  usize::try_from(raw_count).map_err(|_| Error::invalid_range("vhdx BAT entry count is too large"))
 }
 
 fn read_bat_layout(bat_region: &VhdxRegionTableEntry, layout: &BatLayout) -> Result<VhdxBatLayout> {
   let table_bytes = layout
     .entry_count
     .checked_mul(8)
-    .ok_or_else(|| Error::InvalidRange("vhdx BAT byte length overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhdx BAT byte length overflow"))?;
   if u64::from(bat_region.length) < u64::try_from(table_bytes).unwrap_or(u64::MAX) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhdx BAT region is too small for the expected entry count".to_string(),
     ));
   }
@@ -328,14 +327,14 @@ fn validate_bat_entries(
     if matches!(metadata.disk_type, VhdxDiskType::Fixed)
       && !matches!(state, VhdxPayloadBlockState::FullyPresent)
     {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fixed vhdx images must map every payload block in-file".to_string(),
       ));
     }
     if matches!(metadata.disk_type, VhdxDiskType::Dynamic)
       && matches!(state, VhdxPayloadBlockState::PartiallyPresent)
     {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "dynamic vhdx images cannot contain partially-present payload blocks".to_string(),
       ));
     }
@@ -344,15 +343,15 @@ fn validate_bat_entries(
     match state {
       VhdxPayloadBlockState::FullyPresent | VhdxPayloadBlockState::PartiallyPresent => {
         if file_offset < constants::VHDX_ALIGNMENT {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "vhdx BAT payload block offset is below the minimum alignment".to_string(),
           ));
         }
         let end = file_offset
           .checked_add(u64::from(metadata.block_size))
-          .ok_or_else(|| Error::InvalidRange("vhdx payload block end overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("vhdx payload block end overflow"))?;
         if end > source_size {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "vhdx BAT payload block exceeds the source size".to_string(),
           ));
         }
@@ -365,7 +364,7 @@ fn validate_bat_entries(
       | VhdxPayloadBlockState::Zero
       | VhdxPayloadBlockState::Unmapped => {
         if file_offset != 0 {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "vhdx sparse BAT entries must not carry a file offset".to_string(),
           ));
         }
@@ -389,34 +388,34 @@ fn validate_bat_entries(
     let state = sector_bitmap_state(entry)?;
     if chunks_with_partial_blocks.contains(&chunk_index) && state != VhdxSectorBitmapState::Present
     {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx partially-present payload blocks require a sector bitmap".to_string(),
       ));
     }
     if matches!(metadata.disk_type, VhdxDiskType::Dynamic)
       && state == VhdxSectorBitmapState::Present
     {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "dynamic vhdx images must not allocate sector bitmap blocks".to_string(),
       ));
     }
     if matches!(state, VhdxSectorBitmapState::Present) {
       let file_offset = bat_file_offset(entry)?;
       if file_offset < constants::VHDX_ALIGNMENT {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "vhdx sector bitmap offset is below the minimum alignment".to_string(),
         ));
       }
       let end = file_offset
         .checked_add(constants::SECTOR_BITMAP_BLOCK_SIZE)
-        .ok_or_else(|| Error::InvalidRange("vhdx sector bitmap end overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vhdx sector bitmap end overflow"))?;
       if end > source_size {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "vhdx sector bitmap block exceeds the source size".to_string(),
         ));
       }
       if layout.sector_bitmap_size == 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "vhdx sector bitmap slices must be non-zero".to_string(),
         ));
       }
@@ -430,7 +429,7 @@ pub(super) fn read_bat_entry(
   source: &dyn ByteSource, bat: &VhdxBatLayout, index: usize,
 ) -> Result<u64> {
   if index >= bat.entry_count {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "vhdx BAT entry {index} is out of bounds"
     )));
   }
@@ -438,11 +437,11 @@ pub(super) fn read_bat_entry(
     .file_offset
     .checked_add(
       u64::try_from(index)
-        .map_err(|_| Error::InvalidRange("vhdx BAT entry index is too large".to_string()))?
+        .map_err(|_| Error::invalid_range("vhdx BAT entry index is too large"))?
         .checked_mul(8)
-        .ok_or_else(|| Error::InvalidRange("vhdx BAT entry offset overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("vhdx BAT entry offset overflow"))?,
     )
-    .ok_or_else(|| Error::InvalidRange("vhdx BAT entry offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhdx BAT entry offset overflow"))?;
   let mut data = [0u8; 8];
   source.read_exact_at(entry_offset, &mut data)?;
 

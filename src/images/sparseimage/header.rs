@@ -27,25 +27,25 @@ impl SparseImageHeader {
 
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() < HEADER_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "sparseimage header block is too small".to_string(),
       ));
     }
     if &data[0..4] != HEADER_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "sparseimage header signature is missing".to_string(),
       ));
     }
 
     let sectors_per_band = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
     if sectors_per_band == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "sparseimage sectors per band must be non-zero".to_string(),
       ));
     }
     let sector_count = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
     if sector_count == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "sparseimage sector count must be non-zero".to_string(),
       ));
     }
@@ -60,13 +60,13 @@ impl SparseImageHeader {
   pub fn band_size(self) -> Result<u64> {
     u64::from(self.sectors_per_band)
       .checked_mul(SECTOR_SIZE)
-      .ok_or_else(|| Error::InvalidRange("sparseimage band size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("sparseimage band size overflow"))
   }
 
   pub fn media_size(self) -> Result<u64> {
     u64::from(self.sector_count)
       .checked_mul(SECTOR_SIZE)
-      .ok_or_else(|| Error::InvalidRange("sparseimage media size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("sparseimage media size overflow"))
   }
 
   pub fn band_count(self) -> u32 {

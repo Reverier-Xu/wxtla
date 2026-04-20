@@ -47,7 +47,7 @@ pub trait DataSource: Send + Sync {
   fn open_view(
     &self, _selector: &DataViewSelector<'_>, _options: OpenOptions<'_>,
   ) -> Result<Box<dyn DataSource>> {
-    Err(Error::Unsupported(format!(
+    Err(Error::unsupported(format!(
       "{} does not expose child views",
       self.descriptor().id
     )))
@@ -55,7 +55,7 @@ pub trait DataSource: Send + Sync {
 
   /// Reopen this data source with different credentials or verification policy.
   fn reopen(&self, _options: OpenOptions<'_>) -> Result<Box<dyn DataSource>> {
-    Err(Error::Unsupported(format!(
+    Err(Error::unsupported(format!(
       "{} does not support reopening with different options",
       self.descriptor().id
     )))

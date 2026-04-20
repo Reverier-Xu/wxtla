@@ -34,7 +34,7 @@ impl VhdFooter {
   pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let size = source.size()?;
     if size < FOOTER_SIZE as u64 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhd source is smaller than a footer".to_string(),
       ));
     }
@@ -44,18 +44,18 @@ impl VhdFooter {
 
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() != FOOTER_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhd footer must be {FOOTER_SIZE} bytes, got {}",
         data.len()
       )));
     }
     if &data[0..8] != FOOTER_COOKIE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhd footer signature is missing".to_string(),
       ));
     }
     if read_u32_be(data, 12)? != VHD_FORMAT_VERSION {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unsupported vhd format version".to_string(),
       ));
     }
@@ -65,7 +65,7 @@ impl VhdFooter {
     checksum_input[64..68].fill(0);
     let calculated_checksum = ones_complement_checksum(&checksum_input);
     if stored_checksum != calculated_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhd footer checksum mismatch: stored 0x{stored_checksum:08x}, calculated 0x{calculated_checksum:08x}"
       )));
     }
@@ -79,7 +79,7 @@ impl VhdFooter {
         DISK_TYPE_DYNAMIC => VhdDiskType::Dynamic,
         DISK_TYPE_DIFFERENTIAL => VhdDiskType::Differential,
         other => {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "unsupported vhd disk type: {other}"
           )));
         }
@@ -88,10 +88,10 @@ impl VhdFooter {
         cylinders: read_u16_be(data, 56)?,
         heads: *data
           .get(58)
-          .ok_or_else(|| Error::InvalidFormat("vhd geometry is truncated".to_string()))?,
+          .ok_or_else(|| Error::invalid_format("vhd geometry is truncated"))?,
         sectors_per_track: *data
           .get(59)
-          .ok_or_else(|| Error::InvalidFormat("vhd geometry is truncated".to_string()))?,
+          .ok_or_else(|| Error::invalid_format("vhd geometry is truncated"))?,
       },
       identifier: copy_array::<16>(&data[68..84])?,
     })
@@ -116,29 +116,29 @@ fn ones_complement_checksum(data: &[u8]) -> u32 {
 fn read_u16_be(data: &[u8], offset: usize) -> Result<u16> {
   let bytes = data
     .get(offset..offset + 2)
-    .ok_or_else(|| Error::InvalidFormat(format!("vhd field at offset {offset} is truncated")))?;
+    .ok_or_else(|| Error::invalid_format(format!("vhd field at offset {offset} is truncated")))?;
   Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
 }
 
 fn read_u32_be(data: &[u8], offset: usize) -> Result<u32> {
   let bytes = data
     .get(offset..offset + 4)
-    .ok_or_else(|| Error::InvalidFormat(format!("vhd field at offset {offset} is truncated")))?;
+    .ok_or_else(|| Error::invalid_format(format!("vhd field at offset {offset} is truncated")))?;
   Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn read_u64_be(data: &[u8], offset: usize) -> Result<u64> {
   let bytes = data
     .get(offset..offset + 8)
-    .ok_or_else(|| Error::InvalidFormat(format!("vhd field at offset {offset} is truncated")))?;
+    .ok_or_else(|| Error::invalid_format(format!("vhd field at offset {offset} is truncated")))?;
   Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| {
-    Error::InvalidFormat(format!("vhd field at offset {offset} is truncated"))
+    Error::invalid_format(format!("vhd field at offset {offset} is truncated"))
   })?))
 }
 
 fn copy_array<const N: usize>(data: &[u8]) -> Result<[u8; N]> {
   data.try_into().map_err(|_| {
-    Error::InvalidFormat(format!(
+    Error::invalid_format(format!(
       "vhd fixed-size array conversion failed: expected {N} bytes, got {}",
       data.len()
     ))

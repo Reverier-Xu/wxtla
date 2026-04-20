@@ -36,7 +36,7 @@ pub trait ByteSource: Send + Sync {
     while total_read < buf.len() {
       let chunk_offset = offset
         .checked_add(total_read as u64)
-        .ok_or_else(|| Error::InvalidRange("data source offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("data source offset overflow"))?;
       let read = self.read_at(chunk_offset, &mut buf[total_read..])?;
       if read == 0 {
         return Err(Error::UnexpectedEof {
@@ -59,9 +59,8 @@ pub trait ByteSource: Send + Sync {
 
   /// Materialize the full source into memory.
   fn read_all(&self) -> Result<Vec<u8>> {
-    let size = usize::try_from(self.size()?).map_err(|_| {
-      Error::InvalidRange("data source is too large to read into memory".to_string())
-    })?;
+    let size = usize::try_from(self.size()?)
+      .map_err(|_| Error::invalid_range("data source is too large to read into memory"))?;
     let mut buf = vec![0u8; size];
     let mut offset = 0usize;
     while offset < size {
@@ -444,7 +443,7 @@ impl ByteSource for SliceDataSource {
     let absolute_offset = self
       .base_offset
       .checked_add(offset)
-      .ok_or_else(|| Error::InvalidRange("slice data source offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("slice data source offset overflow"))?;
     self.inner.read_at(absolute_offset, &mut buf[..available])
   }
 
@@ -524,7 +523,7 @@ impl ByteSource for ProbeCachedDataSource<'_> {
     while written < buf.len() {
       let absolute = offset
         .checked_add(written as u64)
-        .ok_or_else(|| Error::InvalidRange("probe cache offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("probe cache offset overflow"))?;
       let window_offset =
         (absolute / PROBE_CACHE_WINDOW_SIZE as u64) * PROBE_CACHE_WINDOW_SIZE as u64;
       let window = self.read_window(window_offset)?;

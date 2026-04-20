@@ -94,7 +94,7 @@ mod tests {
       let offset = offset as usize;
       let end = offset.saturating_add(buf.len());
       if offset < self.forbidden_end && self.forbidden_start < end {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "unexpected read of guarded GPT entry array".to_string(),
         ));
       }

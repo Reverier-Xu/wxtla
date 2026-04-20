@@ -51,14 +51,14 @@ impl VhdxImageHeader {
 
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != constants::IMAGE_HEADER_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx image header must be {} bytes, got {}",
         constants::IMAGE_HEADER_SIZE,
         data.len()
       )));
     }
     if &data[0..4] != constants::IMAGE_HEADER_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid vhdx image header signature".to_string(),
       ));
     }
@@ -66,13 +66,13 @@ impl VhdxImageHeader {
 
     let format_version = u16::from_le_bytes([data[66], data[67]]);
     if format_version != 1 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported vhdx format version: {format_version}"
       )));
     }
     let log_length = u32::from_le_bytes([data[68], data[69], data[70], data[71]]);
     if log_length == 0 || !u64::from(log_length).is_multiple_of(constants::VHDX_ALIGNMENT) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid vhdx log length: {log_length}"
       )));
     }
@@ -82,12 +82,12 @@ impl VhdxImageHeader {
     if log_offset < constants::VHDX_ALIGNMENT
       || !log_offset.is_multiple_of(constants::VHDX_ALIGNMENT)
     {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid vhdx log offset: {log_offset}"
       )));
     }
     if data[80..].iter().any(|&byte| byte != 0) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx image header reserved bytes are not zero".to_string(),
       ));
     }
@@ -115,29 +115,28 @@ impl VhdxRegionTable {
 
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != constants::REGION_TABLE_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx region table must be {} bytes, got {}",
         constants::REGION_TABLE_SIZE,
         data.len()
       )));
     }
     if &data[0..4] != constants::REGION_TABLE_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid vhdx region table signature".to_string(),
       ));
     }
     verify_crc32c(data, 4, "vhdx region table")?;
 
-    let entry_count =
-      usize::try_from(u32::from_le_bytes([data[8], data[9], data[10], data[11]]))
-        .map_err(|_| Error::InvalidRange("vhdx region entry count is too large".to_string()))?;
+    let entry_count = usize::try_from(u32::from_le_bytes([data[8], data[9], data[10], data[11]]))
+      .map_err(|_| Error::invalid_range("vhdx region entry count is too large"))?;
     if entry_count > constants::VHDX_MAX_TABLE_ENTRIES {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx region table contains too many entries: {entry_count}"
       )));
     }
     if data[12..16] != [0, 0, 0, 0] {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx region table reserved field is not zero".to_string(),
       ));
     }
@@ -148,15 +147,15 @@ impl VhdxRegionTable {
         .checked_add(
           index
             .checked_mul(32)
-            .ok_or_else(|| Error::InvalidRange("vhdx region entry offset overflow".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("vhdx region entry offset overflow"))?,
         )
-        .ok_or_else(|| Error::InvalidRange("vhdx region entry offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vhdx region entry offset overflow"))?;
       let entry_end = entry_offset
         .checked_add(32)
-        .ok_or_else(|| Error::InvalidRange("vhdx region entry end overflow".to_string()))?;
-      let entry_data = data.get(entry_offset..entry_end).ok_or_else(|| {
-        Error::InvalidFormat("vhdx region table ends inside an entry".to_string())
-      })?;
+        .ok_or_else(|| Error::invalid_range("vhdx region entry end overflow"))?;
+      let entry_data = data
+        .get(entry_offset..entry_end)
+        .ok_or_else(|| Error::invalid_format("vhdx region table ends inside an entry"))?;
       let type_identifier = VhdxGuid::from_le_bytes(&entry_data[0..16])?;
       let file_offset = u64::from_le_bytes([
         entry_data[16],
@@ -183,12 +182,12 @@ impl VhdxRegionTable {
       if file_offset < constants::VHDX_ALIGNMENT
         || !file_offset.is_multiple_of(constants::VHDX_ALIGNMENT)
       {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "vhdx region {type_identifier} has an invalid offset: {file_offset}"
         )));
       }
       if length == 0 || !u64::from(length).is_multiple_of(constants::VHDX_ALIGNMENT) {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "vhdx region {type_identifier} has an invalid size: {length}"
         )));
       }
@@ -196,7 +195,7 @@ impl VhdxRegionTable {
         0 => false,
         1 => true,
         _ => {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "vhdx region {type_identifier} has an invalid required flag: {required_raw}"
           )));
         }
@@ -212,7 +211,7 @@ impl VhdxRegionTable {
         .iter()
         .any(|existing| existing.type_identifier == type_identifier)
       {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "duplicate vhdx region table entry: {type_identifier}"
         )));
       }
@@ -240,7 +239,7 @@ pub(super) fn validate_file_identifier(source: &dyn ByteSource) -> Result<()> {
     constants::FILE_IDENTIFIER_SIZE,
   )?;
   if &data[0..8] != constants::FILE_IDENTIFIER_SIGNATURE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "invalid vhdx file identifier signature".to_string(),
     ));
   }
@@ -250,7 +249,7 @@ pub(super) fn validate_file_identifier(source: &dyn ByteSource) -> Result<()> {
 fn verify_crc32c(data: &[u8], checksum_offset: usize, label: &str) -> Result<()> {
   let checksum_end = checksum_offset
     .checked_add(4)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} checksum offset overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} checksum offset overflow")))?;
   let stored_checksum = u32::from_le_bytes([
     data[checksum_offset],
     data[checksum_offset + 1],
@@ -262,7 +261,7 @@ fn verify_crc32c(data: &[u8], checksum_offset: usize, label: &str) -> Result<()>
   checksum = crc32c::crc32c_append(checksum, &data[checksum_end..]);
 
   if stored_checksum != 0 && stored_checksum != checksum {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "mismatch between stored and calculated {label} checksum: 0x{stored_checksum:08x} != 0x{checksum:08x}"
     )));
   }

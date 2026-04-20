@@ -22,12 +22,12 @@ pub(super) fn parse_sparse_extent(source: ByteSourceHandle) -> Result<ParsedSpar
   let source_size = source.size()?;
   let header = VmdkSparseHeader::read(source.as_ref())?;
   if header.has_compressed_grains() && header.compression_method == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk compressed grains require a compression method".to_string(),
     ));
   }
   if header.compression_method != 0 && !header.has_compressed_grains() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk compression method requires the compressed-grains flag".to_string(),
     ));
   }
@@ -65,7 +65,7 @@ pub(super) fn grain_table_entry_count(header: VmdkSparseHeader) -> u64 {
 pub(super) fn grain_directory_entry_count(header: VmdkSparseHeader) -> Result<u64> {
   let sectors_per_table = grain_table_entry_count(header)
     .checked_mul(header.sectors_per_grain)
-    .ok_or_else(|| Error::InvalidRange("vmdk grain-directory geometry overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk grain-directory geometry overflow"))?;
   Ok(header.capacity_sectors.div_ceil(sectors_per_table))
 }
 
@@ -79,24 +79,24 @@ fn read_descriptor(
   let descriptor_offset = header
     .descriptor_start_sector
     .checked_mul(constants::BYTES_PER_SECTOR)
-    .ok_or_else(|| Error::InvalidRange("vmdk descriptor offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk descriptor offset overflow"))?;
   let descriptor_size = header
     .descriptor_size_sectors
     .checked_mul(constants::BYTES_PER_SECTOR)
-    .ok_or_else(|| Error::InvalidRange("vmdk descriptor size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk descriptor size overflow"))?;
   if descriptor_offset
     .checked_add(descriptor_size)
-    .ok_or_else(|| Error::InvalidRange("vmdk descriptor end overflow".to_string()))?
+    .ok_or_else(|| Error::invalid_range("vmdk descriptor end overflow"))?
     > source_size
   {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk embedded descriptor exceeds the source size".to_string(),
     ));
   }
   let descriptor_bytes = source.read_bytes_at(
     descriptor_offset,
     usize::try_from(descriptor_size)
-      .map_err(|_| Error::InvalidRange("vmdk descriptor size is too large".to_string()))?,
+      .map_err(|_| Error::invalid_range("vmdk descriptor size is too large"))?,
   )?;
   VmdkDescriptor::from_bytes(&descriptor_bytes)
 }
@@ -105,49 +105,47 @@ fn read_grain_directory(
 ) -> Result<Arc<[u32]>> {
   let directory_start_sector = header.active_grain_directory_start_sector();
   if directory_start_sector == constants::GD_AT_END {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk grain directory start sector is unresolved".to_string(),
     ));
   }
   let entry_count = grain_directory_entry_count(header)?;
-  let entry_count_usize = usize::try_from(entry_count).map_err(|_| {
-    Error::InvalidRange("vmdk grain-directory entry count is too large".to_string())
-  })?;
+  let entry_count_usize = usize::try_from(entry_count)
+    .map_err(|_| Error::invalid_range("vmdk grain-directory entry count is too large"))?;
   let table_offset = directory_start_sector
     .checked_mul(constants::BYTES_PER_SECTOR)
-    .ok_or_else(|| Error::InvalidRange("vmdk grain-directory offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk grain-directory offset overflow"))?;
   let table_bytes = entry_count
     .checked_mul(4)
-    .ok_or_else(|| Error::InvalidRange("vmdk grain-directory size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk grain-directory size overflow"))?;
   if table_offset
     .checked_add(table_bytes)
-    .ok_or_else(|| Error::InvalidRange("vmdk grain-directory end overflow".to_string()))?
+    .ok_or_else(|| Error::invalid_range("vmdk grain-directory end overflow"))?
     > source_size
   {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk grain directory exceeds the source size".to_string(),
     ));
   }
 
   let raw = source.read_bytes_at(
     table_offset,
-    usize::try_from(table_bytes).map_err(|_| {
-      Error::InvalidRange("vmdk grain-directory byte count is too large".to_string())
-    })?,
+    usize::try_from(table_bytes)
+      .map_err(|_| Error::invalid_range("vmdk grain-directory byte count is too large"))?,
   )?;
   let entries = raw
     .chunks_exact(4)
     .map(|chunk| Ok(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])))
     .collect::<Result<Vec<_>>>()?;
   if entries.len() != entry_count_usize {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk grain-directory entry count is inconsistent".to_string(),
     ));
   }
 
   let grain_table_bytes = grain_table_entry_count(header)
     .checked_mul(4)
-    .ok_or_else(|| Error::InvalidRange("vmdk grain-table size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk grain-table size overflow"))?;
   for sector in &entries {
     if *sector == 0 || (header.uses_zero_grain_entries() && *sector == 1) {
       continue;
@@ -155,13 +153,13 @@ fn read_grain_directory(
 
     let offset = u64::from(*sector)
       .checked_mul(constants::BYTES_PER_SECTOR)
-      .ok_or_else(|| Error::InvalidRange("vmdk grain-table offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vmdk grain-table offset overflow"))?;
     if offset
       .checked_add(grain_table_bytes)
-      .ok_or_else(|| Error::InvalidRange("vmdk grain-table end overflow".to_string()))?
+      .ok_or_else(|| Error::invalid_range("vmdk grain-table end overflow"))?
       > source_size
     {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk grain table exceeds the source size".to_string(),
       ));
     }
@@ -177,7 +175,7 @@ fn resolve_directory_header(
     return Ok(header);
   }
   if source_size < 1024 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk gd-at-end layouts require a footer header near end-of-file".to_string(),
     ));
   }
@@ -185,7 +183,7 @@ fn resolve_directory_header(
   let footer_offset = source_size - 1024;
   let footer = VmdkSparseHeader::read_at(source, footer_offset)?;
   if footer.uses_gd_at_end() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk footer header must expose the final grain-directory offset".to_string(),
     ));
   }
@@ -197,7 +195,7 @@ fn resolve_directory_header(
     || header.flags != footer.flags
     || header.compression_method != footer.compression_method
   {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk footer header does not match the primary sparse header".to_string(),
     ));
   }
@@ -211,10 +209,10 @@ fn read_cowd_grain_directory(
   let grain_size = header.grain_size_bytes()?;
   let directory_coverage = cowd_grain_table_entry_count()
     .checked_mul(grain_size)
-    .ok_or_else(|| Error::InvalidRange("vmdk cowd directory coverage overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk cowd directory coverage overflow"))?;
   let required_directory_entries = header.virtual_size_bytes()?.div_ceil(directory_coverage);
   if required_directory_entries > u64::from(header.grain_directory_entries) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk cowd grain directory does not contain enough entries for the declared capacity"
         .to_string(),
     ));
@@ -222,69 +220,66 @@ fn read_cowd_grain_directory(
   let covered_size = u64::from(header.grain_directory_entries)
     .checked_mul(cowd_grain_table_entry_count())
     .and_then(|value| value.checked_mul(grain_size))
-    .ok_or_else(|| Error::InvalidRange("vmdk cowd coverage overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk cowd coverage overflow"))?;
   if covered_size < header.virtual_size_bytes()? {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk cowd grain directory does not cover the declared capacity".to_string(),
     ));
   }
 
   let table_offset = u64::from(header.grain_directory_start_sector)
     .checked_mul(constants::BYTES_PER_SECTOR)
-    .ok_or_else(|| Error::InvalidRange("vmdk cowd grain-directory offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk cowd grain-directory offset overflow"))?;
   let entry_count = usize::try_from(header.grain_directory_entries)
-    .map_err(|_| Error::InvalidRange("vmdk cowd grain-directory count is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("vmdk cowd grain-directory count is too large"))?;
   let table_bytes = u64::from(header.grain_directory_entries)
     .checked_mul(4)
-    .ok_or_else(|| Error::InvalidRange("vmdk cowd grain-directory size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vmdk cowd grain-directory size overflow"))?;
   if table_offset
     .checked_add(table_bytes)
-    .ok_or_else(|| Error::InvalidRange("vmdk cowd grain-directory end overflow".to_string()))?
+    .ok_or_else(|| Error::invalid_range("vmdk cowd grain-directory end overflow"))?
     > source_size
   {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk cowd grain directory exceeds the source size".to_string(),
     ));
   }
 
   let raw = source.read_bytes_at(
     table_offset,
-    usize::try_from(table_bytes).map_err(|_| {
-      Error::InvalidRange("vmdk cowd grain-directory size is too large".to_string())
-    })?,
+    usize::try_from(table_bytes)
+      .map_err(|_| Error::invalid_range("vmdk cowd grain-directory size is too large"))?,
   )?;
   let entries = raw
     .chunks_exact(4)
     .map(|chunk| Ok(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])))
     .collect::<Result<Vec<_>>>()?;
   if entries.len() != entry_count {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk cowd grain-directory entry count is inconsistent".to_string(),
     ));
   }
 
   let grain_table_bytes = cowd_grain_table_entry_count()
     .checked_mul(4)
-    .ok_or_else(|| Error::InvalidRange("vmdk cowd grain-table size overflow".to_string()))?;
-  for sector in entries
-    .iter()
-    .take(usize::try_from(required_directory_entries).map_err(|_| {
-      Error::InvalidRange("vmdk cowd required directory count is too large".to_string())
-    })?)
-  {
+    .ok_or_else(|| Error::invalid_range("vmdk cowd grain-table size overflow"))?;
+  for sector in entries.iter().take(
+    usize::try_from(required_directory_entries)
+      .map_err(|_| Error::invalid_range("vmdk cowd required directory count is too large"))?,
+  ) {
     if *sector == 0 {
       continue;
     }
 
     let offset = u64::from(*sector)
       .checked_mul(constants::BYTES_PER_SECTOR)
-      .ok_or_else(|| Error::InvalidRange("vmdk cowd grain-table offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vmdk cowd grain-table offset overflow"))?;
     if offset
       .checked_add(grain_table_bytes)
-      .ok_or_else(|| Error::InvalidRange("vmdk cowd grain-table end overflow".to_string()))?
+      .ok_or_else(|| Error::invalid_range("vmdk cowd grain-table end overflow"))?
       > source_size
     {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk cowd grain table exceeds the source size".to_string(),
       ));
     }

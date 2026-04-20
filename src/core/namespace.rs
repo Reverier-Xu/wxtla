@@ -183,7 +183,7 @@ pub trait NamespaceSource: Send + Sync {
       .read_dir(directory_id)?
       .into_iter()
       .find(|entry| entry.name == name)
-      .ok_or_else(|| Error::NotFound(format!("namespace entry not found: {name}")))
+      .ok_or_else(|| Error::not_found(format!("namespace entry not found: {name}")))
   }
 
   /// Resolve a lexical path from the root node.
@@ -194,7 +194,7 @@ pub trait NamespaceSource: Send + Sync {
         continue;
       }
       if component == ".." {
-        return Err(Error::Unsupported(
+        return Err(Error::unsupported(
           "generic namespace path resolution does not support parent traversal".to_string(),
         ));
       }

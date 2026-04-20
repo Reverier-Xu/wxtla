@@ -89,19 +89,19 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
 
   let fixed = apply_update_sequence(raw)?;
   if &fixed[0..4] != FILE_RECORD_SIGNATURE {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "ntfs file record {record_number} has an invalid signature"
     )));
   }
 
   let used_size = usize::try_from(le_u32(&fixed[24..28]))
-    .map_err(|_| Error::InvalidRange("ntfs file record used size is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("ntfs file record used size is too large"))?;
   let flags = le_u16(&fixed[22..24]);
   if flags & FILE_RECORD_FLAG_IN_USE == 0 || used_size == 0 {
     return Ok(None);
   }
   if used_size > fixed.len() {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "ntfs file record {record_number} extends past its allocated size"
     )));
   }
@@ -114,7 +114,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
   };
   let attributes_offset = usize::from(le_u16(&fixed[20..22]));
   if attributes_offset > used_size {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "ntfs file record {record_number} attributes start outside the used region"
     )));
   }
@@ -137,20 +137,20 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
     }
 
     let attribute_size = usize::try_from(le_u32(&used[cursor + 4..cursor + 8])).map_err(|_| {
-      Error::InvalidRange(format!(
+      Error::invalid_range(format!(
         "ntfs file record {record_number} attribute size is too large"
       ))
     })?;
     if attribute_size < 16 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ntfs file record {record_number} contains a truncated attribute"
       )));
     }
     let attribute_end = cursor
       .checked_add(attribute_size)
-      .ok_or_else(|| Error::InvalidRange("ntfs attribute end offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs attribute end offset overflow"))?;
     if attribute_end > used.len() {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ntfs file record {record_number} attribute exceeds the used region"
       )));
     }
@@ -191,7 +191,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
       }
       ATTRIBUTE_TYPE_FILE_NAME => {
         if non_resident {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "ntfs file record {record_number} stores $FILE_NAME as non-resident"
           )));
         }
@@ -199,7 +199,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
       }
       ATTRIBUTE_TYPE_DATA => {
         if data_flags & ATTRIBUTE_FLAG_ENCRYPTED != 0 {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "ntfs encrypted data attributes are not supported in record {record_number}"
           )));
         }
@@ -231,7 +231,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
       }
       ATTRIBUTE_TYPE_REPARSE_POINT => {
         if non_resident {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "ntfs file record {record_number} stores $REPARSE_POINT as non-resident"
           )));
         }
@@ -263,7 +263,7 @@ pub(crate) fn parse_file_record(raw: &[u8], record_number: u64) -> Result<Option
 
 fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
   if raw.len() < 48 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs file record is too small".to_string(),
     ));
   }
@@ -272,18 +272,18 @@ fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
   let update_sequence_offset = usize::from(le_u16(&fixed[4..6]));
   let update_sequence_count = usize::from(le_u16(&fixed[6..8]));
   if update_sequence_count == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs update-sequence array must contain at least one element".to_string(),
     ));
   }
   let array_size = update_sequence_count
     .checked_mul(2)
-    .ok_or_else(|| Error::InvalidRange("ntfs update-sequence array overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ntfs update-sequence array overflow"))?;
   let update_sequence_end = update_sequence_offset
     .checked_add(array_size)
-    .ok_or_else(|| Error::InvalidRange("ntfs update-sequence array overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ntfs update-sequence array overflow"))?;
   if update_sequence_end > fixed.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs update-sequence array exceeds the file record".to_string(),
     ));
   }
@@ -296,9 +296,9 @@ fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
     let sector_tail = index
       .checked_mul(512)
       .and_then(|value| value.checked_sub(2))
-      .ok_or_else(|| Error::InvalidRange("ntfs sector-tail offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs sector-tail offset overflow"))?;
     if sector_tail + 2 > fixed.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs update-sequence array references data past the file record".to_string(),
       ));
     }
@@ -306,7 +306,7 @@ fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
     let (prefix, suffix) = fixed.split_at_mut(sector_tail);
     let sector_tail_bytes = &mut suffix[..2];
     if *sector_tail_bytes != sequence {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs file record fixup verification failed".to_string(),
       ));
     }
@@ -320,7 +320,7 @@ fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
 fn parse_file_name_attribute(attribute: &[u8], attribute_id: u16) -> Result<NtfsFileNameAttribute> {
   let data = resident_attribute_data(attribute, "ntfs $FILE_NAME")?;
   if data.len() < 66 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs $FILE_NAME attribute is too small".to_string(),
     ));
   }
@@ -343,27 +343,27 @@ fn parse_stream_attribute(
     NtfsDataAttributeValue::Resident(Arc::from(resident_attribute_data(attribute, label)?))
   } else {
     if attribute.len() < 64 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "{label} attribute in record {record_number} is truncated"
       )));
     }
     let first_vcn = le_u64(&attribute[16..24]);
     let last_vcn = le_u64(&attribute[24..32]);
     if last_vcn < first_vcn {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "{label} attribute in record {record_number} has an invalid VCN range"
       )));
     }
     let runlist_offset = usize::from(le_u16(&attribute[32..34]));
     if runlist_offset > attribute.len() {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "{label} attribute in record {record_number} has an invalid runlist offset"
       )));
     }
     let compression_unit = le_u16(&attribute[34..36]);
     let compression_method = data_flags & ATTRIBUTE_FLAG_COMPRESSION_MASK;
     if compression_method > 1 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported ntfs compression method 0x{compression_method:04x} in record {record_number}"
       )));
     }
@@ -388,17 +388,19 @@ fn parse_stream_attribute(
 
 fn resident_attribute_data<'a>(attribute: &'a [u8], label: &str) -> Result<&'a [u8]> {
   if attribute.len() < 24 {
-    return Err(Error::InvalidFormat(format!("{label} header is truncated")));
+    return Err(Error::invalid_format(format!(
+      "{label} header is truncated"
+    )));
   }
 
   let data_length = usize::try_from(le_u32(&attribute[16..20]))
-    .map_err(|_| Error::InvalidRange(format!("{label} data length is too large")))?;
+    .map_err(|_| Error::invalid_range(format!("{label} data length is too large")))?;
   let data_offset = usize::from(le_u16(&attribute[20..22]));
   let data_end = data_offset
     .checked_add(data_length)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} data offset overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} data offset overflow")))?;
   if data_end > attribute.len() {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "{label} data extends past the attribute boundary"
     )));
   }
@@ -409,25 +411,25 @@ fn resident_attribute_data<'a>(attribute: &'a [u8], label: &str) -> Result<&'a [
 fn read_utf16le(bytes: &[u8], offset: usize, chars: usize, label: &str) -> Result<String> {
   let byte_len = chars
     .checked_mul(2)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} length overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} length overflow")))?;
   let end = offset
     .checked_add(byte_len)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} offset overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} offset overflow")))?;
   let slice = bytes
     .get(offset..end)
-    .ok_or_else(|| Error::InvalidFormat(format!("{label} extends past the available bytes")))?;
+    .ok_or_else(|| Error::invalid_format(format!("{label} extends past the available bytes")))?;
   let units = slice
     .chunks_exact(2)
     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
     .collect::<Vec<_>>();
   String::from_utf16(&units)
-    .map_err(|_| Error::InvalidFormat(format!("{label} is not valid UTF-16")))
+    .map_err(|_| Error::invalid_format(format!("{label} is not valid UTF-16")))
 }
 
 fn decode_file_reference(bytes: &[u8]) -> Result<u64> {
   let bytes = bytes
     .get(..8)
-    .ok_or_else(|| Error::InvalidFormat("ntfs file reference is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("ntfs file reference is truncated"))?;
   let mut raw = [0u8; 8];
   raw[..6].copy_from_slice(&bytes[..6]);
   Ok(u64::from_le_bytes(raw))

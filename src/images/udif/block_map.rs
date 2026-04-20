@@ -85,25 +85,25 @@ pub(super) fn parse_block_maps(
   plist_data: &[u8], trailer: &UdifTrailer, image_size: u64, source_size: u64,
 ) -> Result<ParsedBlockMaps> {
   if plist_data.is_empty() || plist_data.len() > MAX_PLIST_SIZE {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported udif plist size: {}",
       plist_data.len()
     )));
   }
 
   let plist = Value::from_reader_xml(Cursor::new(plist_data))
-    .map_err(|error| Error::InvalidFormat(format!("unable to parse udif plist: {error}")))?;
+    .map_err(|error| Error::invalid_format(format!("unable to parse udif plist: {error}")))?;
   let root = plist
     .as_dictionary()
-    .ok_or_else(|| Error::InvalidFormat("udif plist root must be a dictionary".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("udif plist root must be a dictionary"))?;
   let resource_fork = root
     .get("resource-fork")
     .and_then(Value::as_dictionary)
-    .ok_or_else(|| Error::InvalidFormat("udif plist is missing resource-fork".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("udif plist is missing resource-fork"))?;
   let blkx = resource_fork
     .get("blkx")
     .and_then(Value::as_array)
-    .ok_or_else(|| Error::InvalidFormat("udif plist is missing the blkx array".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("udif plist is missing the blkx array"))?;
 
   let mut ranges = Vec::new();
   let mut compression_kinds = Vec::new();
@@ -113,11 +113,11 @@ pub(super) fn parse_block_maps(
   for entry in blkx {
     let entry_dict = entry
       .as_dictionary()
-      .ok_or_else(|| Error::InvalidFormat("udif blkx entry must be a dictionary".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("udif blkx entry must be a dictionary"))?;
     let data = entry_dict
       .get("Data")
       .and_then(Value::as_data)
-      .ok_or_else(|| Error::InvalidFormat("udif blkx entry is missing Data".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("udif blkx entry is missing Data"))?;
     let header = UdifBlockTableHeader::from_bytes(data)?;
     table_checksums.push(u32::from_be_bytes([
       header.checksum[0],
@@ -130,11 +130,11 @@ pub(super) fn parse_block_maps(
     for _ in 0..header.entry_count {
       let run_end = offset
         .checked_add(BLOCK_RUN_SIZE)
-        .ok_or_else(|| Error::InvalidRange("udif block run end overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("udif block run end overflow"))?;
       let run = UdifBlockRun::from_bytes(
         data
           .get(offset..run_end)
-          .ok_or_else(|| Error::InvalidFormat("udif block table is truncated".to_string()))?,
+          .ok_or_else(|| Error::invalid_format("udif block table is truncated"))?,
       )?;
       offset = run_end;
 
@@ -146,7 +146,7 @@ pub(super) fn parse_block_maps(
       }
 
       if run.sector_count == 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "udif block runs must contain at least one sector".to_string(),
         ));
       }
@@ -154,19 +154,19 @@ pub(super) fn parse_block_maps(
       let start_sector = header
         .start_sector
         .checked_add(run.start_sector)
-        .ok_or_else(|| Error::InvalidRange("udif media sector overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("udif media sector overflow"))?;
       let media_offset = start_sector
         .checked_mul(SECTOR_SIZE)
-        .ok_or_else(|| Error::InvalidRange("udif media offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("udif media offset overflow"))?;
       let size = run
         .sector_count
         .checked_mul(SECTOR_SIZE)
-        .ok_or_else(|| Error::InvalidRange("udif range size overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("udif range size overflow"))?;
       let media_end = media_offset
         .checked_add(size)
-        .ok_or_else(|| Error::InvalidRange("udif media end overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("udif media end overflow"))?;
       if media_end > image_size {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "udif block run exceeds the declared media size".to_string(),
         ));
       }
@@ -198,7 +198,7 @@ pub(super) fn parse_block_maps(
           UdifRangeKind::Lzma
         }
         other => {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "unsupported udif block type: 0x{other:08x}"
           )));
         }
@@ -208,18 +208,18 @@ pub(super) fn parse_block_maps(
         let data_fork_end = trailer
           .data_fork_offset
           .checked_add(trailer.data_fork_size)
-          .ok_or_else(|| Error::InvalidRange("udif data fork end overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("udif data fork end overflow"))?;
         if run.data_offset < trailer.data_fork_offset || run.data_offset > source_size {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "udif block run data offset is out of bounds".to_string(),
           ));
         }
         let data_end = run
           .data_offset
           .checked_add(run.data_size)
-          .ok_or_else(|| Error::InvalidRange("udif range data end overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("udif range data end overflow"))?;
         if data_end > data_fork_end || data_end > source_size {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "udif block run data payload exceeds the data fork".to_string(),
           ));
         }
@@ -243,7 +243,7 @@ pub(super) fn parse_block_maps(
       .map(|range| range.size / SECTOR_SIZE)
       .sum::<u64>();
     if covered_sectors > header.sector_count {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "udif block table covers more sectors than its header declares".to_string(),
       ));
     }
@@ -253,14 +253,14 @@ pub(super) fn parse_block_maps(
   let mut previous_end = 0u64;
   for range in &ranges {
     if range.media_offset < previous_end {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "udif block runs overlap in guest media space".to_string(),
       ));
     }
     previous_end = range
       .media_offset
       .checked_add(range.size)
-      .ok_or_else(|| Error::InvalidRange("udif range end overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("udif range end overflow"))?;
   }
 
   let compression_method = if compression_kinds.is_empty() {
@@ -285,12 +285,12 @@ pub(super) fn parse_block_maps(
 impl UdifBlockTableHeader {
   fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() < BLOCK_TABLE_HEADER_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "udif block table header is truncated".to_string(),
       ));
     }
     if &data[0..4] != BLOCK_TABLE_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "udif block table signature is missing".to_string(),
       ));
     }
@@ -304,9 +304,9 @@ impl UdifBlockTableHeader {
       sector_count: u64::from_be_bytes([
         data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
       ]),
-      checksum: data[72..200].try_into().map_err(|_| {
-        Error::InvalidFormat("udif block table checksum length mismatch".to_string())
-      })?,
+      checksum: data[72..200]
+        .try_into()
+        .map_err(|_| Error::invalid_format("udif block table checksum length mismatch"))?,
       entry_count: u32::from_be_bytes([data[200], data[201], data[202], data[203]]),
     })
   }
@@ -315,7 +315,7 @@ impl UdifBlockTableHeader {
 impl UdifBlockRun {
   fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != BLOCK_RUN_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "udif block run has an unexpected size".to_string(),
       ));
     }

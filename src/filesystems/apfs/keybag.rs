@@ -44,7 +44,7 @@ pub struct ApfsKeybagLockerHeader {
 impl ApfsKeybagLockerHeader {
   pub fn parse(bytes: &[u8]) -> Result<Self> {
     if bytes.len() < 8 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs keybag locker header is too short".to_string(),
       ));
     }
@@ -66,7 +66,7 @@ pub struct ApfsKeybagEntryHeader {
 impl ApfsKeybagEntryHeader {
   pub fn parse(bytes: &[u8]) -> Result<Self> {
     if bytes.len() < KEYBAG_ENTRY_HEADER_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs keybag entry header is too short".to_string(),
       ));
     }
@@ -129,18 +129,18 @@ pub(crate) fn unlock_volume(
   credentials: &[Credential<'_>],
 ) -> Result<ApfsUnlockState> {
   if (volume_flags & APFS_FS_UNENCRYPTED) != 0 || (volume_flags & APFS_FS_PFK) != 0 {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "apfs volume does not require software password unlock".to_string(),
     ));
   }
   if (volume_flags & APFS_FS_ONEKEY) == 0 {
-    return Err(Error::Unsupported(
+    return Err(Error::unsupported(
       "apfs multi-key software encryption is not implemented yet".to_string(),
     ));
   }
 
   let container_keybag_prange = container_keybag_prange.ok_or_else(|| {
-    Error::InvalidSourceReference("apfs container does not expose a software keybag".to_string())
+    Error::invalid_source_reference("apfs container does not expose a software keybag")
   })?;
 
   if let Some(key) = credential_keys(credentials).next() {
@@ -166,16 +166,14 @@ pub(crate) fn unlock_volume(
     container_keybag_prange,
     &container_keybag_cipher,
   )?;
-  let vek = container_keybag.vek(volume_uuid)?.ok_or_else(|| {
-    Error::InvalidSourceReference("apfs volume encryption key is missing".to_string())
-  })?;
+  let vek = container_keybag
+    .vek(volume_uuid)?
+    .ok_or_else(|| Error::invalid_source_reference("apfs volume encryption key is missing"))?;
   vek.verify()?;
 
   let volume_keybag_prange = container_keybag
     .volume_keybag_prange(volume_uuid)?
-    .ok_or_else(|| {
-      Error::InvalidSourceReference("apfs volume keybag extent is missing".to_string())
-    })?;
+    .ok_or_else(|| Error::invalid_source_reference("apfs volume keybag extent is missing"))?;
   let volume_keybag_cipher = ApfsXtsCipher::new(Arc::<[u8]>::from(
     volume_uuid
       .iter()
@@ -214,7 +212,7 @@ pub(crate) fn unlock_volume(
     }
   }
 
-  Err(Error::InvalidSourceReference(
+  Err(Error::invalid_source_reference(
     "failed to unlock apfs volume with the provided credentials".to_string(),
   ))
 }
@@ -304,11 +302,11 @@ fn read_keybag_object(
   decryptor.decrypt(
     address
       .checked_mul(sectors_per_block)
-      .ok_or_else(|| Error::InvalidRange("apfs keybag sector index overflow".to_string()))?,
+      .ok_or_else(|| Error::invalid_range("apfs keybag sector index overflow"))?,
     &mut decrypted,
   )?;
   if !keybag_object_matches(&decrypted, expected_type) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs decrypted keybag does not match the expected object type".to_string(),
     ));
   }
@@ -453,14 +451,14 @@ impl ApfsVek {
 
 fn parse_keybag_entries(bytes: &[u8]) -> Result<Vec<ApfsKeybagEntry>> {
   if bytes.len() < 48 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs keybag object is too short".to_string(),
     ));
   }
   let locker = ApfsKeybagLockerHeader::parse(&bytes[32..40])?;
   let version = locker.version;
   if version != KEYBAG_VERSION {
-    return Err(Error::Unsupported(format!(
+    return Err(Error::unsupported(format!(
       "unsupported apfs keybag version: {version}"
     )));
   }
@@ -473,7 +471,7 @@ fn parse_keybag_entries(bytes: &[u8]) -> Result<Vec<ApfsKeybagEntry>> {
     let key_length = usize::from(header.key_length);
     let data = bytes
       .get(offset + KEYBAG_ENTRY_HEADER_SIZE..offset + KEYBAG_ENTRY_HEADER_SIZE + key_length)
-      .ok_or_else(|| Error::InvalidFormat("apfs keybag entry data is truncated".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("apfs keybag entry data is truncated"))?;
     entries.push(ApfsKeybagEntry {
       uuid: header.uuid,
       tag: header.tag,
@@ -482,7 +480,7 @@ fn parse_keybag_entries(bytes: &[u8]) -> Result<Vec<ApfsKeybagEntry>> {
     offset = align_16(
       offset
         .checked_add(KEYBAG_ENTRY_HEADER_SIZE + key_length)
-        .ok_or_else(|| Error::InvalidRange("apfs keybag entry offset overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("apfs keybag entry offset overflow"))?,
     );
   }
 
@@ -513,7 +511,7 @@ fn credential_keys<'a>(credentials: &'a [Credential<'a>]) -> impl Iterator<Item 
 fn parse_sequence(bytes: &[u8]) -> Result<Vec<DerTlv<'_>>> {
   let tlv = parse_tlv(bytes)?;
   if tlv.tag.class != 0 || !tlv.tag.constructed || tlv.tag.number != 16 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs keybag packed object is not a DER sequence".to_string(),
     ));
   }
@@ -536,7 +534,7 @@ fn context_child<'a>(values: &'a [DerTlv<'a>], tag_number: u8) -> Result<&'a Der
     .iter()
     .find(|value| value.tag.class == 2 && value.tag.number == tag_number)
     .ok_or_else(|| {
-      Error::InvalidFormat(format!(
+      Error::invalid_format(format!(
         "apfs keybag packed object is missing context tag {tag_number}"
       ))
     })
@@ -544,7 +542,7 @@ fn context_child<'a>(values: &'a [DerTlv<'a>], tag_number: u8) -> Result<&'a Der
 
 fn parse_der_tlv_length(bytes: &[u8], offset: &mut usize) -> Result<usize> {
   let Some(first) = bytes.get(*offset).copied() else {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs DER length is truncated".to_string(),
     ));
   };
@@ -555,16 +553,16 @@ fn parse_der_tlv_length(bytes: &[u8], offset: &mut usize) -> Result<usize> {
 
   let count = usize::from(first & 0x7F);
   if count == 0 || count > 8 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs DER long-form length is invalid".to_string(),
     ));
   }
   let end = offset
     .checked_add(count)
-    .ok_or_else(|| Error::InvalidRange("apfs DER length overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("apfs DER length overflow"))?;
   let encoded = bytes
     .get(*offset..end)
-    .ok_or_else(|| Error::InvalidFormat("apfs DER long-form length is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("apfs DER long-form length is truncated"))?;
   *offset = end;
   Ok(
     encoded
@@ -575,14 +573,14 @@ fn parse_der_tlv_length(bytes: &[u8], offset: &mut usize) -> Result<usize> {
 
 fn parse_tlv(bytes: &[u8]) -> Result<DerTlv<'_>> {
   if bytes.len() < 2 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs DER value is truncated".to_string(),
     ));
   }
 
   let tag_byte = bytes[0];
   if (tag_byte & 0x1F) == 0x1F {
-    return Err(Error::Unsupported(
+    return Err(Error::unsupported(
       "apfs keybag DER high-tag-number form is not supported".to_string(),
     ));
   }
@@ -591,10 +589,10 @@ fn parse_tlv(bytes: &[u8]) -> Result<DerTlv<'_>> {
   let length = parse_der_tlv_length(bytes, &mut offset)?;
   let end = offset
     .checked_add(length)
-    .ok_or_else(|| Error::InvalidRange("apfs DER value length overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("apfs DER value length overflow"))?;
   let value = bytes
     .get(offset..end)
-    .ok_or_else(|| Error::InvalidFormat("apfs DER value extends beyond the input".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("apfs DER value extends beyond the input"))?;
 
   Ok(DerTlv {
     tag: DerTag {
@@ -609,7 +607,7 @@ fn parse_tlv(bytes: &[u8]) -> Result<DerTlv<'_>> {
 
 fn parse_der_integer(bytes: &[u8]) -> Result<u64> {
   if bytes.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs DER integer is empty".to_string(),
     ));
   }
@@ -623,15 +621,15 @@ fn parse_der_integer(bytes: &[u8]) -> Result<u64> {
 fn read_uuid(bytes: &[u8]) -> Result<[u8; 16]> {
   bytes
     .try_into()
-    .map_err(|_| Error::InvalidFormat("apfs keybag uuid must be 16 bytes".to_string()))
+    .map_err(|_| Error::invalid_format("apfs keybag uuid must be 16 bytes"))
 }
 
 fn read_array_16(bytes: &[u8], offset: usize) -> Result<[u8; 16]> {
   bytes
     .get(offset..offset + 16)
-    .ok_or_else(|| Error::InvalidFormat("apfs keybag uuid is truncated".to_string()))?
+    .ok_or_else(|| Error::invalid_format("apfs keybag uuid is truncated"))?
     .try_into()
-    .map_err(|_| Error::InvalidFormat("apfs keybag uuid is truncated".to_string()))
+    .map_err(|_| Error::invalid_format("apfs keybag uuid is truncated"))
 }
 
 fn align_16(value: usize) -> usize {

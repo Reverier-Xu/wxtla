@@ -55,20 +55,20 @@ impl ByteSource for SparseImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("sparseimage read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("sparseimage read offset overflow"))?;
       if absolute_offset >= self.media_size {
         break;
       }
 
       let band_index = usize::try_from(absolute_offset / self.band_size)
-        .map_err(|_| Error::InvalidRange("sparseimage band index is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("sparseimage band index is too large"))?;
       let within_band = absolute_offset % self.band_size;
       let available = usize::try_from(
         (self.band_size - within_band)
           .min(self.media_size - absolute_offset)
           .min((buf.len() - copied) as u64),
       )
-      .map_err(|_| Error::InvalidRange("sparseimage read chunk is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("sparseimage read chunk is too large"))?;
 
       match self
         .guest_to_file_offsets
@@ -139,7 +139,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

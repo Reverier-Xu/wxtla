@@ -55,9 +55,10 @@ pub(super) fn open(source: ByteSourceHandle) -> Result<GptVolumeSystem> {
     }
   }
 
-  Err(first_error.unwrap_or_else(|| {
-    Error::InvalidFormat("unable to infer a supported gpt block size".to_string())
-  }))
+  Err(
+    first_error
+      .unwrap_or_else(|| Error::invalid_format("unable to infer a supported gpt block size")),
+  )
 }
 
 pub(super) fn validate_primary_probe(source: &dyn ByteSource, block_size: u32) -> Result<()> {
@@ -106,7 +107,7 @@ pub(super) fn open_with_block_size(
           backup_candidate.partitions,
         )
       } else {
-        Err(Error::InvalidFormat(
+        Err(Error::invalid_format(
           "unable to open a valid primary or backup gpt header".to_string(),
         ))
       }
@@ -143,7 +144,7 @@ pub(super) fn open_with_block_size(
         backup.partitions,
       )
     }
-    (Err(_primary_error), Err(_backup_error)) => Err(Error::InvalidFormat(
+    (Err(_primary_error), Err(_backup_error)) => Err(Error::invalid_format(
       "unable to open a valid primary or backup gpt header".to_string(),
     )),
   }
@@ -190,14 +191,14 @@ fn read_partitions_candidate(
 fn last_lba(source_size: u64, block_size: u32) -> Result<u64> {
   let block_size = u64::from(block_size);
   if source_size < block_size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "source is too small to hold a gpt backup header".to_string(),
     ));
   }
   let total_blocks = source_size / block_size;
   total_blocks
     .checked_sub(1)
-    .ok_or_else(|| Error::InvalidFormat("source does not contain a full gpt block".to_string()))
+    .ok_or_else(|| Error::invalid_format("source does not contain a full gpt block"))
 }
 
 fn read_header_block(
@@ -205,7 +206,7 @@ fn read_header_block(
 ) -> Result<(GptHeader, Vec<u8>)> {
   let offset = lba
     .checked_mul(u64::from(block_size))
-    .ok_or_else(|| Error::InvalidRange("gpt header offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("gpt header offset overflow"))?;
   let block = source.read_bytes_at(offset, block_size as usize)?;
   let header = GptHeader::parse(&block)?;
   Ok((header, block))
@@ -223,15 +224,15 @@ fn read_entry_array(
   let entry_array_offset = header
     .entry_array_start_lba
     .checked_mul(u64::from(block_size))
-    .ok_or_else(|| Error::InvalidRange("gpt entry array offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("gpt entry array offset overflow"))?;
   let total_entry_bytes = u64::from(header.entry_count)
     .checked_mul(u64::from(header.entry_size))
-    .ok_or_else(|| Error::InvalidRange("gpt entry array size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("gpt entry array size overflow"))?;
 
   source.read_bytes_at(
     entry_array_offset,
     usize::try_from(total_entry_bytes)
-      .map_err(|_| Error::InvalidRange("gpt entry array is too large".to_string()))?,
+      .map_err(|_| Error::invalid_range("gpt entry array is too large"))?,
   )
 }
 
@@ -239,16 +240,16 @@ fn parse_partitions(
   data: &[u8], block_size: u32, header: &GptHeader,
 ) -> Result<Vec<GptPartitionInfo>> {
   let entry_size = usize::try_from(header.entry_size)
-    .map_err(|_| Error::InvalidRange("gpt entry size is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("gpt entry size is too large"))?;
   let mut partitions = Vec::new();
 
   for index in 0..header.entry_count as usize {
     let start = index
       .checked_mul(entry_size)
-      .ok_or_else(|| Error::InvalidRange("gpt entry offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("gpt entry offset overflow"))?;
     let end = start
       .checked_add(entry_size)
-      .ok_or_else(|| Error::InvalidRange("gpt entry end overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("gpt entry end overflow"))?;
     let entry = GptPartitionEntry::parse(index, &data[start..end])?;
     if entry.is_unused() {
       continue;
@@ -262,7 +263,7 @@ fn parse_partitions(
 fn validate_protective_mbr(source: &dyn ByteSource) -> Result<()> {
   let sector = source.read_bytes_at(0, 512)?;
   if sector[510..512] != [0x55, 0xAA] {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "gpt protective mbr signature is missing".to_string(),
     ));
   }
@@ -279,7 +280,7 @@ fn validate_protective_mbr(source: &dyn ByteSource) -> Result<()> {
   }
 
   if !has_protective_partition {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "gpt protective mbr entry is missing".to_string(),
     ));
   }

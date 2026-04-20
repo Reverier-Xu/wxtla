@@ -22,32 +22,34 @@ pub struct VhdxParentLocator {
 impl VhdxParentLocator {
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() < 20 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx parent locator is too small".to_string(),
       ));
     }
 
     let locator_type = VhdxGuid::from_le_bytes(&data[0..16])?;
     if locator_type != constants::PARENT_LOCATOR_TYPE_GUID {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported vhdx parent locator type: {locator_type}"
       )));
     }
 
     if data[16..18] != [0, 0] {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx parent locator reserved field is not zero".to_string(),
       ));
     }
 
     let entry_count = usize::from(u16::from_le_bytes([data[18], data[19]]));
     let table_size = 20usize
-      .checked_add(entry_count.checked_mul(12).ok_or_else(|| {
-        Error::InvalidRange("vhdx parent locator table size overflow".to_string())
-      })?)
-      .ok_or_else(|| Error::InvalidRange("vhdx parent locator table size overflow".to_string()))?;
+      .checked_add(
+        entry_count
+          .checked_mul(12)
+          .ok_or_else(|| Error::invalid_range("vhdx parent locator table size overflow"))?,
+      )
+      .ok_or_else(|| Error::invalid_range("vhdx parent locator table size overflow"))?;
     if table_size > data.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx parent locator table exceeds the metadata item".to_string(),
       ));
     }
@@ -61,18 +63,14 @@ impl VhdxParentLocator {
         data[entry_offset + 2],
         data[entry_offset + 3],
       ]))
-      .map_err(|_| {
-        Error::InvalidRange("vhdx parent locator key offset is too large".to_string())
-      })?;
+      .map_err(|_| Error::invalid_range("vhdx parent locator key offset is too large"))?;
       let value_offset = usize::try_from(u32::from_le_bytes([
         data[entry_offset + 4],
         data[entry_offset + 5],
         data[entry_offset + 6],
         data[entry_offset + 7],
       ]))
-      .map_err(|_| {
-        Error::InvalidRange("vhdx parent locator value offset is too large".to_string())
-      })?;
+      .map_err(|_| Error::invalid_range("vhdx parent locator value offset is too large"))?;
       let key_length = usize::from(u16::from_le_bytes([
         data[entry_offset + 8],
         data[entry_offset + 9],
@@ -140,9 +138,9 @@ fn read_entry_bytes<'a>(
 ) -> Result<&'a [u8]> {
   let end = offset
     .checked_add(length)
-    .ok_or_else(|| Error::InvalidRange(format!("vhdx parent locator {label} range overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("vhdx parent locator {label} range overflow")))?;
   data.get(offset..end).ok_or_else(|| {
-    Error::InvalidFormat(format!(
+    Error::invalid_format(format!(
       "vhdx parent locator {label} range exceeds the item"
     ))
   })
@@ -150,7 +148,7 @@ fn read_entry_bytes<'a>(
 
 fn decode_utf16_le_string(data: &[u8]) -> Result<String> {
   if !data.len().is_multiple_of(2) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhdx parent locator string has an odd byte count".to_string(),
     ));
   }
@@ -161,7 +159,7 @@ fn decode_utf16_le_string(data: &[u8]) -> Result<String> {
   }
 
   String::from_utf16(&code_units)
-    .map_err(|_| Error::InvalidFormat("vhdx parent locator string is not valid UTF-16".to_string()))
+    .map_err(|_| Error::invalid_format("vhdx parent locator string is not valid UTF-16"))
 }
 
 #[cfg(test)]

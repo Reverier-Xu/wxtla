@@ -93,13 +93,11 @@ impl RefsFileSystem {
     let objects_reference = checkpoint
       .block_references
       .get(OBJECTS_TREE_INDEX)
-      .ok_or_else(|| {
-        Error::InvalidFormat("refs objects tree block reference is missing".to_string())
-      })?;
+      .ok_or_else(|| Error::invalid_format("refs objects tree block reference is missing"))?;
     let objects_root =
       read_ministore_node_from_reference(source.clone(), &volume_header, objects_reference)?;
     if (objects_root.node_type_flags & 0x02) == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "refs objects tree root node must be a root node".to_string(),
       ));
     }
@@ -131,7 +129,7 @@ impl RefsFileSystem {
       .nodes
       .get(&identifier)
       .map(|node| node.details.clone())
-      .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))
+      .ok_or_else(|| Error::not_found("refs node was not found"))
   }
 
   pub fn data_streams(&self, node_id: &NamespaceNodeId) -> Result<Vec<RefsDataStreamInfo>> {
@@ -139,7 +137,7 @@ impl RefsFileSystem {
     let node = self
       .nodes
       .get(&identifier)
-      .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))?;
+      .ok_or_else(|| Error::not_found("refs node was not found"))?;
     node
       .streams
       .iter()
@@ -159,12 +157,12 @@ impl RefsFileSystem {
     let node = self
       .nodes
       .get(&identifier)
-      .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))?;
+      .ok_or_else(|| Error::not_found("refs node was not found"))?;
     node
       .streams
       .get(&name.map(str::to_string))
       .cloned()
-      .ok_or_else(|| Error::NotFound("refs data stream was not found".to_string()))
+      .ok_or_else(|| Error::not_found("refs data stream was not found"))
   }
 }
 
@@ -186,7 +184,7 @@ impl FileSystem for RefsFileSystem {
       .nodes
       .get(&identifier)
       .map(|node| node.record.clone())
-      .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))
+      .ok_or_else(|| Error::not_found("refs node was not found"))
   }
 
   fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
@@ -194,9 +192,9 @@ impl FileSystem for RefsFileSystem {
     let node = self
       .nodes
       .get(&identifier)
-      .ok_or_else(|| Error::NotFound("refs node was not found".to_string()))?;
+      .ok_or_else(|| Error::not_found("refs node was not found"))?;
     if node.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::NotFound("refs node is not a directory".to_string()));
+      return Err(Error::not_found("refs node is not a directory"));
     }
 
     Ok(self.children.get(&identifier).cloned().unwrap_or_default())
@@ -341,7 +339,7 @@ fn parse_file_entry(context: &RefsContext, record: &RefsNodeRecord) -> Result<Re
   let file_node =
     parse_ministore_node_data(&record.value_data, context.volume_header.major_version)?;
   if (file_node.node_type_flags & 0x02) == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs file values node must be a root node".to_string(),
     ));
   }
@@ -378,7 +376,7 @@ fn get_object_ministore_tree(
     .object_references
     .get(&object_identifier)
     .ok_or_else(|| {
-      Error::NotFound(format!(
+      Error::not_found(format!(
         "refs object 0x{object_identifier:08x} was not found"
       ))
     })?;
@@ -417,7 +415,7 @@ fn collect_object_references_with<F>(
 where
   F: FnMut(&RefsBlockReference) -> Result<RefsMinistoreNode>, {
   if depth > 256 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs tree recursion depth exceeded".to_string(),
     ));
   }
@@ -429,7 +427,7 @@ where
         .insert(object_identifier, reference)
         .is_some()
       {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "duplicate refs object identifier: 0x{object_identifier:08x}"
         )));
       }
@@ -455,7 +453,7 @@ where
 fn parse_object_identifier(key_data: &[u8]) -> Result<u64> {
   let key_data = key_data
     .get(..16)
-    .ok_or_else(|| Error::InvalidFormat("refs object-tree key data is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs object-tree key data is truncated"))?;
 
   Ok(le_u64(&key_data[8..16]))
 }
@@ -465,7 +463,7 @@ fn collect_file_attributes(
 ) -> Result<Vec<RefsAttribute>> {
   let records = collect_leaf_records_from_source(context, node)?;
   if records.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs file values node does not contain attribute records".to_string(),
     ));
   }
@@ -480,7 +478,7 @@ fn parse_attribute_record_with_context(
   context: &RefsContext, record: &RefsNodeRecord,
 ) -> Result<RefsAttribute> {
   if record.key_data.len() < 14 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs attribute key data is truncated".to_string(),
     ));
   }
@@ -506,12 +504,12 @@ fn parse_non_resident_attribute_with_context(
 ) -> Result<RefsAttributeValue> {
   let node = parse_ministore_node_data(bytes, context.volume_header.major_version)?;
   if (node.node_type_flags & 0x02) == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs non-resident attribute node must be a root node".to_string(),
     ));
   }
   if node.header_data.len() != ATTRIBUTE_NON_RESIDENT_HEADER_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs non-resident attribute header-data size is invalid".to_string(),
     ));
   }
@@ -576,13 +574,13 @@ fn build_stream_source(
     .collect::<Vec<_>>();
 
   if !resident.is_empty() && !non_resident.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "mixed resident and non-resident refs data streams are not supported".to_string(),
     ));
   }
   if let Some(data) = resident.first() {
     if resident.len() != 1 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fragmented resident refs data streams are not supported yet".to_string(),
       ));
     }
@@ -630,7 +628,7 @@ fn collect_leaf_records_with<F>(
 where
   F: FnMut(&RefsBlockReference) -> Result<RefsMinistoreNode>, {
   if depth > 256 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs tree recursion depth exceeded".to_string(),
     ));
   }
@@ -672,7 +670,7 @@ fn parse_object_record_reference(bytes: &[u8], major_version: u8) -> Result<Refs
   let bytes = if major_version == 3 {
     bytes
       .get(32..)
-      .ok_or_else(|| Error::InvalidFormat("refs object record value is truncated".to_string()))?
+      .ok_or_else(|| Error::invalid_format("refs object record value is truncated"))?
   } else {
     bytes
   };
@@ -705,22 +703,22 @@ fn read_metadata_blocks_from_slice(
 ) -> Result<Vec<u8>> {
   let present = block_numbers.to_vec();
   if present.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs metadata block reference does not contain any block numbers".to_string(),
     ));
   }
 
   let block_size = usize::try_from(volume_header.metadata_block_size)
-    .map_err(|_| Error::InvalidRange("refs metadata block size is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("refs metadata block size is too large"))?;
   let mut bytes = Vec::with_capacity(
     block_size
       .checked_mul(present.len())
-      .ok_or_else(|| Error::InvalidRange("refs metadata block range overflow".to_string()))?,
+      .ok_or_else(|| Error::invalid_range("refs metadata block range overflow"))?,
   );
   for block_number in present {
     let offset = block_number
       .checked_mul(u64::from(volume_header.metadata_block_size))
-      .ok_or_else(|| Error::InvalidRange("refs block offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("refs block offset overflow"))?;
     bytes.extend_from_slice(&source.read_bytes_at(offset, block_size)?);
   }
 
@@ -740,7 +738,7 @@ fn encode_node_id(identifier: &RefsIdentifier) -> NamespaceNodeId {
 fn decode_node_id(node_id: &NamespaceNodeId) -> Result<RefsIdentifier> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 16 {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "refs node identifiers must be 16 bytes".to_string(),
     ));
   }
@@ -825,7 +823,7 @@ mod tests {
     let mut loader = |reference: &RefsBlockReference| {
       children
         .remove(&reference.block_numbers[0])
-        .ok_or_else(|| Error::NotFound("missing synthetic child node".to_string()))
+        .ok_or_else(|| Error::not_found("missing synthetic child node"))
     };
 
     let records = collect_leaf_records_with(&branch, 1, 0, &mut loader).unwrap();
@@ -934,7 +932,7 @@ mod tests {
     let mut loader = |reference: &RefsBlockReference| {
       children
         .remove(&reference.block_numbers[0])
-        .ok_or_else(|| Error::NotFound("missing synthetic child node".to_string()))
+        .ok_or_else(|| Error::not_found("missing synthetic child node"))
     };
 
     let object_references = build_object_reference_index_with(&branch, 1, 0, &mut loader).unwrap();

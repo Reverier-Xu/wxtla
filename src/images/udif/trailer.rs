@@ -36,7 +36,7 @@ impl UdifTrailer {
   pub fn read(source: &dyn ByteSource) -> Result<Self> {
     let size = source.size()?;
     if size < TRAILER_SIZE as u64 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "udif source is too small to contain a koly trailer".to_string(),
       ));
     }
@@ -48,13 +48,13 @@ impl UdifTrailer {
 
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != TRAILER_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "udif trailer must be {TRAILER_SIZE} bytes, got {}",
         data.len()
       )));
     }
     if &data[0..4] != TRAILER_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "udif koly trailer signature is missing".to_string(),
       ));
     }
@@ -63,7 +63,7 @@ impl UdifTrailer {
 
     let trailer_size = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
     if trailer_size < TRAILER_SIZE as u32 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported udif trailer size: {trailer_size}"
       )));
     }
@@ -79,7 +79,7 @@ impl UdifTrailer {
       data_checksum_type: u32::from_be_bytes([data[80], data[81], data[82], data[83]]),
       data_checksum: data[88..216]
         .try_into()
-        .map_err(|_| Error::InvalidFormat("udif data checksum length mismatch".to_string()))?,
+        .map_err(|_| Error::invalid_format("udif data checksum length mismatch"))?,
       plist_offset: u64::from_be_bytes([
         data[216], data[217], data[218], data[219], data[220], data[221], data[222], data[223],
       ]),
@@ -89,7 +89,7 @@ impl UdifTrailer {
       master_checksum_type: u32::from_be_bytes([data[352], data[353], data[354], data[355]]),
       master_checksum: data[360..488]
         .try_into()
-        .map_err(|_| Error::InvalidFormat("udif master checksum length mismatch".to_string()))?,
+        .map_err(|_| Error::invalid_format("udif master checksum length mismatch"))?,
       image_type: u32::from_be_bytes([data[488], data[489], data[490], data[491]]),
       sector_count: u64::from_be_bytes([
         data[492], data[493], data[494], data[495], data[496], data[497], data[498], data[499],

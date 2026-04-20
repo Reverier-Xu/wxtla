@@ -34,9 +34,9 @@ impl ByteSource for XfsExtentDataSource {
     while remaining > 0 {
       let block_index = file_offset / self.block_size;
       let block_inner = file_offset % self.block_size;
-      let extent = self.find_extent(block_index).ok_or_else(|| {
-        Error::InvalidFormat("xfs extent is missing for a data block".to_string())
-      })?;
+      let extent = self
+        .find_extent(block_index)
+        .ok_or_else(|| Error::invalid_format("xfs extent is missing for a data block"))?;
 
       let blocks_left = (extent.logical_block + extent.number_of_blocks) - block_index;
       let bytes_left = blocks_left * self.block_size - block_inner;

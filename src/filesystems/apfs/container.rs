@@ -734,7 +734,7 @@ impl ApfsContainer {
       .volumes
       .get(index)
       .cloned()
-      .ok_or_else(|| Error::NotFound(format!("apfs volume index {index} is out of bounds")))?;
+      .ok_or_else(|| Error::not_found(format!("apfs volume index {index} is out of bounds")))?;
     Ok(ApfsVolume::new(
       ApfsVolumeOpenContext {
         source: self.source.clone(),
@@ -756,7 +756,7 @@ impl ApfsContainer {
       .iter()
       .find(|volume| volume.name() == name)
       .cloned()
-      .ok_or_else(|| Error::NotFound(format!("apfs volume name was not found: {name}")))?;
+      .ok_or_else(|| Error::not_found(format!("apfs volume name was not found: {name}")))?;
     Ok(ApfsVolume::new(
       ApfsVolumeOpenContext {
         source: self.source.clone(),
@@ -779,7 +779,7 @@ impl ApfsContainer {
       .iter()
       .find(|volume| volume.uuid_string().to_ascii_lowercase() == normalized)
       .cloned()
-      .ok_or_else(|| Error::NotFound(format!("apfs volume uuid was not found: {uuid}")))?;
+      .ok_or_else(|| Error::not_found(format!("apfs volume uuid was not found: {uuid}")))?;
     Ok(ApfsVolume::new(
       ApfsVolumeOpenContext {
         source: self.source.clone(),
@@ -802,7 +802,7 @@ impl ApfsContainer {
       .iter()
       .find(|volume| volume.role_names().iter().any(|role| role == &normalized))
       .cloned()
-      .ok_or_else(|| Error::NotFound(format!("apfs volume role was not found: {role_name}")))?;
+      .ok_or_else(|| Error::not_found(format!("apfs volume role was not found: {role_name}")))?;
     Ok(ApfsVolume::new(
       ApfsVolumeOpenContext {
         source: self.source.clone(),
@@ -821,10 +821,10 @@ impl ApfsContainer {
   pub fn open_only_volume(&self) -> Result<ApfsVolume> {
     match self.volumes.len() {
       1 => self.open_volume_by_index(0),
-      0 => Err(Error::NotFound(
+      0 => Err(Error::not_found(
         "apfs container has no readable volumes".to_string(),
       )),
-      count => Err(Error::Unsupported(format!(
+      count => Err(Error::unsupported(format!(
         "apfs container exposes {count} volumes; choose one explicitly"
       ))),
     }
@@ -841,7 +841,7 @@ impl ApfsContainer {
       .find(|volume| selector.matches(&volume.to_view_record()))
       .cloned()
       .ok_or_else(|| {
-        Error::NotFound(format!(
+        Error::not_found(format!(
           "apfs volume selector did not match any volume: {selector:?}"
         ))
       })?;
@@ -927,13 +927,13 @@ fn enumerate_volumes(
 fn read_primary_superblock(source: &dyn ByteSource) -> Result<(ApfsContainerSuperblock, Vec<u8>)> {
   let initial = source.read_bytes_at(0, DEFAULT_BLOCK_SIZE)?;
   if initial.len() < 40 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs source is too small to contain a container superblock".to_string(),
     ));
   }
   let initial_superblock = ApfsContainerSuperblock::parse(&initial)?;
   let block = if usize::try_from(initial_superblock.block_size)
-    .map_err(|_| Error::InvalidRange("apfs block size exceeds usize".to_string()))?
+    .map_err(|_| Error::invalid_range("apfs block size exceeds usize"))?
     == initial.len()
   {
     initial
@@ -941,7 +941,7 @@ fn read_primary_superblock(source: &dyn ByteSource) -> Result<(ApfsContainerSupe
     source.read_bytes_at(
       0,
       usize::try_from(initial_superblock.block_size)
-        .map_err(|_| Error::InvalidRange("apfs block size exceeds usize".to_string()))?,
+        .map_err(|_| Error::invalid_range("apfs block size exceeds usize"))?,
     )?
   };
   let superblock = ApfsContainerSuperblock::parse(&block)?;
@@ -1008,7 +1008,7 @@ fn read_checkpoint_object_blocks(
         let address = superblock
           .checkpoint_descriptor_base
           .checked_add(index)
-          .ok_or_else(|| Error::InvalidRange("apfs checkpoint address overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("apfs checkpoint address overflow"))?;
         Ok((
           address,
           read_blocks(source.as_ref(), block_size, address, 1)?,
@@ -1059,24 +1059,24 @@ pub(crate) fn read_object_map(
 pub(crate) fn lookup_omap_address(tree: &ApfsBTree, oid: u64, xid: u64) -> Result<u64> {
   let (key, value) = tree.search_floor(|other| compare_omap_key(other, oid, xid))?;
   if key.len() != 16 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs omap key must be 16 bytes".to_string(),
     ));
   }
   let key_oid = read_u64_le(&key, 0)?;
   if key_oid != oid {
-    return Err(Error::NotFound(format!(
+    return Err(Error::not_found(format!(
       "apfs omap entry was not found for oid {oid}"
     )));
   }
   if value.len() < 16 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs omap value must be at least 16 bytes".to_string(),
     ));
   }
   let flags = read_u32_le(&value, 0)?;
   if (flags & OMAP_VAL_DELETED) != 0 {
-    return Err(Error::NotFound(format!(
+    return Err(Error::not_found(format!(
       "apfs omap entry for oid {oid} is marked deleted"
     )));
   }
@@ -1097,11 +1097,11 @@ pub(crate) fn read_blocks(
 ) -> Result<Vec<u8>> {
   let byte_offset = address
     .checked_mul(u64::from(block_size))
-    .ok_or_else(|| Error::InvalidRange("apfs block offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("apfs block offset overflow"))?;
   let byte_count = count
     .checked_mul(u64::from(block_size))
-    .ok_or_else(|| Error::InvalidRange("apfs block byte count overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("apfs block byte count overflow"))?;
   let byte_count = usize::try_from(byte_count)
-    .map_err(|_| Error::InvalidRange("apfs block byte count exceeds usize".to_string()))?;
+    .map_err(|_| Error::invalid_range("apfs block byte count exceeds usize"))?;
   source.read_bytes_at(byte_offset, byte_count)
 }

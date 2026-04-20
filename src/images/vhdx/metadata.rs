@@ -42,47 +42,48 @@ struct MetadataEntry {
 impl VhdxMetadata {
   pub fn from_region(region_data: &[u8]) -> Result<Self> {
     if region_data.len() < constants::METADATA_TABLE_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx metadata region is smaller than the metadata table".to_string(),
       ));
     }
     if &region_data[0..8] != constants::METADATA_TABLE_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid vhdx metadata table signature".to_string(),
       ));
     }
     if region_data[8..10] != [0, 0] {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx metadata table reserved field is not zero".to_string(),
       ));
     }
     if region_data[12..32].iter().any(|&byte| byte != 0) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx metadata table reserved bytes are not zero".to_string(),
       ));
     }
 
     let entry_count = usize::from(u16::from_le_bytes([region_data[10], region_data[11]]));
     if entry_count > constants::VHDX_MAX_TABLE_ENTRIES {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx metadata table contains too many entries: {entry_count}"
       )));
     }
 
     let mut entries = HashMap::with_capacity(entry_count);
     for index in 0..entry_count {
-      let entry_offset =
-        32usize
-          .checked_add(index.checked_mul(32).ok_or_else(|| {
-            Error::InvalidRange("vhdx metadata entry offset overflow".to_string())
-          })?)
-          .ok_or_else(|| Error::InvalidRange("vhdx metadata entry offset overflow".to_string()))?;
+      let entry_offset = 32usize
+        .checked_add(
+          index
+            .checked_mul(32)
+            .ok_or_else(|| Error::invalid_range("vhdx metadata entry offset overflow"))?,
+        )
+        .ok_or_else(|| Error::invalid_range("vhdx metadata entry offset overflow"))?;
       let entry_end = entry_offset
         .checked_add(32)
-        .ok_or_else(|| Error::InvalidRange("vhdx metadata entry end overflow".to_string()))?;
-      let entry_data = region_data.get(entry_offset..entry_end).ok_or_else(|| {
-        Error::InvalidFormat("vhdx metadata table ends inside an entry".to_string())
-      })?;
+        .ok_or_else(|| Error::invalid_range("vhdx metadata entry end overflow"))?;
+      let entry_data = region_data
+        .get(entry_offset..entry_end)
+        .ok_or_else(|| Error::invalid_format("vhdx metadata table ends inside an entry"))?;
 
       let item_id = VhdxGuid::from_le_bytes(&entry_data[0..16])?;
       let item_offset = u32::from_le_bytes([
@@ -110,20 +111,20 @@ impl VhdxMetadata {
         entry_data[31],
       ]);
       if flags & !0x7 != 0 {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "vhdx metadata entry {item_id} contains unsupported flags: 0x{flags:08x}"
         )));
       }
       if reserved != 0 {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "vhdx metadata entry {item_id} reserved field is not zero"
         )));
       }
       if usize::try_from(item_offset)
-        .map_err(|_| Error::InvalidRange("vhdx metadata item offset is too large".to_string()))?
+        .map_err(|_| Error::invalid_range("vhdx metadata item offset is too large"))?
         < constants::METADATA_TABLE_SIZE
       {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "vhdx metadata entry {item_id} overlaps the metadata table"
         )));
       }
@@ -139,7 +140,7 @@ impl VhdxMetadata {
         )
         .is_some()
       {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "duplicate vhdx metadata entry: {item_id}"
         )));
       }
@@ -152,7 +153,7 @@ impl VhdxMetadata {
       constants::FILE_PARAMETERS_GUID,
     )?;
     if file_parameters.len() != 8 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx file parameters item must be 8 bytes".to_string(),
       ));
     }
@@ -169,14 +170,14 @@ impl VhdxMetadata {
       file_parameters[7],
     ]);
     if file_parameters_flags & !0x3 != 0 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx file parameters contain unsupported flags: 0x{file_parameters_flags:08x}"
       )));
     }
     if !block_size.is_power_of_two()
       || !(constants::VHDX_MIN_BLOCK_SIZE..=constants::VHDX_MAX_BLOCK_SIZE).contains(&block_size)
     {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid vhdx block size: {block_size}"
       )));
     }
@@ -185,7 +186,7 @@ impl VhdxMetadata {
       1 => VhdxDiskType::Fixed,
       2 => VhdxDiskType::Differential,
       _ => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "unsupported vhdx disk type flags: 0x{file_parameters_flags:08x}"
         )));
       }
@@ -193,7 +194,7 @@ impl VhdxMetadata {
 
     let virtual_disk_size_entry = required_entry(&entries, constants::VIRTUAL_DISK_SIZE_GUID)?;
     if virtual_disk_size_entry.flags & 0x4 == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx virtual disk size metadata item is not marked required".to_string(),
       ));
     }
@@ -205,7 +206,7 @@ impl VhdxMetadata {
         constants::VIRTUAL_DISK_SIZE_GUID,
       )?;
       if bytes.len() != 8 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "vhdx virtual disk size item must be 8 bytes".to_string(),
         ));
       }
@@ -214,7 +215,7 @@ impl VhdxMetadata {
       ])
     };
     if virtual_disk_size == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx virtual disk size must be non-zero".to_string(),
       ));
     }
@@ -232,7 +233,7 @@ impl VhdxMetadata {
       "physical",
     )?;
     if !block_size.is_multiple_of(logical_sector_size) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx block size is not aligned to the logical sector size".to_string(),
       ));
     }
@@ -258,7 +259,7 @@ impl VhdxMetadata {
       None => None,
     };
     if matches!(disk_type, VhdxDiskType::Differential) && parent_locator.is_none() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "differential vhdx images must provide a parent locator".to_string(),
       ));
     }
@@ -280,7 +281,7 @@ fn required_entry(
 ) -> Result<&MetadataEntry> {
   entries
     .get(&guid)
-    .ok_or_else(|| Error::InvalidFormat(format!("missing required vhdx metadata item: {guid}")))
+    .ok_or_else(|| Error::invalid_format(format!("missing required vhdx metadata item: {guid}")))
 }
 
 fn read_sector_size(
@@ -288,13 +289,13 @@ fn read_sector_size(
 ) -> Result<u32> {
   let bytes = read_metadata_item(region_data, entry.item_offset, entry.item_length, item_id)?;
   if bytes.len() != 4 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "vhdx {label} sector size item must be 4 bytes"
     )));
   }
   let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
   if value != 512 && value != 4096 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "invalid vhdx {label} sector size: {value}"
     )));
   }
@@ -305,17 +306,17 @@ fn read_metadata_item(
   region_data: &[u8], item_offset: u32, item_length: u32, item_id: VhdxGuid,
 ) -> Result<&[u8]> {
   let start = usize::try_from(item_offset).map_err(|_| {
-    Error::InvalidRange(format!("vhdx metadata item offset is too large: {item_id}"))
+    Error::invalid_range(format!("vhdx metadata item offset is too large: {item_id}"))
   })?;
   let length = usize::try_from(item_length).map_err(|_| {
-    Error::InvalidRange(format!("vhdx metadata item length is too large: {item_id}"))
+    Error::invalid_range(format!("vhdx metadata item length is too large: {item_id}"))
   })?;
   let end = start
     .checked_add(length)
-    .ok_or_else(|| Error::InvalidRange(format!("vhdx metadata item range overflow: {item_id}")))?;
+    .ok_or_else(|| Error::invalid_range(format!("vhdx metadata item range overflow: {item_id}")))?;
 
   region_data.get(start..end).ok_or_else(|| {
-    Error::InvalidFormat(format!(
+    Error::invalid_format(format!(
       "vhdx metadata item range exceeds the metadata region: {item_id}"
     ))
   })

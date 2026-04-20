@@ -55,7 +55,7 @@ impl EwfAnalyzedTable {
 impl EwfTableLayout {
   pub fn read(source: &dyn ByteSource, payload_offset: u64, payload_size: usize) -> Result<Self> {
     if payload_size < TABLE_HEADER_SIZE + TABLE_FOOTER_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ewf table payload is too small".to_string(),
       ));
     }
@@ -66,7 +66,7 @@ impl EwfTableLayout {
     let entry_count = read_u32_le(&header, 0);
     let table_size = table_size(entry_count)?;
     if payload_size < table_size {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf table payload size is smaller than the entry count requires: expected at least {table_size}, got {payload_size}"
       )));
     }
@@ -74,7 +74,7 @@ impl EwfTableLayout {
     let stored_header_checksum = read_u32_le(&header, 20);
     let calculated_header_checksum = adler32_slice(&header[..20]);
     if stored_header_checksum != calculated_header_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf table header checksum mismatch: stored 0x{stored_header_checksum:08x}, calculated 0x{calculated_header_checksum:08x}"
       )));
     }
@@ -82,9 +82,9 @@ impl EwfTableLayout {
     let footer_offset = payload_offset
       .checked_add(
         u64::try_from(table_footer_offset(entry_count)?)
-          .map_err(|_| Error::InvalidRange("ewf table footer offset overflow".to_string()))?,
+          .map_err(|_| Error::invalid_range("ewf table footer offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("ewf table footer offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ewf table footer offset overflow"))?;
     let mut footer = [0u8; TABLE_FOOTER_SIZE];
     source.read_exact_at(footer_offset, &mut footer)?;
 
@@ -100,9 +100,9 @@ pub(super) fn read_entry_pair(
   source: &dyn ByteSource, entries_offset: u64, entry_count: u32, entry_index: usize,
 ) -> Result<(EwfTableEntry, Option<EwfTableEntry>)> {
   let entry_count = usize::try_from(entry_count)
-    .map_err(|_| Error::InvalidRange("ewf table entry count is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("ewf table entry count is too large"))?;
   if entry_index >= entry_count {
-    return Err(Error::InvalidRange(format!(
+    return Err(Error::invalid_range(format!(
       "ewf table entry {entry_index} is out of bounds"
     )));
   }
@@ -112,11 +112,11 @@ pub(super) fn read_entry_pair(
   let entry_offset = entries_offset
     .checked_add(
       u64::try_from(entry_index)
-        .map_err(|_| Error::InvalidRange("ewf table entry index is too large".to_string()))?
+        .map_err(|_| Error::invalid_range("ewf table entry index is too large"))?
         .checked_mul(TABLE_ENTRY_SIZE as u64)
-        .ok_or_else(|| Error::InvalidRange("ewf table entry offset overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("ewf table entry offset overflow"))?,
     )
-    .ok_or_else(|| Error::InvalidRange("ewf table entry offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ewf table entry offset overflow"))?;
   let mut bytes = [0u8; TABLE_ENTRY_SIZE * 2];
   source.read_exact_at(entry_offset, &mut bytes[..read_len])?;
 
@@ -135,7 +135,7 @@ fn validate_entries(
 ) -> Result<Option<usize>> {
   let entries_offset = payload_offset
     .checked_add(TABLE_HEADER_SIZE as u64)
-    .ok_or_else(|| Error::InvalidRange("ewf table entry offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ewf table entry offset overflow"))?;
   let entry_bytes = entry_array_size(layout.entry_count)?;
   if entry_bytes == 0 {
     return Ok(None);
@@ -171,16 +171,15 @@ fn validate_entries(
         && current_offset < previous_offset
       {
         if overflow_mode {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "ewf chunk offsets must be monotonically increasing within a table".to_string(),
           ));
         }
         if raw_offset
-          < u32::try_from(previous_offset).map_err(|_| {
-            Error::InvalidRange("ewf chunk offset does not fit in a table entry".to_string())
-          })?
+          < u32::try_from(previous_offset)
+            .map_err(|_| Error::invalid_range("ewf chunk offset does not fit in a table entry"))?
         {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "ewf chunk offsets must be monotonically increasing within a table".to_string(),
           ));
         }
@@ -195,15 +194,15 @@ fn validate_entries(
     read_offset = read_offset
       .checked_add(
         u64::try_from(read_len)
-          .map_err(|_| Error::InvalidRange("ewf table scan offset overflow".to_string()))?,
+          .map_err(|_| Error::invalid_range("ewf table scan offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("ewf table scan offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ewf table scan offset overflow"))?;
     remaining -= read_len;
   }
 
   let calculated_entry_checksum = checksum.checksum();
   if calculated_entry_checksum != layout.entry_checksum {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "ewf table entry checksum mismatch: stored 0x{:08x}, calculated 0x{calculated_entry_checksum:08x}",
       layout.entry_checksum
     )));
@@ -216,20 +215,20 @@ fn table_size(entry_count: u32) -> Result<usize> {
   TABLE_HEADER_SIZE
     .checked_add(entry_array_size(entry_count)?)
     .and_then(|size| size.checked_add(TABLE_FOOTER_SIZE))
-    .ok_or_else(|| Error::InvalidRange("ewf table size overflow".to_string()))
+    .ok_or_else(|| Error::invalid_range("ewf table size overflow"))
 }
 
 fn table_footer_offset(entry_count: u32) -> Result<usize> {
   TABLE_HEADER_SIZE
     .checked_add(entry_array_size(entry_count)?)
-    .ok_or_else(|| Error::InvalidRange("ewf table footer offset overflow".to_string()))
+    .ok_or_else(|| Error::invalid_range("ewf table footer offset overflow"))
 }
 
 fn entry_array_size(entry_count: u32) -> Result<usize> {
   usize::try_from(entry_count)
-    .map_err(|_| Error::InvalidRange("ewf table entry count is too large".to_string()))?
+    .map_err(|_| Error::invalid_range("ewf table entry count is too large"))?
     .checked_mul(TABLE_ENTRY_SIZE)
-    .ok_or_else(|| Error::InvalidRange("ewf table entry array size overflow".to_string()))
+    .ok_or_else(|| Error::invalid_range("ewf table entry array size overflow"))
 }
 
 fn read_u32_le(data: &[u8], offset: usize) -> u32 {

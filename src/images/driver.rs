@@ -38,7 +38,7 @@ pub(crate) trait Image: ByteSource {
     &self, selector: &crate::DataViewSelector<'_>, options: crate::OpenOptions<'_>,
   ) -> crate::Result<Box<dyn DataSource>> {
     let _ = (selector, options);
-    Err(crate::Error::Unsupported(format!(
+    Err(crate::Error::unsupported(format!(
       "{} does not expose image child views",
       self.descriptor().id
     )))

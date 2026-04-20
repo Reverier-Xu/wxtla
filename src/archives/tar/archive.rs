@@ -89,13 +89,13 @@ impl TarArchive {
       let header = TarHeader::from_bytes(&header_bytes)?;
       let data_offset = offset
         .checked_add(BLOCK_SIZE)
-        .ok_or_else(|| Error::InvalidRange("tar data offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("tar data offset overflow"))?;
       let padded_size = round_up(header.size, BLOCK_SIZE)?;
       let next_offset = data_offset
         .checked_add(padded_size)
-        .ok_or_else(|| Error::InvalidRange("tar entry end overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("tar entry end overflow"))?;
       if next_offset > source_size {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "tar entry payload exceeds the source size".to_string(),
         ));
       }
@@ -105,7 +105,7 @@ impl TarArchive {
           let raw = source.read_bytes_at(
             data_offset,
             usize::try_from(header.size)
-              .map_err(|_| Error::InvalidRange("tar pax payload is too large".to_string()))?,
+              .map_err(|_| Error::invalid_range("tar pax payload is too large"))?,
           )?;
           let parsed = parse_pax_records(&raw)?;
           if header.typeflag == TYPE_PAX_GLOBAL {
@@ -118,7 +118,7 @@ impl TarArchive {
           let raw = source.read_bytes_at(
             data_offset,
             usize::try_from(header.size)
-              .map_err(|_| Error::InvalidRange("tar long name payload is too large".to_string()))?,
+              .map_err(|_| Error::invalid_range("tar long name payload is too large"))?,
           )?;
           pending_long_name = Some(read_c_string(&raw));
         }
@@ -126,7 +126,7 @@ impl TarArchive {
           let raw = source.read_bytes_at(
             data_offset,
             usize::try_from(header.size)
-              .map_err(|_| Error::InvalidRange("tar long link payload is too large".to_string()))?,
+              .map_err(|_| Error::invalid_range("tar long link payload is too large"))?,
           )?;
           pending_long_link = Some(read_c_string(&raw));
         }
@@ -153,7 +153,7 @@ impl TarArchive {
           path = normalize_path(&path, is_dir)?;
           link_name = normalize_link_path(&link_name)?;
           if path.is_empty() {
-            return Err(Error::InvalidFormat(
+            return Err(Error::invalid_format(
               "tar archive entries must have a non-empty path".to_string(),
             ));
           }
@@ -169,7 +169,7 @@ impl TarArchive {
             },
             TYPE_SYMLINK | TYPE_DIR | TYPE_CHAR | TYPE_BLOCK | TYPE_FIFO => TarEntryData::None,
             other => {
-              return Err(Error::InvalidFormat(format!(
+              return Err(Error::invalid_format(format!(
                 "unsupported tar entry typeflag: 0x{other:02x}"
               )));
             }
@@ -213,10 +213,10 @@ impl TarArchive {
 
     for path in &ordered_paths {
       let builder = builders.get(path).ok_or_else(|| {
-        Error::InvalidFormat(format!("missing tar entry builder for path: {path}"))
+        Error::invalid_format(format!("missing tar entry builder for path: {path}"))
       })?;
       let id = path_to_id.get(path).cloned().ok_or_else(|| {
-        Error::InvalidFormat(format!("missing tar entry identifier for path: {path}"))
+        Error::invalid_format(format!("missing tar entry identifier for path: {path}"))
       })?;
       entries.push(TarEntry {
         record: NamespaceNodeRecord::new(id, builder.kind, builder.size).with_path(path.clone()),
@@ -227,18 +227,18 @@ impl TarArchive {
 
     for path in &ordered_paths {
       let child_id = path_to_id.get(path).cloned().ok_or_else(|| {
-        Error::InvalidFormat(format!("missing tar path mapping for path: {path}"))
+        Error::invalid_format(format!("missing tar path mapping for path: {path}"))
       })?;
       let child_index = entry_id_to_index(&child_id)?;
       let child_kind = entries
         .get(child_index)
-        .ok_or_else(|| Error::NotFound(format!("missing tar child entry index: {child_index}")))?
+        .ok_or_else(|| Error::not_found(format!("missing tar child entry index: {child_index}")))?
         .record
         .kind;
       let name = relative_name(path);
       let parent_index = match parent_path(path) {
         Some(parent) => entry_id_to_index(path_to_id.get(parent).ok_or_else(|| {
-          Error::InvalidFormat(format!("missing tar parent directory mapping: {parent}"))
+          Error::invalid_format(format!("missing tar parent directory mapping: {parent}"))
         })?)?,
         None => 0,
       };
@@ -268,7 +268,7 @@ impl TarArchive {
     self
       .entries
       .get(index)
-      .ok_or_else(|| Error::NotFound(format!("missing tar archive entry index: {index}")))
+      .ok_or_else(|| Error::not_found(format!("missing tar archive entry index: {index}")))
   }
 
   fn open_file_resolved(
@@ -276,7 +276,7 @@ impl TarArchive {
   ) -> Result<ByteSourceHandle> {
     let index = entry_id_to_index(entry_id)?;
     if !seen.insert(index) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "tar hard links must not form cycles".to_string(),
       ));
     }
@@ -286,13 +286,12 @@ impl TarArchive {
         Ok(Arc::new(SliceDataSource::new(self.source.clone(), *offset, *size)) as ByteSourceHandle)
       }
       TarEntryData::HardLink { target_path } => {
-        let target = self
-          .path_to_id
-          .get(target_path)
-          .ok_or_else(|| Error::NotFound(format!("missing tar hard-link target: {target_path}")))?;
+        let target = self.path_to_id.get(target_path).ok_or_else(|| {
+          Error::not_found(format!("missing tar hard-link target: {target_path}"))
+        })?;
         self.open_file_resolved(target, seen)
       }
-      TarEntryData::None => Err(Error::InvalidFormat(
+      TarEntryData::None => Err(Error::invalid_format(
         "tar entry does not expose readable file data".to_string(),
       )),
     }
@@ -315,7 +314,7 @@ impl Archive for TarArchive {
   fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let entry = self.entry_ref(directory_id)?;
     if entry.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "tar directory reads require a directory entry".to_string(),
       ));
     }
@@ -325,7 +324,7 @@ impl Archive for TarArchive {
   fn open_file(&self, entry_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let entry = self.entry_ref(entry_id)?;
     if !matches!(entry.record.kind, NamespaceNodeKind::File) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "tar file opens require a regular file or hard link entry".to_string(),
       ));
     }
@@ -336,12 +335,12 @@ impl Archive for TarArchive {
 impl TarHeader {
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != HEADER_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "tar headers must be exactly 512 bytes".to_string(),
       ));
     }
     if data.iter().all(|byte| *byte == 0) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "tar headers must not be all zeroes".to_string(),
       ));
     }
@@ -355,7 +354,7 @@ impl TarHeader {
       .map(|byte| u64::from(*byte))
       .sum::<u64>();
     if stored_checksum != calculated_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid tar header checksum: stored={stored_checksum} calculated={calculated_checksum}"
       )));
     }
@@ -387,14 +386,14 @@ fn parse_pax_records(data: &[u8]) -> Result<BTreeMap<String, String>> {
     let len_end = data[offset..]
       .iter()
       .position(|byte| *byte == b' ')
-      .ok_or_else(|| Error::InvalidFormat("invalid tar pax record length".to_string()))?
+      .ok_or_else(|| Error::invalid_format("invalid tar pax record length"))?
       + offset;
     let record_len = std::str::from_utf8(&data[offset..len_end])
-      .map_err(|_| Error::InvalidFormat("tar pax lengths must be ASCII".to_string()))?
+      .map_err(|_| Error::invalid_format("tar pax lengths must be ASCII"))?
       .parse::<usize>()
-      .map_err(|_| Error::InvalidFormat("invalid tar pax length value".to_string()))?;
+      .map_err(|_| Error::invalid_format("invalid tar pax length value"))?;
     if record_len == 0 || offset + record_len > data.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "tar pax record extends beyond the payload".to_string(),
       ));
     }
@@ -402,13 +401,13 @@ fn parse_pax_records(data: &[u8]) -> Result<BTreeMap<String, String>> {
     let separator = record
       .iter()
       .position(|byte| *byte == b'=')
-      .ok_or_else(|| Error::InvalidFormat("invalid tar pax record contents".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("invalid tar pax record contents"))?;
     let key = &record[..separator];
     let value = &record[separator + 1..];
-    let key = std::str::from_utf8(key)
-      .map_err(|_| Error::InvalidFormat("tar pax keys must be UTF-8".to_string()))?;
+    let key =
+      std::str::from_utf8(key).map_err(|_| Error::invalid_format("tar pax keys must be UTF-8"))?;
     let value = String::from_utf8(value.to_vec())
-      .map_err(|_| Error::InvalidFormat("tar pax values must be UTF-8".to_string()))?;
+      .map_err(|_| Error::invalid_format("tar pax values must be UTF-8"))?;
     records.insert(key.to_string(), value);
     offset += record_len;
   }
@@ -431,7 +430,7 @@ fn parse_numeric_field(field: &[u8]) -> Result<u64> {
   }
   if field[0] & 0x80 != 0 {
     if field[0] & 0x40 != 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "negative base-256 tar numbers are not supported".to_string(),
       ));
     }
@@ -452,9 +451,9 @@ fn parse_numeric_field(field: &[u8]) -> Result<u64> {
     return Ok(0);
   }
   let text = std::str::from_utf8(&trimmed)
-    .map_err(|_| Error::InvalidFormat("tar numeric fields must be ASCII".to_string()))?;
+    .map_err(|_| Error::invalid_format("tar numeric fields must be ASCII"))?;
   u64::from_str_radix(text, 8)
-    .map_err(|_| Error::InvalidFormat(format!("invalid tar numeric field: {text}")))
+    .map_err(|_| Error::invalid_format(format!("invalid tar numeric field: {text}")))
 }
 
 fn read_c_string(field: &[u8]) -> String {
@@ -475,13 +474,13 @@ fn normalize_path(path: &str, is_dir: bool) -> Result<String> {
     .filter(|component| !component.is_empty() && *component != ".")
     .collect::<Vec<_>>();
   if components.contains(&"..") {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "tar paths must not contain parent directory traversals".to_string(),
     ));
   }
   let normalized = components.join("/");
   if normalized.is_empty() && !is_dir {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "tar file entries must contain a non-empty path".to_string(),
     ));
   }
@@ -508,7 +507,7 @@ fn ensure_parent_directories(
         data: TarEntryData::None,
       });
     if entry.kind != NamespaceNodeKind::Directory {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "tar parent path collides with a non-directory entry".to_string(),
       ));
     }
@@ -529,10 +528,10 @@ fn relative_name(path: &str) -> String {
 
 fn entry_id_to_index(entry_id: &NamespaceNodeId) -> Result<usize> {
   let bytes: [u8; 8] = entry_id.as_bytes().try_into().map_err(|_| {
-    Error::InvalidFormat("tar archive entry identifiers must be native u64 values".to_string())
+    Error::invalid_format("tar archive entry identifiers must be native u64 values")
   })?;
   usize::try_from(u64::from_le_bytes(bytes))
-    .map_err(|_| Error::InvalidRange("tar archive entry index is too large".to_string()))
+    .map_err(|_| Error::invalid_range("tar archive entry index is too large"))
 }
 
 fn round_up(value: u64, alignment: u64) -> Result<u64> {
@@ -545,7 +544,7 @@ fn round_up(value: u64, alignment: u64) -> Result<u64> {
   }
   value
     .checked_add(alignment - remainder)
-    .ok_or_else(|| Error::InvalidRange("tar padded size overflow".to_string()))
+    .ok_or_else(|| Error::invalid_range("tar padded size overflow"))
 }
 
 #[cfg(test)]
@@ -562,7 +561,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

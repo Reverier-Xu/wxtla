@@ -97,7 +97,7 @@ impl ApfsVolumeGroupView {
       ResolvedOverlayPath::Data(path) => self
         .data
         .as_ref()
-        .ok_or_else(|| Error::NotFound("apfs volume group has no data volume member".to_string()))?
+        .ok_or_else(|| Error::not_found("apfs volume group has no data volume member"))?
         .resolve_path(path.trim_start_matches('/')),
     }
   }
@@ -110,9 +110,10 @@ impl ApfsVolumeGroupView {
         self.system.read_dir(&node.id)
       }
       ResolvedOverlayPath::Data(path) => {
-        let data = self.data.as_ref().ok_or_else(|| {
-          Error::NotFound("apfs volume group has no data volume member".to_string())
-        })?;
+        let data = self
+          .data
+          .as_ref()
+          .ok_or_else(|| Error::not_found("apfs volume group has no data volume member"))?;
         let node = data.resolve_path(path.trim_start_matches('/'))?;
         data.read_dir(&node.id)
       }
@@ -127,9 +128,10 @@ impl ApfsVolumeGroupView {
         self.system.open_content(&node.id)
       }
       ResolvedOverlayPath::Data(path) => {
-        let data = self.data.as_ref().ok_or_else(|| {
-          Error::NotFound("apfs volume group has no data volume member".to_string())
-        })?;
+        let data = self
+          .data
+          .as_ref()
+          .ok_or_else(|| Error::not_found("apfs volume group has no data volume member"))?;
         let node = data.resolve_path(path.trim_start_matches('/'))?;
         data.open_content(&node.id)
       }
@@ -149,10 +151,10 @@ impl ApfsContainer {
       .volume_groups()
       .into_iter()
       .find(|group| group.group_id() == group_id)
-      .ok_or_else(|| Error::NotFound(format!("apfs volume group id was not found: {group_id}")))?;
+      .ok_or_else(|| Error::not_found(format!("apfs volume group id was not found: {group_id}")))?;
 
     let system_member = group.system_member().ok_or_else(|| {
-      Error::NotFound(format!("apfs volume group {group_id} has no system member"))
+      Error::not_found(format!("apfs volume group {group_id} has no system member"))
     })?;
     let system = self.open_group_member(system_member.index, options.credentials)?;
     let data = group

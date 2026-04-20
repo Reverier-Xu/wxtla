@@ -46,7 +46,7 @@ impl RelatedPathBuf {
     }
 
     if path.starts_with('/') || path.starts_with('\\') {
-      return Err(Error::InvalidSourceReference(format!(
+      return Err(Error::invalid_source_reference(format!(
         "related path must be relative: {path}"
       )));
     }
@@ -54,7 +54,7 @@ impl RelatedPathBuf {
     let mut parsed = Self::new();
     for component in path.split(['/', '\\']) {
       if component.is_empty() {
-        return Err(Error::InvalidSourceReference(format!(
+        return Err(Error::invalid_source_reference(format!(
           "related path contains an empty component: {path}"
         )));
       }
@@ -171,19 +171,19 @@ impl RelatedPathComponent {
 
 fn validate_normal_component(component: &str) -> Result<()> {
   if component.is_empty() {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "related path component must not be empty".to_string(),
     ));
   }
 
   if component == "." || component == ".." {
-    return Err(Error::InvalidSourceReference(format!(
+    return Err(Error::invalid_source_reference(format!(
       "special path component must use explicit helpers: {component}"
     )));
   }
 
   if component.contains(['/', '\\', '\0']) {
-    return Err(Error::InvalidSourceReference(format!(
+    return Err(Error::invalid_source_reference(format!(
       "invalid related path component: {component}"
     )));
   }

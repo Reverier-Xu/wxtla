@@ -9,7 +9,7 @@ pub(crate) fn read_exact_at(source: &dyn ByteSource, offset: u64, size: usize) -
 pub(crate) fn read_slice(data: &[u8], offset: usize, size: usize) -> Result<&[u8]> {
   data
     .get(offset..offset + size)
-    .ok_or_else(|| Error::InvalidFormat("xfs slice out of bounds".to_string()))
+    .ok_or_else(|| Error::invalid_format("xfs slice out of bounds"))
 }
 
 pub(crate) fn be_u16(data: &[u8]) -> u16 {

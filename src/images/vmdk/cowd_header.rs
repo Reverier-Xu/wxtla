@@ -40,27 +40,27 @@ impl VmdkCowdHeader {
 
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != constants::COWD_HEADER_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vmdk cowd header must be {} bytes, got {}",
         constants::COWD_HEADER_SIZE,
         data.len()
       )));
     }
     if &data[0..4] != constants::COWD_HEADER_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid vmdk cowd header signature".to_string(),
       ));
     }
 
     let format_version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
     if format_version != 1 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported vmdk cowd format version: {format_version}"
       )));
     }
     let flags = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
     if flags & !constants::COWD_SUPPORTED_FLAGS != 0 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported vmdk cowd flags: 0x{flags:08x}"
       )));
     }
@@ -76,27 +76,27 @@ impl VmdkCowdHeader {
     let dirty_raw = u32::from_le_bytes([data[1648], data[1649], data[1650], data[1651]]);
 
     if capacity_sectors == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk cowd capacity must be non-zero".to_string(),
       ));
     }
     if sectors_per_grain == 0 || !sectors_per_grain.is_power_of_two() {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid vmdk cowd sectors-per-grain value: {sectors_per_grain}"
       )));
     }
     if grain_directory_start_sector == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk cowd grain-directory start sector must be non-zero".to_string(),
       ));
     }
     if grain_directory_entries == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk cowd grain-directory entry count must be non-zero".to_string(),
       ));
     }
     if dirty_raw != 0 && dirty_raw != 1 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported vmdk cowd dirty flag value: {dirty_raw}"
       )));
     }
@@ -120,13 +120,13 @@ impl VmdkCowdHeader {
   pub fn grain_size_bytes(&self) -> Result<u64> {
     u64::from(self.sectors_per_grain)
       .checked_mul(constants::BYTES_PER_SECTOR)
-      .ok_or_else(|| Error::InvalidRange("vmdk cowd grain size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("vmdk cowd grain size overflow"))
   }
 
   pub fn virtual_size_bytes(&self) -> Result<u64> {
     u64::from(self.capacity_sectors)
       .checked_mul(constants::BYTES_PER_SECTOR)
-      .ok_or_else(|| Error::InvalidRange("vmdk cowd virtual size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("vmdk cowd virtual size overflow"))
   }
 }
 

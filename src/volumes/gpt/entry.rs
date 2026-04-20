@@ -29,7 +29,7 @@ impl GptPartitionEntry {
   /// Parse a GPT partition entry from a buffer of at least 128 bytes.
   pub fn parse(index: usize, data: &[u8]) -> Result<Self> {
     if data.len() < constants::PARTITION_ENTRY_MIN_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "gpt entry must be at least {} bytes, got {}",
         constants::PARTITION_ENTRY_MIN_SIZE,
         data.len()
@@ -61,7 +61,7 @@ impl GptPartitionEntry {
   /// Convert the entry into a byte span for the given block size.
   pub fn span(&self, block_size: u32) -> Result<VolumeSpan> {
     if self.last_lba < self.first_lba {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "gpt entry {} has an invalid lba range",
         self.index
       )));
@@ -70,15 +70,15 @@ impl GptPartitionEntry {
     let byte_offset = self
       .first_lba
       .checked_mul(u64::from(block_size))
-      .ok_or_else(|| Error::InvalidRange("gpt partition offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("gpt partition offset overflow"))?;
     let block_count = self
       .last_lba
       .checked_sub(self.first_lba)
       .and_then(|delta| delta.checked_add(1))
-      .ok_or_else(|| Error::InvalidRange("gpt partition length overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("gpt partition length overflow"))?;
     let byte_size = block_count
       .checked_mul(u64::from(block_size))
-      .ok_or_else(|| Error::InvalidRange("gpt partition size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("gpt partition size overflow"))?;
 
     Ok(VolumeSpan::new(byte_offset, byte_size))
   }
@@ -139,7 +139,7 @@ impl GptPartitionInfo {
 
 fn decode_name(data: &[u8]) -> Result<String> {
   if data.len() != constants::NAME_LEN {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "gpt name field must be {} bytes, got {}",
       constants::NAME_LEN,
       data.len()
@@ -156,7 +156,7 @@ fn decode_name(data: &[u8]) -> Result<String> {
   }
 
   String::from_utf16(&code_units)
-    .map_err(|_| Error::InvalidFormat("gpt partition name is not valid utf-16".to_string()))
+    .map_err(|_| Error::invalid_format("gpt partition name is not valid utf-16"))
 }
 
 #[cfg(test)]

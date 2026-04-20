@@ -35,7 +35,7 @@ impl GptHeader {
   pub fn read(source: &dyn ByteSource, block_size: u32, lba: u64) -> Result<Self> {
     let offset = lba
       .checked_mul(u64::from(block_size))
-      .ok_or_else(|| Error::InvalidRange("gpt header offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("gpt header offset overflow"))?;
     let block = source.read_bytes_at(offset, block_size as usize)?;
     Self::parse(&block)
   }
@@ -43,39 +43,39 @@ impl GptHeader {
   /// Parse a GPT header from a block containing the header at offset 0.
   pub fn parse(block: &[u8]) -> Result<Self> {
     if block.len() < constants::HEADER_MIN_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "gpt header block is too small: {}",
         block.len()
       )));
     }
     if &block[0..8] != constants::HEADER_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "gpt header signature is missing".to_string(),
       ));
     }
 
     let revision = u32::from_le_bytes([block[8], block[9], block[10], block[11]]);
     if revision != constants::GPT_FORMAT_REVISION {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported gpt revision: 0x{revision:08x}"
       )));
     }
 
     let header_size = u32::from_le_bytes([block[12], block[13], block[14], block[15]]);
     if (header_size as usize) < constants::HEADER_MIN_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported gpt header size: {header_size}"
       )));
     }
     if (header_size as usize) > block.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "gpt header size exceeds the block size".to_string(),
       ));
     }
 
     let entry_size = u32::from_le_bytes([block[84], block[85], block[86], block[87]]);
     if entry_size < constants::PARTITION_ENTRY_MIN_SIZE as u32 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported gpt entry size: {entry_size}"
       )));
     }

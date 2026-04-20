@@ -53,7 +53,7 @@ pub(crate) fn normalize_sparse_extents(
       continue;
     }
     if extent.logical_block < cursor {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "overlapping xfs extents are not supported".to_string(),
       ));
     }
@@ -68,7 +68,7 @@ pub(crate) fn normalize_sparse_extents(
     cursor = extent
       .logical_block
       .checked_add(extent.number_of_blocks)
-      .ok_or_else(|| Error::InvalidRange("xfs extent logical range overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("xfs extent logical range overflow"))?;
     normalized.push(extent);
   }
 

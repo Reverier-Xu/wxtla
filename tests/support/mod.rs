@@ -28,7 +28,7 @@ pub fn child_named(
     .read_dir(directory_id)?
     .into_iter()
     .find(|entry| entry.name == name)
-    .ok_or_else(|| wxtla::Error::NotFound(format!("missing directory entry: {name}")))
+    .ok_or_else(|| wxtla::Error::not_found(format!("missing directory entry: {name}")))
 }
 
 pub struct FileDataSource {

@@ -63,7 +63,7 @@ impl QcowImage {
   pub fn open(source: ByteSourceHandle) -> Result<Self> {
     let parsed = parse(source.clone())?;
     if parsed.header.uses_external_data_file() {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "qcow external data files require source hints and a related-source resolver".to_string(),
       ));
     }
@@ -75,12 +75,12 @@ impl QcowImage {
     let parsed = parse(source.clone())?;
     let backing_image = if let Some(backing_file_name) = parsed.backing_file_name.as_deref() {
       let resolver = hints.resolver().ok_or_else(|| {
-        Error::InvalidSourceReference(
+        Error::invalid_source_reference(
           "qcow backing files require a related-source resolver".to_string(),
         )
       })?;
       let identity = hints.source_identity().ok_or_else(|| {
-        Error::InvalidSourceReference(
+        Error::invalid_source_reference(
           "qcow backing files require a source identity hint".to_string(),
         )
       })?;
@@ -90,9 +90,9 @@ impl QcowImage {
         backing_file_name,
         RelatedSourcePurpose::BackingFile,
       )?
-      .ok_or_else(|| Error::NotFound(format!("missing qcow backing file: {backing_file_name}")))?;
+      .ok_or_else(|| Error::not_found(format!("missing qcow backing file: {backing_file_name}")))?;
       if &backing_path == identity.logical_path() {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "qcow backing file hint resolves to the same image".to_string(),
         ));
       }
@@ -110,12 +110,12 @@ impl QcowImage {
     let external_data_source =
       if let Some(external_data_path) = parsed.external_data_path.as_deref() {
         let resolver = hints.resolver().ok_or_else(|| {
-          Error::InvalidSourceReference(
+          Error::invalid_source_reference(
             "qcow external data files require a related-source resolver".to_string(),
           )
         })?;
         let identity = hints.source_identity().ok_or_else(|| {
-          Error::InvalidSourceReference(
+          Error::invalid_source_reference(
             "qcow external data files require a source identity hint".to_string(),
           )
         })?;
@@ -126,12 +126,12 @@ impl QcowImage {
           RelatedSourcePurpose::Extent,
         )?
         .ok_or_else(|| {
-          Error::NotFound(format!(
+          Error::not_found(format!(
             "missing qcow external data file: {external_data_path}"
           ))
         })?;
         if &external_path == identity.logical_path() {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "qcow external data path resolves to the same image".to_string(),
           ));
         }
@@ -213,7 +213,7 @@ impl QcowImage {
     let snapshot = self
       .snapshots
       .get(index)
-      .ok_or_else(|| Error::NotFound(format!("qcow snapshot index {index} is out of bounds")))?;
+      .ok_or_else(|| Error::not_found(format!("qcow snapshot index {index} is out of bounds")))?;
     let parsed = ParsedQcow {
       header: self.header.clone(),
       l1_table: self.l1_table.clone(),
@@ -247,7 +247,7 @@ impl QcowImage {
       self
         .cluster_size()?
         .checked_div(16)
-        .ok_or_else(|| Error::InvalidRange("qcow extended l2 entry count overflow".to_string()))
+        .ok_or_else(|| Error::invalid_range("qcow extended l2 entry count overflow"))
     } else {
       self.header.l2_entry_count()
     }
@@ -257,7 +257,7 @@ impl QcowImage {
     self
       .cluster_size()?
       .checked_div(32)
-      .ok_or_else(|| Error::InvalidRange("qcow subcluster size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("qcow subcluster size overflow"))
   }
 
   fn l1_offset_mask(&self) -> u64 {
@@ -281,9 +281,9 @@ impl QcowImage {
       .l1_table
       .get(
         usize::try_from(l1_index)
-          .map_err(|_| Error::InvalidRange("qcow l1 index conversion overflow".to_string()))?,
+          .map_err(|_| Error::invalid_range("qcow l1 index conversion overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange(format!("qcow l1 index {l1_index} is out of bounds")))?;
+      .ok_or_else(|| Error::invalid_range(format!("qcow l1 index {l1_index} is out of bounds")))?;
     let l2_offset = raw_l1 & self.l1_offset_mask();
     if l2_offset == 0 {
       return Ok(None);
@@ -293,7 +293,7 @@ impl QcowImage {
       .l2_cache
       .get_or_load(l1_index, || {
         let table_bytes = usize::try_from(self.cluster_size()?)
-          .map_err(|_| Error::InvalidRange("qcow l2 table size is too large".to_string()))?;
+          .map_err(|_| Error::invalid_range("qcow l2 table size is too large"))?;
         let raw = self.source.read_bytes_at(l2_offset, table_bytes)?;
         let entries = raw
           .chunks_exact(8)
@@ -311,12 +311,12 @@ impl QcowImage {
   fn read_cluster(&self, cluster_offset: u64) -> Result<Arc<Vec<u8>>> {
     self.cluster_cache.get_or_load(cluster_offset, || {
       let cluster_size = usize::try_from(self.cluster_size()?)
-        .map_err(|_| Error::InvalidRange("qcow cluster size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("qcow cluster size is too large"))?;
       let storage = if self.header.uses_external_data_file() {
         self
           .external_data_source
           .as_ref()
-          .ok_or_else(|| Error::NotFound("qcow external data source is missing".to_string()))?
+          .ok_or_else(|| Error::not_found("qcow external data source is missing"))?
       } else {
         &self.source
       };
@@ -335,15 +335,15 @@ impl QcowImage {
     };
     if self.header.uses_extended_l2() {
       let pair_index = usize::try_from(l2_index)
-        .map_err(|_| Error::InvalidRange("qcow l2 index conversion overflow".to_string()))?
+        .map_err(|_| Error::invalid_range("qcow l2 index conversion overflow"))?
         .checked_mul(2)
-        .ok_or_else(|| Error::InvalidRange("qcow extended l2 index overflow".to_string()))?;
-      let descriptor = *l2_table
-        .get(pair_index)
-        .ok_or_else(|| Error::InvalidRange(format!("qcow l2 index {l2_index} is out of bounds")))?;
-      let bitmap = *l2_table
-        .get(pair_index + 1)
-        .ok_or_else(|| Error::InvalidRange(format!("qcow l2 index {l2_index} is out of bounds")))?;
+        .ok_or_else(|| Error::invalid_range("qcow extended l2 index overflow"))?;
+      let descriptor = *l2_table.get(pair_index).ok_or_else(|| {
+        Error::invalid_range(format!("qcow l2 index {l2_index} is out of bounds"))
+      })?;
+      let bitmap = *l2_table.get(pair_index + 1).ok_or_else(|| {
+        Error::invalid_range(format!("qcow l2 index {l2_index} is out of bounds"))
+      })?;
 
       return self.parse_extended_l2_entry(descriptor, bitmap);
     }
@@ -351,9 +351,9 @@ impl QcowImage {
     let raw = *l2_table
       .get(
         usize::try_from(l2_index)
-          .map_err(|_| Error::InvalidRange("qcow l2 index conversion overflow".to_string()))?,
+          .map_err(|_| Error::invalid_range("qcow l2 index conversion overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange(format!("qcow l2 index {l2_index} is out of bounds")))?;
+      .ok_or_else(|| Error::invalid_range(format!("qcow l2 index {l2_index} is out of bounds")))?;
 
     self.parse_l2_entry(raw)
   }
@@ -373,16 +373,16 @@ impl QcowImage {
     if compressed {
       let cluster_bits = self.header.cluster_bits;
       let host_offset_bits = if self.header.version == super::constants::QCOW_VERSION_1 {
-        63u32.checked_sub(cluster_bits).ok_or_else(|| {
-          Error::InvalidFormat("qcow v1 compressed cluster bits are invalid".to_string())
-        })?
+        63u32
+          .checked_sub(cluster_bits)
+          .ok_or_else(|| Error::invalid_format("qcow v1 compressed cluster bits are invalid"))?
       } else {
-        70u32.checked_sub(cluster_bits).ok_or_else(|| {
-          Error::InvalidFormat("qcow compressed cluster bits are invalid".to_string())
-        })?
+        70u32
+          .checked_sub(cluster_bits)
+          .ok_or_else(|| Error::invalid_format("qcow compressed cluster bits are invalid"))?
       };
       if host_offset_bits == 0 || host_offset_bits >= 62 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "qcow compressed cluster offset bit count is invalid".to_string(),
         ));
       }
@@ -394,22 +394,19 @@ impl QcowImage {
       };
       let host_offset = descriptor & host_offset_mask;
       let stored_size = if self.header.version == super::constants::QCOW_VERSION_1 {
-        usize::try_from(descriptor >> host_offset_bits).map_err(|_| {
-          Error::InvalidRange("qcow compressed cluster size is too large".to_string())
-        })?
+        usize::try_from(descriptor >> host_offset_bits)
+          .map_err(|_| Error::invalid_range("qcow compressed cluster size is too large"))?
       } else {
         let additional_sectors = descriptor >> host_offset_bits;
         usize::try_from(
           u64::from(512u16)
             .checked_mul(additional_sectors.saturating_add(1))
-            .ok_or_else(|| {
-              Error::InvalidRange("qcow compressed cluster size overflow".to_string())
-            })?,
+            .ok_or_else(|| Error::invalid_range("qcow compressed cluster size overflow"))?,
         )
-        .map_err(|_| Error::InvalidRange("qcow compressed cluster size is too large".to_string()))?
+        .map_err(|_| Error::invalid_range("qcow compressed cluster size is too large"))?
       };
       if stored_size == 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "qcow compressed cluster size must be non-zero".to_string(),
         ));
       }
@@ -442,7 +439,7 @@ impl QcowImage {
     let compressed = (descriptor & QCOW_OFLAG_COMPRESSED) != 0;
     if compressed {
       if bitmap != 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "qcow extended compressed l2 entries must not carry a subcluster bitmap".to_string(),
         ));
       }
@@ -450,7 +447,7 @@ impl QcowImage {
       return self.parse_l2_entry(descriptor);
     }
     if (descriptor & 1) != 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "qcow extended l2 descriptors must not set the legacy zero flag".to_string(),
       ));
     }
@@ -459,12 +456,12 @@ impl QcowImage {
     let allocation_bitmap = bitmap as u32;
     let zero_bitmap = (bitmap >> 32) as u32;
     if allocation_bitmap & zero_bitmap != 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "qcow extended l2 subclusters cannot be both allocated and zero".to_string(),
       ));
     }
     if cluster_offset == 0 && allocation_bitmap != 0 && !self.header.uses_external_data_file() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "qcow extended allocated subclusters require a host cluster offset".to_string(),
       ));
     }
@@ -488,7 +485,7 @@ impl QcowImage {
   fn read_compressed_cluster(&self, host_offset: u64, stored_size: usize) -> Result<Arc<Vec<u8>>> {
     let compressed = self.source.read_bytes_at(host_offset, stored_size)?;
     let cluster_size = usize::try_from(self.cluster_size()?)
-      .map_err(|_| Error::InvalidRange("qcow cluster size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("qcow cluster size is too large"))?;
     let mut cluster = vec![0u8; cluster_size];
     match self.header.compression_method {
       super::constants::QCOW_COMPRESSION_ZLIB => {
@@ -500,7 +497,7 @@ impl QcowImage {
         decoder.read_exact(&mut cluster).map_err(Error::Io)?;
       }
       method => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "unsupported qcow compressed cluster method: {method}"
         )));
       }
@@ -521,7 +518,7 @@ impl ByteSource for QcowImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("qcow read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("qcow read offset overflow"))?;
       if absolute_offset >= self.virtual_size {
         break;
       }
@@ -529,22 +526,22 @@ impl ByteSource for QcowImage {
       let cluster_index = absolute_offset / cluster_size;
       let within_cluster = absolute_offset % cluster_size;
       let cluster_offset = usize::try_from(within_cluster)
-        .map_err(|_| Error::InvalidRange("qcow cluster offset overflow".to_string()))?;
+        .map_err(|_| Error::invalid_range("qcow cluster offset overflow"))?;
       let available = usize::try_from(
         cluster_size
           .checked_sub(within_cluster)
-          .ok_or_else(|| Error::InvalidRange("qcow cluster range underflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("qcow cluster range underflow"))?,
       )
-      .map_err(|_| Error::InvalidRange("qcow available size overflow".to_string()))?
+      .map_err(|_| Error::invalid_range("qcow available size overflow"))?
       .min(buf.len() - copied)
       .min(
         usize::try_from(
           self
             .virtual_size
             .checked_sub(absolute_offset)
-            .ok_or_else(|| Error::InvalidRange("qcow image range underflow".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("qcow image range underflow"))?,
         )
-        .map_err(|_| Error::InvalidRange("qcow remaining image size is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("qcow remaining image size is too large"))?,
       );
 
       match self.read_l2_entry(cluster_index)? {
@@ -572,18 +569,18 @@ impl ByteSource for QcowImage {
         } => {
           let subcluster_size = self.subcluster_size()?;
           let subcluster_index = usize::try_from(within_cluster / subcluster_size)
-            .map_err(|_| Error::InvalidRange("qcow subcluster index overflow".to_string()))?;
+            .map_err(|_| Error::invalid_range("qcow subcluster index overflow"))?;
           let within_subcluster = within_cluster % subcluster_size;
           let subcluster_available = usize::try_from(
             subcluster_size
               .checked_sub(within_subcluster)
-              .ok_or_else(|| Error::InvalidRange("qcow subcluster range underflow".to_string()))?,
+              .ok_or_else(|| Error::invalid_range("qcow subcluster range underflow"))?,
           )
-          .map_err(|_| Error::InvalidRange("qcow subcluster size overflow".to_string()))?;
+          .map_err(|_| Error::invalid_range("qcow subcluster size overflow"))?;
           let available = available.min(subcluster_available);
           let subcluster_bit = 1u32
             .checked_shl(u32::try_from(subcluster_index).unwrap_or(u32::MAX))
-            .ok_or_else(|| Error::InvalidRange("qcow subcluster bit overflow".to_string()))?;
+            .ok_or_else(|| Error::invalid_range("qcow subcluster bit overflow"))?;
 
           if (allocation_bitmap & subcluster_bit) != 0 {
             let cluster = self.read_cluster(host_cluster_offset)?;

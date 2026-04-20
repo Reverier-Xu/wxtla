@@ -71,9 +71,9 @@ impl EwfChunkTableDescriptor {
     usize::try_from(
       chunk_index
         .checked_sub(self.start_chunk_index)
-        .ok_or_else(|| Error::InvalidRange("ewf chunk table index underflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("ewf chunk table index underflow"))?,
     )
-    .map_err(|_| Error::InvalidRange("ewf chunk table index is too large".to_string()))
+    .map_err(|_| Error::invalid_range("ewf chunk table index is too large"))
   }
 
   pub fn is_overflow_index(&self, entry_index: usize) -> bool {
@@ -132,14 +132,14 @@ pub(super) fn parse_with_hints(
   loop {
     let parsed_segment = parse_segment(current_source.as_ref(), &mut state)?;
     if parsed_segment.file_header.segment_number != expected_segment_number {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf segment sequence mismatch: expected segment {expected_segment_number}, found {}",
         parsed_segment.file_header.segment_number
       )));
     }
     if let Some(signature) = first_signature {
       if parsed_segment.file_header.signature != signature {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ewf segment file signatures are inconsistent".to_string(),
         ));
       }
@@ -157,7 +157,7 @@ pub(super) fn parse_with_hints(
       SegmentTermination::Next => {
         expected_segment_number = expected_segment_number
           .checked_add(1)
-          .ok_or_else(|| Error::InvalidRange("ewf segment number overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("ewf segment number overflow"))?;
         current_source = resolve_next_source(hints, naming_info.as_ref(), expected_segment_number)?;
       }
     }
@@ -165,9 +165,9 @@ pub(super) fn parse_with_hints(
 
   let volume = state
     .volume
-    .ok_or_else(|| Error::InvalidFormat("ewf image is missing volume metadata".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("ewf image is missing volume metadata"))?;
   if state.chunk_count != volume.chunk_count {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "ewf chunk count mismatch: expected {}, parsed {}",
       volume.chunk_count, state.chunk_count
     )));
@@ -195,7 +195,7 @@ fn resolve_initial_source(
     (Some(info), Some(resolver)) if info.segment_number != 1 => {
       let segment_one_name = info.file_name_for_segment(1)?;
       let identity = hints.source_identity().ok_or_else(|| {
-        Error::InvalidSourceReference(
+        Error::invalid_source_reference(
           "ewf source identity is missing while resolving the first segment".to_string(),
         )
       })?;
@@ -205,7 +205,7 @@ fn resolve_initial_source(
           RelatedSourcePurpose::Segment,
           path,
         ))?
-        .ok_or_else(|| Error::NotFound("unable to resolve the first ewf segment".to_string()))
+        .ok_or_else(|| Error::not_found("unable to resolve the first ewf segment"))
     }
     _ => Ok(source),
   }
@@ -215,17 +215,17 @@ fn resolve_next_source(
   hints: SourceHints<'_>, naming_info: Option<&EwfSegmentPathInfo>, segment_number: u16,
 ) -> Result<ByteSourceHandle> {
   let resolver = hints.resolver().ok_or_else(|| {
-    Error::InvalidSourceReference(
+    Error::invalid_source_reference(
       "ewf multi-segment images require a related-source resolver".to_string(),
     )
   })?;
   let identity = hints.source_identity().ok_or_else(|| {
-    Error::InvalidSourceReference(
+    Error::invalid_source_reference(
       "ewf multi-segment images require a source identity hint".to_string(),
     )
   })?;
   let naming_info = naming_info.ok_or_else(|| {
-    Error::InvalidSourceReference(
+    Error::invalid_source_reference(
       "unable to derive ewf segment naming information from the source identity".to_string(),
     )
   })?;
@@ -237,7 +237,7 @@ fn resolve_next_source(
       RelatedSourcePurpose::Segment,
       path,
     ))?
-    .ok_or_else(|| Error::NotFound(format!("missing ewf segment {segment_number}")))
+    .ok_or_else(|| Error::not_found(format!("missing ewf segment {segment_number}")))
 }
 
 fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<ParsedSegment> {
@@ -252,7 +252,7 @@ fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<Pars
     let section = EwfSectionDescriptor::read(source, section_offset)?;
     let section_end = section.end_offset()?;
     if section_end > file_size {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ewf section extends beyond the segment file".to_string(),
       ));
     }
@@ -265,7 +265,7 @@ fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<Pars
         let parsed_volume = parse_volume_payload(source, payload_offset, payload_size)?;
         if let Some(existing) = &state.volume {
           if existing != &parsed_volume {
-            return Err(Error::InvalidFormat(
+            return Err(Error::invalid_format(
               "ewf volume/data sections are inconsistent".to_string(),
             ));
           }
@@ -296,11 +296,11 @@ fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<Pars
       }
       EwfSectionKind::Table => {
         let volume = state.volume.as_ref().ok_or_else(|| {
-          Error::InvalidFormat("ewf chunk table appears before the volume metadata".to_string())
+          Error::invalid_format("ewf chunk table appears before the volume metadata")
         })?;
         let analyzed_table = EwfAnalyzedTable::read(source, payload_offset, payload_size)?;
         if analyzed_table.layout.entry_count == 0 {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "ewf table section does not contain chunk entries".to_string(),
           ));
         }
@@ -308,9 +308,9 @@ fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<Pars
         state.chunk_count = state
           .chunk_count
           .checked_add(analyzed_table.layout.entry_count)
-          .ok_or_else(|| Error::InvalidRange("ewf chunk count overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("ewf chunk count overflow"))?;
         if state.chunk_count > volume.chunk_count {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "ewf table entries exceed the declared chunk count".to_string(),
           ));
         }
@@ -321,7 +321,7 @@ fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<Pars
           entry_count: analyzed_table.layout.entry_count,
           entries_offset: payload_offset
             .checked_add(TABLE_HEADER_SIZE as u64)
-            .ok_or_else(|| Error::InvalidRange("ewf table entry offset overflow".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("ewf table entry offset overflow"))?,
           base_offset: analyzed_table.layout.base_offset,
           overflow_start_index: analyzed_table.overflow_start_index,
           data_end_offset: sectors_section
@@ -335,14 +335,14 @@ fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<Pars
         if let Some(previous_layout) = &last_table_layout
           && previous_layout != &table_layout
         {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "ewf table2 does not mirror the preceding table section".to_string(),
           ));
         }
       }
       EwfSectionKind::Hash => {
         if payload_size != HASH_DATA_SIZE {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "unsupported ewf hash payload size: {payload_size}"
           )));
         }
@@ -351,7 +351,7 @@ fn parse_segment(source: &dyn ByteSource, state: &mut ParseState) -> Result<Pars
       }
       EwfSectionKind::Digest => {
         if payload_size < DIGEST_DATA_SIZE {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "unsupported ewf digest payload size: {payload_size}"
           )));
         }
@@ -384,14 +384,14 @@ fn section_payload_offset(section: &EwfSectionDescriptor) -> Result<u64> {
   section
     .file_offset
     .checked_add(SECTION_DESCRIPTOR_SIZE as u64)
-    .ok_or_else(|| Error::InvalidRange("ewf section payload offset overflow".to_string()))
+    .ok_or_else(|| Error::invalid_range("ewf section payload offset overflow"))
 }
 
 fn section_payload_size(section: &EwfSectionDescriptor) -> Result<usize> {
   usize::try_from(section.size)
-    .map_err(|_| Error::InvalidRange("ewf section size is too large".to_string()))?
+    .map_err(|_| Error::invalid_range("ewf section size is too large"))?
     .checked_sub(SECTION_DESCRIPTOR_SIZE)
-    .ok_or_else(|| Error::InvalidRange("ewf section payload size underflow".to_string()))
+    .ok_or_else(|| Error::invalid_range("ewf section payload size underflow"))
 }
 
 fn parse_volume_payload(
@@ -404,7 +404,7 @@ fn parse_volume_payload(
   } else if payload_size >= S01_VOLUME_DATA_SIZE {
     EwfVolumeInfo::parse_s01(&payload)
   } else {
-    Err(Error::InvalidFormat(format!(
+    Err(Error::invalid_format(format!(
       "unsupported ewf volume/data payload size: {payload_size}"
     )))
   }
@@ -462,7 +462,7 @@ mod tests {
       }
 
       let available = usize::try_from(self.size - offset)
-        .map_err(|_| Error::InvalidRange("test sparse read is too large".to_string()))?
+        .map_err(|_| Error::invalid_range("test sparse read is too large"))?
         .min(buf.len());
       buf[..available].fill(0);
       for (region_offset, region) in &self.regions {
@@ -475,11 +475,11 @@ mod tests {
         }
 
         let dst_start = usize::try_from(overlap_start - offset)
-          .map_err(|_| Error::InvalidRange("test sparse overlap is too large".to_string()))?;
+          .map_err(|_| Error::invalid_range("test sparse overlap is too large"))?;
         let src_start = usize::try_from(overlap_start - region_offset)
-          .map_err(|_| Error::InvalidRange("test sparse overlap is too large".to_string()))?;
+          .map_err(|_| Error::invalid_range("test sparse overlap is too large"))?;
         let overlap_len = usize::try_from(overlap_end - overlap_start)
-          .map_err(|_| Error::InvalidRange("test sparse overlap is too large".to_string()))?;
+          .map_err(|_| Error::invalid_range("test sparse overlap is too large"))?;
         buf[dst_start..dst_start + overlap_len]
           .copy_from_slice(&region[src_start..src_start + overlap_len]);
       }

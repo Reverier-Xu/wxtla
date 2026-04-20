@@ -95,7 +95,7 @@ impl XfsFileSystem {
       << self.superblock.relative_inode_bits)
       .saturating_sub(1);
     if inode_number == 0 || inode_number > max_by_geometry {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid xfs inode number: {inode_number}"
       )));
     }
@@ -107,12 +107,12 @@ impl XfsFileSystem {
     let agbno = agino >> self.superblock.inodes_per_block_log2;
     let inode_index = agino & ((1u64 << self.superblock.inodes_per_block_log2) - 1);
     if agbno >= u64::from(self.superblock.ag_blocks) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "xfs inode block number is out of bounds: {agbno}"
       )));
     }
     if !self.inode_chunk_exists(agno, agino)? {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "xfs inode {inode_number} is not allocated"
       )));
     }
@@ -120,20 +120,20 @@ impl XfsFileSystem {
     let fs_block = u128::from(agno)
       .checked_mul(u128::from(self.superblock.ag_blocks))
       .and_then(|value| value.checked_add(u128::from(agbno)))
-      .ok_or_else(|| Error::InvalidRange("xfs inode block overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("xfs inode block overflow"))?;
     let offset = fs_block
       .checked_mul(u128::from(self.superblock.block_size))
       .and_then(|value| {
         value.checked_add(u128::from(inode_index) * u128::from(self.superblock.inode_size))
       })
-      .ok_or_else(|| Error::InvalidRange("xfs inode offset overflow".to_string()))?;
-    u64::try_from(offset).map_err(|_| Error::InvalidRange("xfs inode offset overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("xfs inode offset overflow"))?;
+    u64::try_from(offset).map_err(|_| Error::invalid_range("xfs inode offset overflow"))
   }
 
   fn inode_chunk_exists(&self, agno: u64, agino: u64) -> Result<bool> {
     let chunk_starts = self.load_inode_chunk_starts(agno)?;
-    let agino = u32::try_from(agino)
-      .map_err(|_| Error::InvalidRange("xfs AG inode index is too large".to_string()))?;
+    let agino =
+      u32::try_from(agino).map_err(|_| Error::invalid_range("xfs AG inode index is too large"))?;
     let Some(index) = chunk_starts
       .partition_point(|startino| *startino <= agino)
       .checked_sub(1)
@@ -183,18 +183,17 @@ impl XfsFileSystem {
     let ag_start = u128::from(agno)
       .checked_mul(u128::from(self.superblock.ag_blocks))
       .and_then(|value| value.checked_mul(u128::from(self.superblock.block_size)))
-      .ok_or_else(|| Error::InvalidRange("xfs AG offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("xfs AG offset overflow"))?;
     let agi_offset = ag_start
       .checked_add(u128::from(self.superblock.sector_size) * 2)
-      .ok_or_else(|| Error::InvalidRange("xfs AGI offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("xfs AGI offset overflow"))?;
     let agi = read_exact_at(
       self.source.as_ref(),
-      u64::try_from(agi_offset)
-        .map_err(|_| Error::InvalidRange("xfs AGI offset overflow".to_string()))?,
+      u64::try_from(agi_offset).map_err(|_| Error::invalid_range("xfs AGI offset overflow"))?,
       self.superblock.sector_size as usize,
     )?;
     if &agi[0..4] != b"XAGI" {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid xfs AGI signature".to_string(),
       ));
     }
@@ -209,7 +208,7 @@ impl XfsFileSystem {
     &self, agno: u64, agbno: u64, depth: usize, out: &mut Vec<u32>,
   ) -> Result<()> {
     if depth > 128 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "xfs inode btree recursion depth exceeded".to_string(),
       ));
     }
@@ -217,11 +216,11 @@ impl XfsFileSystem {
     let fs_block = u128::from(agno)
       .checked_mul(u128::from(self.superblock.ag_blocks))
       .and_then(|value| value.checked_add(u128::from(agbno)))
-      .ok_or_else(|| Error::InvalidRange("xfs inode btree block overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("xfs inode btree block overflow"))?;
     let block = read_exact_at(
       self.source.as_ref(),
       u64::try_from(fs_block * u128::from(self.superblock.block_size))
-        .map_err(|_| Error::InvalidRange("xfs inode btree offset overflow".to_string()))?,
+        .map_err(|_| Error::invalid_range("xfs inode btree offset overflow"))?,
       self.superblock.block_size as usize,
     )?;
 
@@ -231,7 +230,7 @@ impl XfsFileSystem {
     } else if signature == INOBT_SIG_V4 {
       16usize
     } else {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unsupported xfs inode btree signature".to_string(),
       ));
     };
@@ -249,7 +248,7 @@ impl XfsFileSystem {
     let records_data_size = block.len() - header_size;
     let pairs = records_data_size / 8;
     if nrecs > pairs {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid xfs inode btree record count".to_string(),
       ));
     }
@@ -268,7 +267,7 @@ impl XfsFileSystem {
       inode
         .inline_data
         .clone()
-        .ok_or_else(|| Error::InvalidFormat("missing inline xfs symlink data".to_string()))?
+        .ok_or_else(|| Error::invalid_format("missing inline xfs symlink data"))?
     } else {
       self
         .open_inode_data_source(inode_number, inode)?
@@ -280,7 +279,7 @@ impl XfsFileSystem {
       .unwrap_or(data.len());
     let target = String::from_utf8_lossy(&data[..end]).to_string();
     if target.is_empty() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "xfs symlink target is empty".to_string(),
       ));
     }
@@ -289,21 +288,22 @@ impl XfsFileSystem {
 
   fn read_dir_entries(&self, inode: &XfsInode) -> Result<Vec<XfsDirEntry>> {
     if !inode.is_dir() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "xfs inode is not a directory".to_string(),
       ));
     }
 
     let mut entries = match inode.fork_type {
       FORK_INLINE => {
-        let data = inode.inline_data.as_ref().ok_or_else(|| {
-          Error::InvalidFormat("missing xfs shortform directory data".to_string())
-        })?;
+        let data = inode
+          .inline_data
+          .as_ref()
+          .ok_or_else(|| Error::invalid_format("missing xfs shortform directory data"))?;
         parse_shortform_directory(data, self.superblock.has_ftype())?
       }
       FORK_EXTENTS | FORK_BTREE => self.parse_extent_dir(inode)?,
       other => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "unsupported xfs directory fork type: {other}"
         )));
       }
@@ -326,22 +326,22 @@ impl XfsFileSystem {
       let extent_offset = extent
         .physical_block
         .checked_mul(self.superblock.block_size as u64)
-        .ok_or_else(|| Error::InvalidRange("xfs directory extent offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("xfs directory extent offset overflow"))?;
       let extent_size = extent
         .number_of_blocks
         .checked_mul(self.superblock.block_size as u64)
-        .ok_or_else(|| Error::InvalidRange("xfs directory extent size overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("xfs directory extent size overflow"))?;
       let logical_base = extent
         .logical_block
         .checked_mul(self.superblock.block_size as u64)
-        .ok_or_else(|| Error::InvalidRange("xfs directory logical offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("xfs directory logical offset overflow"))?;
 
       let mut rel = 0u64;
       let dir_block_size = self.superblock.dir_block_size as u64;
       while rel + dir_block_size <= extent_size {
-        let logical_offset = logical_base.checked_add(rel).ok_or_else(|| {
-          Error::InvalidRange("xfs directory logical offset overflow".to_string())
-        })?;
+        let logical_offset = logical_base
+          .checked_add(rel)
+          .ok_or_else(|| Error::invalid_range("xfs directory logical offset overflow"))?;
         if logical_offset >= DIR_LEAF_OFFSET {
           return Ok(entries);
         }
@@ -365,7 +365,7 @@ impl XfsFileSystem {
       FORK_EXTENTS => parse_extent_records(&inode.data_fork, inode.nextents as usize)?,
       FORK_BTREE => self.parse_extent_btree_root(&inode.data_fork)?,
       other => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "unsupported xfs data fork type: {other}"
         )));
       }
@@ -387,7 +387,7 @@ impl XfsFileSystem {
 
   fn parse_extent_btree_root(&self, data: &[u8]) -> Result<Vec<XfsExtent>> {
     if data.len() < 4 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "xfs btree root is too small".to_string(),
       ));
     }
@@ -403,7 +403,7 @@ impl XfsFileSystem {
 
     let pairs = records.len() / 16;
     if nrecs > pairs {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid xfs btree root record count".to_string(),
       ));
     }
@@ -421,7 +421,7 @@ impl XfsFileSystem {
     &self, block_number: u64, depth: usize, out: &mut Vec<XfsExtent>,
   ) -> Result<()> {
     if depth > 256 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "xfs extent btree recursion depth exceeded".to_string(),
       ));
     }
@@ -431,7 +431,7 @@ impl XfsFileSystem {
       self.source.as_ref(),
       absolute_block_number
         .checked_mul(self.superblock.block_size as u64)
-        .ok_or_else(|| Error::InvalidRange("xfs btree block offset overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("xfs btree block offset overflow"))?,
       self.superblock.block_size as usize,
     )?;
 
@@ -441,7 +441,7 @@ impl XfsFileSystem {
       BTREE_SIG_V4
     };
     if &block[0..4] != expected {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unsupported xfs extent btree signature".to_string(),
       ));
     }
@@ -462,7 +462,7 @@ impl XfsFileSystem {
 
     let pairs = records.len() / 16;
     if nrecs > pairs {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid xfs branch btree record count".to_string(),
       ));
     }
@@ -478,13 +478,13 @@ impl XfsFileSystem {
   fn fsblock_to_absolute_block(&self, fsblock: u64) -> Result<u64> {
     let agno = fsblock >> self.superblock.relative_block_bits;
     if agno >= u64::from(self.superblock.ag_count) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "xfs filesystem block allocation group is out of bounds: {agno}"
       )));
     }
     let agbno = fsblock & ((1u64 << self.superblock.relative_block_bits) - 1);
     if agbno >= u64::from(self.superblock.ag_blocks) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "xfs relative block is out of bounds: {agbno}"
       )));
     }
@@ -493,9 +493,9 @@ impl XfsFileSystem {
       u128::from(agno)
         .checked_mul(u128::from(self.superblock.ag_blocks))
         .and_then(|value| value.checked_add(u128::from(agbno)))
-        .ok_or_else(|| Error::InvalidRange("xfs absolute block overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("xfs absolute block overflow"))?,
     )
-    .map_err(|_| Error::InvalidRange("xfs absolute block overflow".to_string()))
+    .map_err(|_| Error::invalid_range("xfs absolute block overflow"))
   }
 
   fn open_inode_data_source(
@@ -505,7 +505,7 @@ impl XfsFileSystem {
       let data = inode
         .inline_data
         .as_ref()
-        .ok_or_else(|| Error::InvalidFormat("missing xfs inline file data".to_string()))?;
+        .ok_or_else(|| Error::invalid_format("missing xfs inline file data"))?;
       let len = data.len().min(inode.size as usize);
       return Ok(
         Arc::new(BytesDataSource::new(Arc::<[u8]>::from(&data[..len]))) as ByteSourceHandle,
@@ -560,7 +560,7 @@ impl FileSystem for XfsFileSystem {
     let inode_number = decode_node_id(file_id)?;
     let inode = self.read_inode(inode_number)?;
     if kind_from_inode(&inode) != NamespaceNodeKind::File {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "xfs inode {inode_number} is not a readable file"
       )));
     }
@@ -583,7 +583,7 @@ fn kind_from_inode(inode: &XfsInode) -> NamespaceNodeKind {
 fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "xfs node identifiers must be encoded as 8-byte little-endian values".to_string(),
     ));
   }
@@ -614,7 +614,7 @@ mod tests {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       self.reads.fetch_add(1, Ordering::Relaxed);
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

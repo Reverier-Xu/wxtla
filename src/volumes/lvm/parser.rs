@@ -272,7 +272,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

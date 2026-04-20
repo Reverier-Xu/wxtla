@@ -55,7 +55,7 @@ impl NtfsReparsePointInfo {
 
 pub(crate) fn parse_reparse_point(bytes: &[u8]) -> Result<NtfsReparsePointInfo> {
   if bytes.len() < 8 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs reparse point is too small".to_string(),
     ));
   }
@@ -63,7 +63,7 @@ pub(crate) fn parse_reparse_point(bytes: &[u8]) -> Result<NtfsReparsePointInfo> 
   let tag = le_u32(&bytes[0..4]);
   let reparse_data_size = usize::from(le_u16(&bytes[4..6]));
   if reparse_data_size > bytes.len() - 8 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs reparse-point payload exceeds the attribute bounds".to_string(),
     ));
   }
@@ -86,7 +86,7 @@ pub(crate) fn parse_reparse_point(bytes: &[u8]) -> Result<NtfsReparsePointInfo> 
   match tag {
     REPARSE_TAG_COMPRESSED => {
       if reparse_data.len() < 16 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "compressed ntfs reparse-point payload is truncated".to_string(),
         ));
       }
@@ -99,7 +99,7 @@ pub(crate) fn parse_reparse_point(bytes: &[u8]) -> Result<NtfsReparsePointInfo> 
         8usize
       };
       if reparse_data.len() < header_size {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ntfs mount-point/symlink reparse payload is truncated".to_string(),
         ));
       }
@@ -137,16 +137,16 @@ fn read_utf16le_component(
     return Ok(None);
   }
   if !size.is_multiple_of(2) {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "{label} has an odd byte length"
     )));
   }
   let end = offset
     .checked_add(size)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} end overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} end overflow")))?;
   let slice = bytes
     .get(offset..end)
-    .ok_or_else(|| Error::InvalidFormat(format!("{label} exceeds the payload bounds")))?;
+    .ok_or_else(|| Error::invalid_format(format!("{label} exceeds the payload bounds")))?;
   let units = slice
     .chunks_exact(2)
     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))

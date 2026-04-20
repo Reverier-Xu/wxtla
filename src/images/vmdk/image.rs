@@ -15,11 +15,11 @@ use super::{
     ParsedCowdVmdk, cowd_grain_table_entry_count, grain_table_entry_count, parse_cowd,
     parse_sparse_extent,
   },
+  resolve,
 };
 use crate::{
-  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, RelatedPathBuf,
-  RelatedSourcePurpose, RelatedSourceRequest, RelatedSourceResolver, Result, SliceDataSource,
-  SourceHints, SourceIdentity, images::Image,
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
+  SliceDataSource, SourceHints, images::Image,
 };
 
 const MAX_GRAIN_CACHE_ENTRIES: usize = 64;
@@ -65,7 +65,7 @@ struct VmdkResolvedExtent {
   kind: VmdkResolvedExtentKind,
 }
 
-enum VmdkResolvedExtentKind {
+pub(super) enum VmdkResolvedExtentKind {
   Source(ByteSourceHandle),
   Zero,
 }
@@ -76,15 +76,15 @@ impl VmdkImage {
   }
 
   pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
-    if is_sparse_extent(source.as_ref())? {
+    if resolve::is_sparse_extent(source.as_ref())? {
       let parsed = parse_sparse_extent(source.clone())?;
       let descriptor = parsed.embedded_descriptor.clone().ok_or_else(|| {
-        Error::InvalidFormat(
+        Error::invalid_format(
           "descriptor-less vmdk sparse extents require an external descriptor".to_string(),
         )
       })?;
-      validate_monolithic_sparse_descriptor(&parsed.header, &descriptor)?;
-      let parent_source = resolve_descriptor_parent_source(&descriptor, hints)?;
+      resolve::validate_monolithic_sparse_descriptor(&parsed.header, &descriptor)?;
+      let parent_source = resolve::resolve_descriptor_parent_source(&descriptor, hints)?;
       return Self::from_sparse_parts(
         source,
         parsed.header,
@@ -93,15 +93,15 @@ impl VmdkImage {
         parent_source,
       );
     }
-    if is_cowd_extent(source.as_ref())? {
+    if resolve::is_cowd_extent(source.as_ref())? {
       let parsed = parse_cowd(source.clone())?;
-      let parent_source = resolve_cowd_parent_source(&parsed.header, hints)?;
+      let parent_source = resolve::resolve_cowd_parent_source(&parsed.header, hints)?;
       return Self::from_cowd_parsed(source, parsed, parent_source);
     }
 
     let descriptor_size = source.size()?;
     if descriptor_size > MAX_DESCRIPTOR_FILE_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vmdk descriptor file exceeds the supported size limit of {MAX_DESCRIPTOR_FILE_SIZE} bytes"
       )));
     }
@@ -109,14 +109,14 @@ impl VmdkImage {
     Self::from_descriptor(descriptor, hints)
   }
 
-  fn from_sparse_parts(
+  pub(super) fn from_sparse_parts(
     source: ByteSourceHandle, header: VmdkSparseHeader, grain_directory: Arc<[u32]>,
     descriptor: VmdkDescriptor, parent_source: Option<ByteSourceHandle>,
   ) -> Result<Self> {
     let has_backing_chain = parent_source.is_some();
-    let grain_cache_capacity = bounded_cache_capacity(
+    let grain_cache_capacity = resolve::bounded_cache_capacity(
       usize::try_from(header.grain_size_bytes()?)
-        .map_err(|_| Error::InvalidRange("vmdk grain size is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("vmdk grain size is too large"))?,
       GRAIN_CACHE_BUDGET_BYTES,
       MAX_GRAIN_CACHE_ENTRIES,
     );
@@ -136,7 +136,7 @@ impl VmdkImage {
     })
   }
 
-  fn from_cowd_parsed(
+  pub(super) fn from_cowd_parsed(
     source: ByteSourceHandle, parsed: ParsedCowdVmdk, parent_source: Option<ByteSourceHandle>,
   ) -> Result<Self> {
     let size = parsed.header.virtual_size_bytes()?;
@@ -171,16 +171,16 @@ impl VmdkImage {
   }
 
   fn from_descriptor(descriptor: VmdkDescriptor, hints: SourceHints<'_>) -> Result<Self> {
-    validate_descriptor_file_type(descriptor.file_type)?;
+    resolve::validate_descriptor_file_type(descriptor.file_type)?;
     if descriptor.extents.is_empty() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk descriptor must declare at least one extent".to_string(),
       ));
     }
 
     let resolver = hints.resolver();
     let identity = hints.source_identity();
-    let parent_source = resolve_descriptor_parent_source(&descriptor, hints)?;
+    let parent_source = resolve::resolve_descriptor_parent_source(&descriptor, hints)?;
     let mut extents = Vec::with_capacity(descriptor.extents.len());
     let mut guest_offset = 0u64;
     let mut image_is_sparse = false;
@@ -190,14 +190,14 @@ impl VmdkImage {
         || matches!(extent.access_mode, VmdkExtentAccessMode::NoAccess)
           && extent.extent_type != VmdkExtentType::Zero
       {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "unsupported vmdk extent access mode".to_string(),
         ));
       }
       let extent_size = extent
         .sector_count
         .checked_mul(constants::BYTES_PER_SECTOR)
-        .ok_or_else(|| Error::InvalidRange("vmdk extent size overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vmdk extent size overflow"))?;
       let extent_parent_source = parent_source.as_ref().map(|parent| {
         Arc::new(SliceDataSource::new(
           parent.clone(),
@@ -215,49 +215,49 @@ impl VmdkImage {
         | VmdkExtentType::VmfsRaw
         | VmdkExtentType::VmfsRdm => {
           let resolver = resolver.ok_or_else(|| {
-            Error::InvalidSourceReference(
+            Error::invalid_source_reference(
               "descriptor-backed vmdk images require a related-source resolver".to_string(),
             )
           })?;
           let identity = identity.ok_or_else(|| {
-            Error::InvalidSourceReference(
+            Error::invalid_source_reference(
               "descriptor-backed vmdk images require a source identity hint".to_string(),
             )
           })?;
-          resolve_flat_extent(extent, resolver, identity, extent_size)?
+          resolve::resolve_flat_extent(extent, resolver, identity, extent_size)?
         }
         VmdkExtentType::Sparse => {
           let resolver = resolver.ok_or_else(|| {
-            Error::InvalidSourceReference(
+            Error::invalid_source_reference(
               "descriptor-backed vmdk images require a related-source resolver".to_string(),
             )
           })?;
           let identity = identity.ok_or_else(|| {
-            Error::InvalidSourceReference(
+            Error::invalid_source_reference(
               "descriptor-backed vmdk images require a source identity hint".to_string(),
             )
           })?;
           image_is_sparse = true;
-          resolve_sparse_extent(extent, resolver, identity, extent_parent_source)?
+          resolve::resolve_sparse_extent(extent, resolver, identity, extent_parent_source)?
         }
         VmdkExtentType::Unknown => {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "unsupported vmdk descriptor extent type".to_string(),
           ));
         }
         VmdkExtentType::VmfsSparse => {
           let resolver = resolver.ok_or_else(|| {
-            Error::InvalidSourceReference(
+            Error::invalid_source_reference(
               "descriptor-backed vmdk images require a related-source resolver".to_string(),
             )
           })?;
           let identity = identity.ok_or_else(|| {
-            Error::InvalidSourceReference(
+            Error::invalid_source_reference(
               "descriptor-backed vmdk images require a source identity hint".to_string(),
             )
           })?;
           image_is_sparse = true;
-          resolve_vmfs_sparse_extent(extent, resolver, identity, extent_parent_source)?
+          resolve::resolve_vmfs_sparse_extent(extent, resolver, identity, extent_parent_source)?
         }
       };
       extents.push(VmdkResolvedExtent {
@@ -267,7 +267,7 @@ impl VmdkImage {
       });
       guest_offset = guest_offset
         .checked_add(extent_size)
-        .ok_or_else(|| Error::InvalidRange("vmdk image size overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vmdk image size overflow"))?;
     }
 
     Ok(Self {
@@ -297,24 +297,24 @@ impl VmdkImage {
     &self.descriptor
   }
 
-  fn content_id(&self) -> u32 {
+  pub(super) fn content_id(&self) -> u32 {
     self.descriptor.content_id
   }
 
   fn read_sparse_grain_entry(
     backend: &VmdkSparseBackend, directory_index: u64, table_index: usize,
   ) -> Result<Option<u32>> {
-    let raw_sector =
-      *backend
-        .grain_directory
-        .get(usize::try_from(directory_index).map_err(|_| {
-          Error::InvalidRange("vmdk grain-directory index is too large".to_string())
-        })?)
-        .ok_or_else(|| {
-          Error::InvalidFormat(format!(
-            "vmdk grain-directory entry {directory_index} is out of bounds"
-          ))
-        })?;
+    let raw_sector = *backend
+      .grain_directory
+      .get(
+        usize::try_from(directory_index)
+          .map_err(|_| Error::invalid_range("vmdk grain-directory index is too large"))?,
+      )
+      .ok_or_else(|| {
+        Error::invalid_format(format!(
+          "vmdk grain-directory entry {directory_index} is out of bounds"
+        ))
+      })?;
 
     if raw_sector == 0 || (backend.header.uses_zero_grain_entries() && raw_sector == 1) {
       return Ok(None);
@@ -328,7 +328,7 @@ impl VmdkImage {
           .and_then(|index| index.checked_mul(4))
           .and_then(|index_offset| offset.checked_add(index_offset))
       })
-      .ok_or_else(|| Error::InvalidRange("vmdk grain-table entry offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vmdk grain-table entry offset overflow"))?;
     let mut entry = [0u8; 4];
     backend.source.read_exact_at(entry_offset, &mut entry)?;
 
@@ -340,11 +340,12 @@ impl VmdkImage {
   ) -> Result<Option<u32>> {
     let raw_sector = *backend
       .grain_directory
-      .get(usize::try_from(directory_index).map_err(|_| {
-        Error::InvalidRange("vmdk cowd grain-directory index is too large".to_string())
-      })?)
+      .get(
+        usize::try_from(directory_index)
+          .map_err(|_| Error::invalid_range("vmdk cowd grain-directory index is too large"))?,
+      )
       .ok_or_else(|| {
-        Error::InvalidFormat(format!(
+        Error::invalid_format(format!(
           "vmdk cowd grain-directory entry {directory_index} is out of bounds"
         ))
       })?;
@@ -360,9 +361,7 @@ impl VmdkImage {
           .and_then(|index| index.checked_mul(4))
           .and_then(|index_offset| offset.checked_add(index_offset))
       })
-      .ok_or_else(|| {
-        Error::InvalidRange("vmdk cowd grain-table entry offset overflow".to_string())
-      })?;
+      .ok_or_else(|| Error::invalid_range("vmdk cowd grain-table entry offset overflow"))?;
     let mut entry = [0u8; 4];
     backend.source.read_exact_at(entry_offset, &mut entry)?;
 
@@ -375,7 +374,7 @@ impl VmdkImage {
     backend.grain_cache.get_or_load(grain_index, || {
       let grain_offset = u64::from(grain_sector)
         .checked_mul(constants::BYTES_PER_SECTOR)
-        .ok_or_else(|| Error::InvalidRange("vmdk compressed grain offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vmdk compressed grain offset overflow"))?;
       let header_bytes = backend.source.read_bytes_at(grain_offset, 12)?;
       let compressed_size = u32::from_le_bytes([
         header_bytes[8],
@@ -384,17 +383,16 @@ impl VmdkImage {
         header_bytes[11],
       ]);
       if compressed_size == 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "vmdk compressed grain header must carry a non-zero data size".to_string(),
         ));
       }
       let compressed = backend.source.read_bytes_at(
-        grain_offset.checked_add(12).ok_or_else(|| {
-          Error::InvalidRange("vmdk compressed grain data offset overflow".to_string())
-        })?,
-        usize::try_from(compressed_size).map_err(|_| {
-          Error::InvalidRange("vmdk compressed grain size is too large".to_string())
-        })?,
+        grain_offset
+          .checked_add(12)
+          .ok_or_else(|| Error::invalid_range("vmdk compressed grain data offset overflow"))?,
+        usize::try_from(compressed_size)
+          .map_err(|_| Error::invalid_range("vmdk compressed grain size is too large"))?,
       )?;
 
       let mut decoder = flate2::read::ZlibDecoder::new(&compressed[..]);
@@ -402,19 +400,19 @@ impl VmdkImage {
       decoder.read_to_end(&mut decompressed)?;
 
       let grain_size = usize::try_from(backend.header.grain_size_bytes()?)
-        .map_err(|_| Error::InvalidRange("vmdk grain size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vmdk grain size is too large"))?;
       let grain_base_offset = grain_index
         .checked_mul(u64::try_from(grain_size).unwrap_or(u64::MAX))
-        .ok_or_else(|| Error::InvalidRange("vmdk grain base offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vmdk grain base offset overflow"))?;
       let remaining = size.saturating_sub(grain_base_offset);
       let minimum_size = if remaining >= u64::try_from(grain_size).unwrap_or(u64::MAX) {
         grain_size
       } else {
         usize::try_from(remaining)
-          .map_err(|_| Error::InvalidRange("vmdk remaining grain size is too large".to_string()))?
+          .map_err(|_| Error::invalid_range("vmdk remaining grain size is too large"))?
       };
       if decompressed.len() > grain_size || decompressed.len() < minimum_size {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "vmdk compressed grain does not expand to the expected size".to_string(),
         ));
       }
@@ -437,7 +435,7 @@ impl VmdkImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("vmdk read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vmdk read offset overflow"))?;
       if absolute_offset >= size {
         break;
       }
@@ -446,17 +444,17 @@ impl VmdkImage {
       let within_grain = absolute_offset % grain_size;
       let directory_index = grain_index / table_entries;
       let table_index = usize::try_from(grain_index % table_entries)
-        .map_err(|_| Error::InvalidRange("vmdk grain-table index is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vmdk grain-table index is too large"))?;
       let available = usize::try_from(
         (grain_size - within_grain)
           .min(size - absolute_offset)
           .min((buf.len() - copied) as u64),
       )
-      .map_err(|_| Error::InvalidRange("vmdk read chunk is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vmdk read chunk is too large"))?;
 
       match Self::read_sparse_grain_entry(backend, directory_index, table_index)? {
         None => {
-          fill_from_parent_or_zero(
+          resolve::fill_from_parent_or_zero(
             backend.parent_source.as_ref(),
             absolute_offset,
             &mut buf[copied..copied + available],
@@ -464,7 +462,7 @@ impl VmdkImage {
         }
         Some(grain_sector) => {
           if grain_sector == 0 || (backend.header.uses_zero_grain_entries() && grain_sector == 1) {
-            fill_from_parent_or_zero(
+            resolve::fill_from_parent_or_zero(
               backend.parent_source.as_ref(),
               absolute_offset,
               &mut buf[copied..copied + available],
@@ -473,14 +471,14 @@ impl VmdkImage {
             let decompressed =
               Self::read_compressed_sparse_grain(backend, grain_index, grain_sector, size)?;
             let within_grain = usize::try_from(within_grain)
-              .map_err(|_| Error::InvalidRange("vmdk grain offset is too large".to_string()))?;
+              .map_err(|_| Error::invalid_range("vmdk grain offset is too large"))?;
             buf[copied..copied + available]
               .copy_from_slice(&decompressed[within_grain..within_grain + available]);
           } else {
             let data_offset = u64::from(grain_sector)
               .checked_mul(constants::BYTES_PER_SECTOR)
               .and_then(|value| value.checked_add(within_grain))
-              .ok_or_else(|| Error::InvalidRange("vmdk grain data offset overflow".to_string()))?;
+              .ok_or_else(|| Error::invalid_range("vmdk grain data offset overflow"))?;
             backend
               .source
               .read_exact_at(data_offset, &mut buf[copied..copied + available])?;
@@ -505,7 +503,7 @@ impl VmdkImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("vmdk read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vmdk read offset overflow"))?;
       if absolute_offset >= size {
         break;
       }
@@ -518,7 +516,7 @@ impl VmdkImage {
             && absolute_offset < extent.guest_offset.saturating_add(extent.size)
         })
         .ok_or_else(|| {
-          Error::InvalidFormat("vmdk extent map does not cover the requested offset".to_string())
+          Error::invalid_format("vmdk extent map does not cover the requested offset")
         })?;
       let within_extent = absolute_offset - extent.guest_offset;
       let available = usize::try_from(
@@ -526,7 +524,7 @@ impl VmdkImage {
           .min(size - absolute_offset)
           .min((buf.len() - copied) as u64),
       )
-      .map_err(|_| Error::InvalidRange("vmdk read chunk is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vmdk read chunk is too large"))?;
 
       match &extent.kind {
         VmdkResolvedExtentKind::Source(source) => {
@@ -556,7 +554,7 @@ impl VmdkImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("vmdk read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vmdk read offset overflow"))?;
       if absolute_offset >= size {
         break;
       }
@@ -565,17 +563,17 @@ impl VmdkImage {
       let within_grain = absolute_offset % grain_size;
       let directory_index = grain_index / table_entries;
       let table_index = usize::try_from(grain_index % table_entries)
-        .map_err(|_| Error::InvalidRange("vmdk cowd grain-table index is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vmdk cowd grain-table index is too large"))?;
       let available = usize::try_from(
         (grain_size - within_grain)
           .min(size - absolute_offset)
           .min((buf.len() - copied) as u64),
       )
-      .map_err(|_| Error::InvalidRange("vmdk read chunk is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vmdk read chunk is too large"))?;
 
       match Self::read_cowd_grain_entry(backend, directory_index, table_index)? {
         None => {
-          fill_from_parent_or_zero(
+          resolve::fill_from_parent_or_zero(
             backend.parent_source.as_ref(),
             absolute_offset,
             &mut buf[copied..copied + available],
@@ -583,7 +581,7 @@ impl VmdkImage {
         }
         Some(grain_sector) => {
           if grain_sector == 0 {
-            fill_from_parent_or_zero(
+            resolve::fill_from_parent_or_zero(
               backend.parent_source.as_ref(),
               absolute_offset,
               &mut buf[copied..copied + available],
@@ -592,9 +590,7 @@ impl VmdkImage {
             let data_offset = u64::from(grain_sector)
               .checked_mul(constants::BYTES_PER_SECTOR)
               .and_then(|value| value.checked_add(within_grain))
-              .ok_or_else(|| {
-                Error::InvalidRange("vmdk cowd grain data offset overflow".to_string())
-              })?;
+              .ok_or_else(|| Error::invalid_range("vmdk cowd grain data offset overflow"))?;
             backend
               .source
               .read_exact_at(data_offset, &mut buf[copied..copied + available])?;
@@ -663,383 +659,14 @@ impl Image for VmdkImage {
   }
 }
 
-fn is_sparse_extent(source: &dyn ByteSource) -> Result<bool> {
-  let mut magic = [0u8; 4];
-  Ok(source.read_at(0, &mut magic)? == magic.len() && &magic == constants::SPARSE_HEADER_MAGIC)
-}
-
-fn is_cowd_extent(source: &dyn ByteSource) -> Result<bool> {
-  let mut magic = [0u8; 4];
-  Ok(source.read_at(0, &mut magic)? == magic.len() && &magic == constants::COWD_HEADER_MAGIC)
-}
-
-fn fill_from_parent_or_zero(
-  parent_source: Option<&ByteSourceHandle>, offset: u64, buf: &mut [u8],
-) -> Result<()> {
-  if let Some(parent_source) = parent_source {
-    parent_source.read_exact_at(offset, buf)?;
-  } else {
-    buf.fill(0);
-  }
-
-  Ok(())
-}
-
-fn bounded_cache_capacity(entry_size: usize, byte_budget: usize, max_entries: usize) -> usize {
-  if entry_size == 0 || max_entries == 0 {
-    return 1;
-  }
-
-  (byte_budget / entry_size).max(1).min(max_entries)
-}
-
-fn validate_descriptor_file_type(file_type: VmdkFileType) -> Result<()> {
-  match file_type {
-    VmdkFileType::Unknown => Err(Error::InvalidFormat(
-      "unsupported vmdk descriptor create type".to_string(),
-    )),
-    VmdkFileType::Custom
-    | VmdkFileType::FullDevice
-    | VmdkFileType::MonolithicSparse
-    | VmdkFileType::MonolithicFlat
-    | VmdkFileType::PartitionedDevice
-    | VmdkFileType::StreamOptimized
-    | VmdkFileType::Flat2GbExtent
-    | VmdkFileType::Sparse2GbExtent
-    | VmdkFileType::Vmfs
-    | VmdkFileType::VmfsSparse
-    | VmdkFileType::VmfsThin
-    | VmdkFileType::VmfsRaw
-    | VmdkFileType::VmfsRdm
-    | VmdkFileType::VmfsRdmp => Ok(()),
-  }
-}
-
-fn validate_monolithic_sparse_descriptor(
-  header: &VmdkSparseHeader, descriptor: &VmdkDescriptor,
-) -> Result<()> {
-  if descriptor.file_type != VmdkFileType::MonolithicSparse
-    && descriptor.file_type != VmdkFileType::StreamOptimized
-  {
-    return Err(Error::InvalidFormat(format!(
-      "unsupported embedded vmdk create type: {:?}",
-      descriptor.file_type
-    )));
-  }
-  if descriptor.extents.len() != 1 {
-    return Err(Error::InvalidFormat(
-      "monolithic sparse vmdk images must declare exactly one extent".to_string(),
-    ));
-  }
-  let extent = &descriptor.extents[0];
-  if matches!(
-    extent.access_mode,
-    VmdkExtentAccessMode::Unknown | VmdkExtentAccessMode::NoAccess
-  ) {
-    return Err(Error::InvalidFormat(
-      "unsupported vmdk extent access mode".to_string(),
-    ));
-  }
-  if extent.extent_type != VmdkExtentType::Sparse {
-    return Err(Error::InvalidFormat(
-      "monolithic sparse vmdk images must use a SPARSE extent".to_string(),
-    ));
-  }
-  if extent.start_sector != 0 {
-    return Err(Error::InvalidFormat(
-      "monolithic sparse vmdk extents must start at sector 0".to_string(),
-    ));
-  }
-  if extent.sector_count != header.capacity_sectors {
-    return Err(Error::InvalidFormat(
-      "vmdk descriptor extent length does not match the sparse header capacity".to_string(),
-    ));
-  }
-
-  Ok(())
-}
-
-fn resolve_descriptor_parent_source(
-  descriptor: &VmdkDescriptor, hints: SourceHints<'_>,
-) -> Result<Option<ByteSourceHandle>> {
-  let has_parent =
-    descriptor.parent_content_id.is_some() || descriptor.parent_file_name_hint.is_some();
-  if !has_parent {
-    return Ok(None);
-  }
-
-  let parent_hint = descriptor.parent_file_name_hint.as_deref().ok_or_else(|| {
-    Error::InvalidSourceReference(
-      "parent-backed vmdk descriptors require parentFileNameHint".to_string(),
-    )
-  })?;
-  let resolver = hints.resolver().ok_or_else(|| {
-    Error::InvalidSourceReference(
-      "parent-backed vmdk descriptors require a related-source resolver".to_string(),
-    )
-  })?;
-  let identity = hints.source_identity().ok_or_else(|| {
-    Error::InvalidSourceReference(
-      "parent-backed vmdk descriptors require a source identity hint".to_string(),
-    )
-  })?;
-  let parent_image = resolve_parent_image(
-    resolver,
-    identity,
-    parent_hint,
-    descriptor.parent_content_id,
-  )?;
-
-  Ok(Some(parent_image as ByteSourceHandle))
-}
-
-fn resolve_cowd_parent_source(
-  header: &VmdkCowdHeader, hints: SourceHints<'_>,
-) -> Result<Option<ByteSourceHandle>> {
-  if header.parent_generation == 0 && header.parent_path.is_empty() {
-    return Ok(None);
-  }
-
-  let parent_hint = if header.parent_path.is_empty() {
-    return Err(Error::InvalidSourceReference(
-      "parent-backed vmdk cowd extents require a parent path".to_string(),
-    ));
-  } else {
-    header.parent_path.as_str()
-  };
-  let resolver = hints.resolver().ok_or_else(|| {
-    Error::InvalidSourceReference(
-      "parent-backed vmdk cowd extents require a related-source resolver".to_string(),
-    )
-  })?;
-  let identity = hints.source_identity().ok_or_else(|| {
-    Error::InvalidSourceReference(
-      "parent-backed vmdk cowd extents require a source identity hint".to_string(),
-    )
-  })?;
-  let expected = if header.parent_generation == 0 {
-    None
-  } else {
-    Some(header.parent_generation)
-  };
-  let parent_image = resolve_parent_image(resolver, identity, parent_hint, expected)?;
-
-  Ok(Some(parent_image as ByteSourceHandle))
-}
-
-fn resolve_flat_extent(
-  extent: &VmdkDescriptorExtent, resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity,
-  extent_size: u64,
-) -> Result<VmdkResolvedExtentKind> {
-  let file_name = extent
-    .file_name
-    .as_deref()
-    .ok_or_else(|| Error::InvalidFormat("vmdk flat extent is missing a file name".to_string()))?;
-  let (source, path) = resolve_extent_source(resolver, identity, file_name)?
-    .ok_or_else(|| Error::NotFound("unable to resolve the vmdk extent file".to_string()))?;
-  if &path == identity.logical_path() {
-    return Err(Error::InvalidFormat(
-      "vmdk descriptor extent resolves back to the descriptor file".to_string(),
-    ));
-  }
-
-  let base_offset = extent
-    .start_sector
-    .checked_mul(constants::BYTES_PER_SECTOR)
-    .ok_or_else(|| Error::InvalidRange("vmdk flat extent offset overflow".to_string()))?;
-  let extent_end = base_offset
-    .checked_add(extent_size)
-    .ok_or_else(|| Error::InvalidRange("vmdk flat extent range overflow".to_string()))?;
-  if extent_end > source.size()? {
-    return Err(Error::InvalidFormat(
-      "vmdk flat extent exceeds the backing file size".to_string(),
-    ));
-  }
-
-  Ok(VmdkResolvedExtentKind::Source(
-    Arc::new(SliceDataSource::new(source, base_offset, extent_size)) as ByteSourceHandle,
-  ))
-}
-
-fn resolve_sparse_extent(
-  extent: &VmdkDescriptorExtent, resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity,
-  parent_source: Option<ByteSourceHandle>,
-) -> Result<VmdkResolvedExtentKind> {
-  if extent.start_sector != 0 {
-    return Err(Error::InvalidFormat(
-      "vmdk sparse extents must start at sector 0".to_string(),
-    ));
-  }
-
-  let file_name = extent
-    .file_name
-    .as_deref()
-    .ok_or_else(|| Error::InvalidFormat("vmdk sparse extent is missing a file name".to_string()))?;
-  let (source, path) = resolve_extent_source(resolver, identity, file_name)?
-    .ok_or_else(|| Error::NotFound("unable to resolve the vmdk sparse extent".to_string()))?;
-  if &path == identity.logical_path() {
-    return Err(Error::InvalidFormat(
-      "vmdk descriptor extent resolves back to the descriptor file".to_string(),
-    ));
-  }
-
-  let parsed = parse_sparse_extent(source.clone())?;
-  let descriptor = parsed
-    .embedded_descriptor
-    .unwrap_or_else(|| VmdkDescriptor {
-      version: 1,
-      content_id: 0,
-      parent_content_id: None,
-      file_type: VmdkFileType::Sparse2GbExtent,
-      extents: vec![VmdkDescriptorExtent {
-        access_mode: extent.access_mode,
-        sector_count: extent.sector_count,
-        extent_type: extent.extent_type,
-        file_name: None,
-        start_sector: 0,
-      }],
-      parent_file_name_hint: None,
-    });
-  validate_sparse_extent_matches_descriptor(&parsed.header, extent)?;
-  let image = VmdkImage::from_sparse_parts(
-    source,
-    parsed.header,
-    parsed.grain_directory,
-    descriptor,
-    parent_source,
-  )?;
-  Ok(VmdkResolvedExtentKind::Source(
-    Arc::new(image) as ByteSourceHandle
-  ))
-}
-
-fn resolve_vmfs_sparse_extent(
-  extent: &VmdkDescriptorExtent, resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity,
-  parent_source: Option<ByteSourceHandle>,
-) -> Result<VmdkResolvedExtentKind> {
-  if extent.start_sector != 0 {
-    return Err(Error::InvalidFormat(
-      "vmdk vmfssparse extents must start at sector 0".to_string(),
-    ));
-  }
-
-  let file_name = extent.file_name.as_deref().ok_or_else(|| {
-    Error::InvalidFormat("vmdk vmfssparse extent is missing a file name".to_string())
-  })?;
-  let (source, path) = resolve_extent_source(resolver, identity, file_name)?
-    .ok_or_else(|| Error::NotFound("unable to resolve the vmdk vmfssparse extent".to_string()))?;
-  if &path == identity.logical_path() {
-    return Err(Error::InvalidFormat(
-      "vmdk descriptor extent resolves back to the descriptor file".to_string(),
-    ));
-  }
-
-  let parsed = parse_cowd(source.clone())?;
-  if u64::from(parsed.header.capacity_sectors) != extent.sector_count {
-    return Err(Error::InvalidFormat(
-      "vmdk vmfssparse extent length does not match the cowd header capacity".to_string(),
-    ));
-  }
-  let image = VmdkImage::from_cowd_parsed(source, parsed, parent_source)?;
-  Ok(VmdkResolvedExtentKind::Source(
-    Arc::new(image) as ByteSourceHandle
-  ))
-}
-
-fn validate_sparse_extent_matches_descriptor(
-  header: &VmdkSparseHeader, extent: &VmdkDescriptorExtent,
-) -> Result<()> {
-  if extent.start_sector != 0 {
-    return Err(Error::InvalidFormat(
-      "vmdk sparse extents must start at sector 0".to_string(),
-    ));
-  }
-  if header.capacity_sectors != extent.sector_count {
-    return Err(Error::InvalidFormat(
-      "vmdk sparse extent length does not match the sparse header capacity".to_string(),
-    ));
-  }
-
-  Ok(())
-}
-
-fn resolve_parent_image(
-  resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity, parent_hint: &str,
-  expected_content_id: Option<u32>,
-) -> Result<Arc<VmdkImage>> {
-  let (parent_source, parent_path) = resolve_named_source(
-    resolver,
-    identity,
-    parent_hint,
-    RelatedSourcePurpose::BackingFile,
-  )?
-  .ok_or_else(|| Error::NotFound("unable to resolve the parent vmdk image".to_string()))?;
-  if &parent_path == identity.logical_path() {
-    return Err(Error::InvalidFormat(
-      "vmdk parent hint resolves to the same image".to_string(),
-    ));
-  }
-
-  let parent_identity = SourceIdentity::new(parent_path);
-  let parent_image = Arc::new(VmdkImage::open_with_hints(
-    parent_source,
-    SourceHints::new()
-      .with_resolver(resolver)
-      .with_source_identity(&parent_identity),
-  )?);
-  if let Some(expected_content_id) = expected_content_id
-    && parent_image.content_id() != expected_content_id
-  {
-    return Err(Error::InvalidFormat(format!(
-      "resolved parent content id {} does not match expected {}",
-      parent_image.content_id(),
-      expected_content_id
-    )));
-  }
-
-  Ok(parent_image)
-}
-
-fn resolve_extent_source(
-  resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity, extent_name: &str,
-) -> Result<Option<(ByteSourceHandle, RelatedPathBuf)>> {
-  resolve_named_source(
-    resolver,
-    identity,
-    extent_name,
-    RelatedSourcePurpose::Extent,
-  )
-}
-
-fn resolve_named_source(
-  resolver: &dyn RelatedSourceResolver, identity: &SourceIdentity, name: &str,
-  purpose: RelatedSourcePurpose,
-) -> Result<Option<(ByteSourceHandle, RelatedPathBuf)>> {
-  if let Ok(relative) = RelatedPathBuf::from_relative_path(name)
-    && let Some(parent) = identity.logical_path().parent()
-  {
-    let joined = parent.join(&relative);
-    if let Some(source) = resolver.resolve(&RelatedSourceRequest::new(purpose, joined.clone()))? {
-      return Ok(Some((source, joined)));
-    }
-  }
-
-  let file_name = name.rsplit(['\\', '/']).next().unwrap_or(name);
-  let sibling = identity.sibling_path(file_name)?;
-  Ok(
-    resolver
-      .resolve(&RelatedSourceRequest::new(purpose, sibling.clone()))?
-      .map(|source| (source, sibling)),
-  )
-}
-
 #[cfg(test)]
 mod tests {
   use std::{collections::HashMap, io::Write, path::Path};
 
   use super::*;
   use crate::{
-    RelatedSourceRequest, SourceIdentity, images::vmdk::parser::grain_directory_entry_count,
+    RelatedSourceRequest, RelatedSourceResolver, SourceIdentity,
+    images::vmdk::parser::grain_directory_entry_count,
   };
 
   struct MemDataSource {
@@ -1049,7 +676,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }
@@ -1085,15 +712,15 @@ mod tests {
   #[test]
   fn scales_grain_cache_capacity_to_the_byte_budget() {
     assert_eq!(
-      bounded_cache_capacity(64 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
+      resolve::bounded_cache_capacity(64 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
       64
     );
     assert_eq!(
-      bounded_cache_capacity(8 * 1024 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
+      resolve::bounded_cache_capacity(8 * 1024 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
       8
     );
     assert_eq!(
-      bounded_cache_capacity(256 * 1024 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
+      resolve::bounded_cache_capacity(256 * 1024 * 1024, GRAIN_CACHE_BUDGET_BYTES, 64),
       1
     );
   }

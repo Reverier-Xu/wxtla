@@ -139,7 +139,7 @@ impl HfsFileSystem {
     } else if signature == HFS_PLUS_SIGNATURE || signature == HFSX_SIGNATURE {
       Self::open_hfs_plus(source, signature == HFSX_SIGNATURE)
     } else {
-      Err(Error::InvalidFormat(
+      Err(Error::invalid_format(
         "unsupported hfs family signature".to_string(),
       ))
     }
@@ -209,7 +209,7 @@ impl HfsFileSystem {
     }
 
     let fork = node.fork.as_ref().ok_or_else(|| {
-      Error::NotFound(format!(
+      Error::not_found(format!(
         "hfs node {raw_node_id} does not expose a data fork"
       ))
     })?;
@@ -221,7 +221,7 @@ impl HfsFileSystem {
     let raw_node_id = decode_node_id(node_id)?;
     let node = self.lookup_node(node_id)?;
     let resource_fork = node.resource_fork.as_ref().ok_or_else(|| {
-      Error::NotFound(format!(
+      Error::not_found(format!(
         "hfs node {raw_node_id} does not expose a resource fork"
       ))
     })?;
@@ -250,7 +250,7 @@ impl HfsFileSystem {
       .nodes
       .get(&node_id)
       .cloned()
-      .ok_or_else(|| Error::NotFound(format!("hfs node {node_id} was not found")))
+      .ok_or_else(|| Error::not_found(format!("hfs node {node_id} was not found")))
   }
 
   fn catalog_index(&self) -> Result<Arc<HfsCatalogIndex>> {
@@ -340,7 +340,7 @@ impl FileSystem for HfsFileSystem {
     let node_id = decode_node_id(directory_id)?;
     let node = self.lookup_node(directory_id)?;
     if node.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "hfs node {node_id} is not a directory"
       )));
     }
@@ -357,14 +357,14 @@ impl FileSystem for HfsFileSystem {
     let node_id = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
     if node.record.kind != NamespaceNodeKind::File {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "hfs node {node_id} is not a readable file"
       )));
     }
     let fork = node
       .fork
       .as_ref()
-      .ok_or_else(|| Error::NotFound(format!("hfs node {node_id} does not expose a data fork")))?;
+      .ok_or_else(|| Error::not_found(format!("hfs node {node_id} does not expose a data fork")))?;
     self.build_data_source(fork)
   }
 }
@@ -405,7 +405,7 @@ impl ByteSource for HfsForkDataSource {
         .allocation_base_offset
         .checked_add(u64::from(extent.start_block) * u64::from(self.allocation_block_size))
         .and_then(|base| base.checked_add(within_extent))
-        .ok_or_else(|| Error::InvalidRange("hfs fork offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("hfs fork offset overflow"))?;
       self
         .source
         .read_exact_at(physical_offset, &mut buf[written..written + chunk])?;
@@ -556,7 +556,7 @@ fn parse_hfs_catalog_record(record: &[u8], builder: &mut HfsBuilder) -> Result<(
   let name_len = usize::from(record[6]);
   let name_end = 7 + name_len;
   if name_end > record.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs catalog key name exceeds the record bounds".to_string(),
     ));
   }
@@ -636,7 +636,7 @@ fn parse_hfs_plus_catalog_record(
   };
   let name_end = 8 + name_len * 2;
   if name_end > 2 + key_size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs+ catalog key name exceeds the encoded key size".to_string(),
     ));
   }
@@ -772,14 +772,14 @@ fn parse_hfs_plus_attributes(
         let size = usize::try_from(be_u32(
           &record[key.value_offset + 12..key.value_offset + 16],
         ))
-        .map_err(|_| Error::InvalidRange("hfs+ inline xattr size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("hfs+ inline xattr size is too large"))?;
         let data_offset = key.value_offset + 16;
         let data_end = data_offset
           .checked_add(size)
-          .ok_or_else(|| Error::InvalidRange("hfs+ inline xattr end overflow".to_string()))?;
-        let data = record.get(data_offset..data_end).ok_or_else(|| {
-          Error::InvalidFormat("hfs+ inline xattr exceeds the record bounds".to_string())
-        })?;
+          .ok_or_else(|| Error::invalid_range("hfs+ inline xattr end overflow"))?;
+        let data = record
+          .get(data_offset..data_end)
+          .ok_or_else(|| Error::invalid_format("hfs+ inline xattr exceeds the record bounds"))?;
         attributes
           .entry(key.identity.cnid)
           .or_default()
@@ -790,16 +790,16 @@ fn parse_hfs_plus_attributes(
       }
       HFS_PLUS_XATTR_FORK_RECORD => {
         if key.start_block != 0 {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "hfs+ xattr fork records must start at logical block 0".to_string(),
           ));
         }
         let fork_bytes = record
           .get(key.value_offset + 8..key.value_offset + 88)
-          .ok_or_else(|| Error::InvalidFormat("hfs+ xattr fork record is truncated".to_string()))?;
+          .ok_or_else(|| Error::invalid_format("hfs+ xattr fork record is truncated"))?;
         let fork = parse_hfs_plus_fork(fork_bytes)?;
         if fork_attributes.insert(key.identity, fork).is_some() {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "duplicate hfs+ xattr fork record encountered".to_string(),
           ));
         }
@@ -807,16 +807,14 @@ fn parse_hfs_plus_attributes(
       HFS_PLUS_XATTR_EXTENTS_RECORD => {
         let extent_bytes = record
           .get(key.value_offset + 8..key.value_offset + 72)
-          .ok_or_else(|| {
-            Error::InvalidFormat("hfs+ xattr extent overflow record is truncated".to_string())
-          })?;
+          .ok_or_else(|| Error::invalid_format("hfs+ xattr extent overflow record is truncated"))?;
         overflow_extents
           .entry(key.identity)
           .or_default()
           .push((key.start_block, parse_hfs_plus_extent_record(extent_bytes)?));
       }
       other => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "unsupported hfs+ xattr record type: 0x{other:08x}"
         )));
       }
@@ -843,7 +841,7 @@ fn parse_hfs_plus_attributes(
       });
   }
   if !overflow_extents.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs+ xattr extent overflow records are missing a base fork record".to_string(),
     ));
   }
@@ -868,7 +866,7 @@ fn parse_hfs_plus_attribute_key(record: &[u8]) -> Result<Option<HfsPlusAttribute
   let name_length = usize::from(be_u16(&record[12..14]));
   let name_end = 14 + name_length * 2;
   if name_end > 2 + key_size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs+ attribute key name exceeds the encoded key size".to_string(),
     ));
   }
@@ -885,7 +883,7 @@ fn parse_hfs_plus_attribute_key(record: &[u8]) -> Result<Option<HfsPlusAttribute
 
 fn parse_hfs_plus_extent_record(bytes: &[u8]) -> Result<Vec<HfsExtent>> {
   if bytes.len() < 64 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs+ xattr extent overflow record is truncated".to_string(),
     ));
   }
@@ -916,14 +914,14 @@ fn merge_hfs_plus_attribute_extents(
 
   for (start_block, extents) in overflow_records {
     if u64::from(start_block) != covered_blocks {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "hfs+ xattr extent overflow records are not in logical-block order".to_string(),
       ));
     }
     for extent in extents {
       covered_blocks = covered_blocks
         .checked_add(u64::from(extent.block_count))
-        .ok_or_else(|| Error::InvalidRange("hfs+ xattr block count overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("hfs+ xattr block count overflow"))?;
       merged.push(extent);
       if target_blocks != 0 && covered_blocks >= target_blocks {
         break;
@@ -934,7 +932,7 @@ fn merge_hfs_plus_attribute_extents(
     }
   }
   if target_blocks != 0 && covered_blocks < target_blocks {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs+ xattr extents do not cover the declared fork block count".to_string(),
     ));
   }
@@ -966,7 +964,7 @@ fn sum_extent_blocks(extents: &[HfsExtent]) -> u32 {
 
 fn parse_hfs_plus_fork(bytes: &[u8]) -> Result<HfsFork> {
   if bytes.len() < 80 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs+ fork descriptor is truncated".to_string(),
     ));
   }
@@ -995,7 +993,7 @@ fn decode_utf16be_string(bytes: &[u8], translate_path_separator: bool) -> Result
     .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
     .collect::<Vec<_>>();
   let decoded = String::from_utf16(&units)
-    .map_err(|_| Error::InvalidFormat("hfs+ name is not valid UTF-16".to_string()))?;
+    .map_err(|_| Error::invalid_format("hfs+ name is not valid UTF-16"))?;
   if !translate_path_separator {
     return Ok(decoded);
   }
@@ -1029,7 +1027,7 @@ fn kind_from_mode(mode: u16) -> NamespaceNodeKind {
 fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "hfs node identifiers must be encoded as 8-byte little-endian values".to_string(),
     ));
   }

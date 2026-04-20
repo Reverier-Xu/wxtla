@@ -21,13 +21,13 @@ pub(crate) fn parse_btree_header(source: &dyn ByteSource) -> Result<BTreeHeader>
   let header_bytes = source.read_bytes_at(0, 120)?;
   let descriptor = parse_node_descriptor(&header_bytes)?;
   if descriptor.node_type != 1 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs catalog b-tree header node is missing".to_string(),
     ));
   }
   let node_size = be_u16(&header_bytes[32..34]);
   if node_size < 512 || !node_size.is_power_of_two() {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported hfs b-tree node size: {node_size}"
     )));
   }
@@ -52,7 +52,7 @@ pub(crate) fn read_leaf_records(
     )?;
     let descriptor = parse_node_descriptor(&node)?;
     if descriptor.node_type != -1 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "expected an hfs leaf node, found node type {}",
         descriptor.node_type
       )));
@@ -68,7 +68,7 @@ pub(crate) fn read_leaf_records(
 
 fn parse_node_descriptor(node: &[u8]) -> Result<BTreeNodeDescriptor> {
   if node.len() < 14 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs b-tree node descriptor is truncated".to_string(),
     ));
   }
@@ -85,12 +85,12 @@ fn parse_node_descriptor(node: &[u8]) -> Result<BTreeNodeDescriptor> {
 fn record_ranges(node: &[u8], record_count: u16) -> Result<Vec<(usize, usize)>> {
   let count = usize::from(record_count)
     .checked_add(1)
-    .ok_or_else(|| Error::InvalidRange("hfs record count overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("hfs record count overflow"))?;
   let tail_size = count
     .checked_mul(2)
-    .ok_or_else(|| Error::InvalidRange("hfs record table size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("hfs record table size overflow"))?;
   if tail_size > node.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs record offset table exceeds the node size".to_string(),
     ));
   }
@@ -105,7 +105,7 @@ fn record_ranges(node: &[u8], record_count: u16) -> Result<Vec<(usize, usize)>> 
     .map(usize::from)
     .collect::<Vec<_>>();
   if offsets.windows(2).any(|pair| pair[0] > pair[1]) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "hfs record offsets are not in ascending order".to_string(),
     ));
   }

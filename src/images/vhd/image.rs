@@ -35,7 +35,7 @@ impl VhdImage {
   pub fn open(source: ByteSourceHandle) -> Result<Self> {
     let parsed = parse(source.clone())?;
     if parsed.footer.disk_type == VhdDiskType::Differential {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "differential vhd images require source hints and a related-source resolver".to_string(),
       ));
     }
@@ -46,12 +46,12 @@ impl VhdImage {
     let parsed = parse(source.clone())?;
     let parent_image = if parsed.footer.disk_type == VhdDiskType::Differential {
       let resolver = _hints.resolver().ok_or_else(|| {
-        Error::InvalidSourceReference(
+        Error::invalid_source_reference(
           "differential vhd images require a related-source resolver".to_string(),
         )
       })?;
       let identity = _hints.source_identity().ok_or_else(|| {
-        Error::InvalidSourceReference(
+        Error::invalid_source_reference(
           "differential vhd images require a source identity hint".to_string(),
         )
       })?;
@@ -69,7 +69,7 @@ impl VhdImage {
         }
       }
       let (parent_source, parent_path) = parent_resolution
-        .ok_or_else(|| Error::NotFound("unable to resolve the parent vhd image".to_string()))?;
+        .ok_or_else(|| Error::not_found("unable to resolve the parent vhd image"))?;
       Some(Arc::new(Self::open_with_hints(
         parent_source,
         SourceHints::new()
@@ -89,9 +89,9 @@ impl VhdImage {
     let (bitmap_cache_capacity, block_cache_capacity) = if let Some(header) = &parsed.dynamic_header
     {
       let bitmap_size = usize::try_from(header.sector_bitmap_size()?)
-        .map_err(|_| Error::InvalidRange("vhd sector bitmap size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vhd sector bitmap size is too large"))?;
       let block_size = usize::try_from(header.block_size)
-        .map_err(|_| Error::InvalidRange("vhd block size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vhd block size is too large"))?;
       (
         bounded_cache_capacity(
           bitmap_size,
@@ -134,7 +134,7 @@ impl VhdImage {
 
   fn bat_entry(&self, block_index: u64) -> Result<u32> {
     if block_index >= u64::from(self.bat.entry_count) {
-      return Err(Error::InvalidRange(format!(
+      return Err(Error::invalid_range(format!(
         "vhd block index {block_index} is out of bounds"
       )));
     }
@@ -144,9 +144,9 @@ impl VhdImage {
       .checked_add(
         block_index
           .checked_mul(4)
-          .ok_or_else(|| Error::InvalidRange("vhd BAT entry offset overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("vhd BAT entry offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("vhd BAT entry offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vhd BAT entry offset overflow"))?;
     let mut data = [0u8; 4];
     self.source.read_exact_at(entry_offset, &mut data)?;
 
@@ -157,18 +157,18 @@ impl VhdImage {
     let header = self
       .dynamic_header
       .as_ref()
-      .ok_or_else(|| Error::InvalidFormat("vhd dynamic header is missing".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("vhd dynamic header is missing"))?;
     let sector_bitmap_size = usize::try_from(header.sector_bitmap_size()?)
-      .map_err(|_| Error::InvalidRange("vhd sector bitmap size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vhd sector bitmap size is too large"))?;
     let bat_entry = self.bat_entry(block_index)?;
     if bat_entry == u32::MAX {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhd sparse block bitmap was requested".to_string(),
       ));
     }
     let bitmap_offset = u64::from(bat_entry)
       .checked_mul(u64::from(DEFAULT_SECTOR_SIZE))
-      .ok_or_else(|| Error::InvalidRange("vhd bitmap offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vhd bitmap offset overflow"))?;
 
     self.bitmap_cache.get_or_load(block_index, || {
       let data = self
@@ -182,7 +182,7 @@ impl VhdImage {
     let header = self
       .dynamic_header
       .as_ref()
-      .ok_or_else(|| Error::InvalidFormat("vhd dynamic header is missing".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("vhd dynamic header is missing"))?;
     let bat_entry = self.bat_entry(block_index)?;
     if bat_entry == u32::MAX {
       return Ok(None);
@@ -191,9 +191,9 @@ impl VhdImage {
     let block_offset = u64::from(bat_entry)
       .checked_mul(u64::from(DEFAULT_SECTOR_SIZE))
       .and_then(|offset| offset.checked_add(sector_bitmap_size))
-      .ok_or_else(|| Error::InvalidRange("vhd block offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vhd block offset overflow"))?;
     let block_size = usize::try_from(header.block_size)
-      .map_err(|_| Error::InvalidRange("vhd block size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vhd block size is too large"))?;
 
     self
       .block_cache
@@ -221,7 +221,7 @@ impl ByteSource for VhdImage {
 
     if self.footer.disk_type == VhdDiskType::Fixed {
       let max = usize::try_from(self.footer.current_size - offset)
-        .map_err(|_| Error::InvalidRange("vhd remaining size is too large".to_string()))?
+        .map_err(|_| Error::invalid_range("vhd remaining size is too large"))?
         .min(buf.len());
       return self.source.read_at(offset, &mut buf[..max]);
     }
@@ -229,13 +229,13 @@ impl ByteSource for VhdImage {
     let header = self
       .dynamic_header
       .as_ref()
-      .ok_or_else(|| Error::InvalidFormat("vhd dynamic header is missing".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("vhd dynamic header is missing"))?;
     let block_size = u64::from(header.block_size);
     let mut copied = 0usize;
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("vhd read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vhd read offset overflow"))?;
       if absolute_offset >= self.footer.current_size {
         break;
       }
@@ -245,17 +245,17 @@ impl ByteSource for VhdImage {
       let block_available = usize::try_from(
         block_size
           .checked_sub(within_block)
-          .ok_or_else(|| Error::InvalidRange("vhd block range underflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("vhd block range underflow"))?,
       )
-      .map_err(|_| Error::InvalidRange("vhd block size is too large".to_string()))?
+      .map_err(|_| Error::invalid_range("vhd block size is too large"))?
       .min(
         usize::try_from(self.footer.current_size - absolute_offset)
-          .map_err(|_| Error::InvalidRange("vhd remaining size is too large".to_string()))?,
+          .map_err(|_| Error::invalid_range("vhd remaining size is too large"))?,
       );
       let sector_available = usize::try_from(
         u64::from(DEFAULT_SECTOR_SIZE) - (within_block % u64::from(DEFAULT_SECTOR_SIZE)),
       )
-      .map_err(|_| Error::InvalidRange("vhd sector size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vhd sector size is too large"))?;
       let available = block_available
         .min(buf.len() - copied)
         .min(sector_available);
@@ -274,10 +274,10 @@ impl ByteSource for VhdImage {
       };
       let bitmap = self.read_bitmap(block_index)?;
       let sector_index = usize::try_from(within_block / u64::from(DEFAULT_SECTOR_SIZE))
-        .map_err(|_| Error::InvalidRange("vhd sector index overflow".to_string()))?;
+        .map_err(|_| Error::invalid_range("vhd sector index overflow"))?;
       let sector_present = {
         let byte = *bitmap.get(sector_index / 8).ok_or_else(|| {
-          Error::InvalidFormat("vhd sector bitmap does not cover the requested sector".to_string())
+          Error::invalid_format("vhd sector bitmap does not cover the requested sector")
         })?;
         let bit = 7 - (sector_index % 8);
         (byte & (1 << bit)) != 0
@@ -294,7 +294,7 @@ impl ByteSource for VhdImage {
       }
 
       let block_offset = usize::try_from(within_block)
-        .map_err(|_| Error::InvalidRange("vhd block offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vhd block offset is too large"))?;
       buf[copied..copied + available]
         .copy_from_slice(&block[block_offset..block_offset + available]);
 

@@ -21,6 +21,11 @@ opt-level     = 3
 strip         = true
 
 
+[features]
+default = ["rar", "sevenz"]
+rar      = []
+sevenz   = []
+
 [dependencies]
 adc                   = "0.2"
 adler2                = "2.0"

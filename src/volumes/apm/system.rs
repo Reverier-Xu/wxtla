@@ -60,7 +60,7 @@ impl ApmVolumeSystem {
     let volume = self
       .volumes
       .get(index)
-      .ok_or_else(|| Error::NotFound(format!("apm volume index {index} is out of bounds")))?;
+      .ok_or_else(|| Error::not_found(format!("apm volume index {index} is out of bounds")))?;
     Ok(Arc::new(SliceDataSource::new(
       self.source.clone(),
       volume.span.byte_offset,

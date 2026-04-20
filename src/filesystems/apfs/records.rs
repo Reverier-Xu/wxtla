@@ -118,12 +118,12 @@ impl ApfsInodeRecord {
   pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
     let header = ApfsFsKeyHeader::parse(key)?;
     if header.record_type != APFS_TYPE_INODE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs inode key has the wrong record type".to_string(),
       ));
     }
     if value.len() < 92 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs inode value is too short".to_string(),
       ));
     }
@@ -199,12 +199,12 @@ impl ApfsSnapshotMetadataRecord {
   pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
     let header = ApfsFsKeyHeader::parse(key)?;
     if header.record_type != APFS_TYPE_SNAP_METADATA {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs snapshot metadata key has the wrong record type".to_string(),
       ));
     }
     if value.len() < 50 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs snapshot metadata value is too short".to_string(),
       ));
     }
@@ -241,12 +241,12 @@ impl ApfsDirectoryRecord {
   pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
     let key_header = ApfsFsKeyHeader::parse(key)?;
     if key_header.record_type != APFS_TYPE_DIR_REC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs directory key has the wrong record type".to_string(),
       ));
     }
     if value.len() < 18 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs directory value is too short".to_string(),
       ));
     }
@@ -280,12 +280,12 @@ impl ApfsXattrRecord {
   pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
     let header = ApfsFsKeyHeader::parse(key)?;
     if header.record_type != APFS_TYPE_XATTR {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs xattr key has the wrong record type".to_string(),
       ));
     }
     if value.len() < 4 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs xattr value is too short".to_string(),
       ));
     }
@@ -297,7 +297,7 @@ impl ApfsXattrRecord {
 
     let storage = if (flags & XATTR_DATA_STREAM) != 0 {
       if data.len() < 48 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "apfs xattr stream descriptor is too short".to_string(),
         ));
       }
@@ -345,12 +345,12 @@ pub(crate) struct ApfsFextRecord {
 impl ApfsFextRecord {
   pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
     if key.len() != 16 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs fext key must be 16 bytes".to_string(),
       ));
     }
     if value.len() < 16 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs fext value is too short".to_string(),
       ));
     }
@@ -369,12 +369,12 @@ impl ApfsFileExtentRecord {
   pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
     let header = ApfsFsKeyHeader::parse(key)?;
     if header.record_type != APFS_TYPE_FILE_EXTENT {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs file extent key has the wrong record type".to_string(),
       ));
     }
     if value.len() < 24 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs file extent value is too short".to_string(),
       ));
     }
@@ -402,17 +402,17 @@ impl ApfsFileInfoRecord {
   pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
     let header = ApfsFsKeyHeader::parse(key)?;
     if header.record_type != APFS_TYPE_FILE_INFO {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs file-info key has the wrong record type".to_string(),
       ));
     }
     if key.len() != 16 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs file-info key must be 16 bytes".to_string(),
       ));
     }
     if value.len() < 3 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs file-info value is too short".to_string(),
       ));
     }
@@ -443,7 +443,7 @@ pub(crate) fn parse_xfields(bytes: &[u8]) -> Result<Vec<ParsedXfield>> {
     return Ok(Vec::new());
   }
   if bytes.len() < 4 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs xfield blob is too short".to_string(),
     ));
   }
@@ -452,7 +452,7 @@ pub(crate) fn parse_xfields(bytes: &[u8]) -> Result<Vec<ParsedXfield>> {
   let used_data = usize::from(read_u16_le(bytes, 2)?);
   let descriptors_length = field_count
     .checked_mul(4)
-    .ok_or_else(|| Error::InvalidRange("apfs xfield descriptor length overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("apfs xfield descriptor length overflow"))?;
   let descriptors = read_slice(bytes, 4, descriptors_length, "apfs xfield descriptors")?;
   let values = read_slice(
     bytes,
@@ -475,7 +475,7 @@ pub(crate) fn parse_xfields(bytes: &[u8]) -> Result<Vec<ParsedXfield>> {
     offset = align_8(
       offset
         .checked_add(size)
-        .ok_or_else(|| Error::InvalidRange("apfs xfield offset overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("apfs xfield offset overflow"))?,
     );
   }
 

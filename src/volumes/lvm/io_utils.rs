@@ -26,5 +26,5 @@ pub(super) fn le_u64(data: &[u8]) -> u64 {
 }
 
 pub(super) fn unsupported(message: impl Into<String>) -> Error {
-  Error::InvalidFormat(message.into())
+  Error::invalid_format(message.into())
 }

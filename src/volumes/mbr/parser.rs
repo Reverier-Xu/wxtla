@@ -84,14 +84,14 @@ fn infer_layout(source: &dyn ByteSource, boot_record: &MbrBootRecord) -> Result<
 
   best_match
     .map(|(_, parsed)| parsed)
-    .ok_or_else(|| Error::InvalidFormat("unable to infer a supported mbr sector size".to_string()))
+    .ok_or_else(|| Error::invalid_format("unable to infer a supported mbr sector size"))
 }
 
 fn parse_layout(
   source: &dyn ByteSource, boot_record: &MbrBootRecord, bytes_per_sector: u32,
 ) -> Result<MbrParsedLayout> {
   if !SUPPORTED_BYTES_PER_SECTOR.contains(&bytes_per_sector) {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported mbr bytes per sector: {bytes_per_sector}"
     )));
   }
@@ -140,7 +140,7 @@ fn parse_logical_partitions(
 
   loop {
     if !local_seen_ebrs.insert(current_ebr_lba) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "mbr extended partition chain contains a loop".to_string(),
       ));
     }
@@ -148,14 +148,14 @@ fn parse_logical_partitions(
       break;
     }
     if partitions.len() >= MAX_LOGICAL_PARTITIONS {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "mbr exceeds the maximum of {MAX_LOGICAL_PARTITIONS} logical partitions"
       )));
     }
 
     let ebr_offset = current_ebr_lba
       .checked_mul(u64::from(bytes_per_sector))
-      .ok_or_else(|| Error::InvalidRange("ebr offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ebr offset overflow"))?;
     let ebr = MbrBootRecord::read(source, ebr_offset)?;
     let mut logical_entry = None;
     let mut next_link = None;
@@ -167,14 +167,14 @@ fn parse_logical_partitions(
 
       if entry.is_extended() {
         if next_link.is_some() {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "ebr contains more than one chained extended entry".to_string(),
           ));
         }
         next_link = Some(entry);
       } else {
         if logical_entry.is_some() {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "ebr contains more than one logical partition entry".to_string(),
           ));
         }
@@ -182,12 +182,11 @@ fn parse_logical_partitions(
       }
     }
 
-    let logical_entry = logical_entry.ok_or_else(|| {
-      Error::InvalidFormat("ebr is missing the logical partition entry".to_string())
-    })?;
+    let logical_entry = logical_entry
+      .ok_or_else(|| Error::invalid_format("ebr is missing the logical partition entry"))?;
     let absolute_start_lba = current_ebr_lba
       .checked_add(u64::from(logical_entry.start_lba))
-      .ok_or_else(|| Error::InvalidRange("logical partition lba overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("logical partition lba overflow"))?;
     partitions.push(MbrPartitionInfo::from_entry(
       partitions.len(),
       logical_entry,
@@ -200,7 +199,7 @@ fn parse_logical_partitions(
     current_ebr_lba = match next_link {
       Some(next_link) => first_ebr_lba
         .checked_add(u64::from(next_link.start_lba))
-        .ok_or_else(|| Error::InvalidRange("next ebr lba overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("next ebr lba overflow"))?,
       None => break,
     };
   }

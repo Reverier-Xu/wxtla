@@ -43,10 +43,10 @@ impl GptVolumeSystem {
     let active_header = match active_header_location {
       GptHeaderLocation::Primary => primary_header
         .clone()
-        .ok_or_else(|| Error::InvalidFormat("gpt active primary header is missing".to_string()))?,
+        .ok_or_else(|| Error::invalid_format("gpt active primary header is missing"))?,
       GptHeaderLocation::Backup => backup_header
         .clone()
-        .ok_or_else(|| Error::InvalidFormat("gpt active backup header is missing".to_string()))?,
+        .ok_or_else(|| Error::invalid_format("gpt active backup header is missing"))?,
     };
 
     Ok(Self {
@@ -101,7 +101,7 @@ impl GptVolumeSystem {
     let volume = self
       .volumes
       .get(index)
-      .ok_or_else(|| Error::NotFound(format!("gpt volume index {index} is out of bounds")))?;
+      .ok_or_else(|| Error::not_found(format!("gpt volume index {index} is out of bounds")))?;
     Ok(Arc::new(SliceDataSource::new(
       self.source.clone(),
       volume.span.byte_offset,

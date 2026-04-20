@@ -61,7 +61,7 @@ impl EwfImage {
     let chunk_size = parsed.volume.chunk_size()?;
     let chunk_cache_capacity = bounded_cache_capacity(
       usize::try_from(chunk_size)
-        .map_err(|_| Error::InvalidRange("ewf chunk size is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("ewf chunk size is too large"))?,
       CHUNK_CACHE_BUDGET_BYTES,
       DEFAULT_CHUNK_CACHE_CAPACITY,
     );
@@ -146,13 +146,13 @@ impl EwfImage {
       .partition_point(|table| table.start_chunk_index <= chunk_index)
       .checked_sub(1)
       .ok_or_else(|| {
-        Error::InvalidRange(format!("ewf chunk index {chunk_index} is out of bounds"))
+        Error::invalid_range(format!("ewf chunk index {chunk_index} is out of bounds"))
       })?;
     let table = self.chunk_tables.get(table_index).ok_or_else(|| {
-      Error::InvalidRange(format!("ewf chunk index {chunk_index} is out of bounds"))
+      Error::invalid_range(format!("ewf chunk index {chunk_index} is out of bounds"))
     })?;
     if !table.contains_chunk(chunk_index) {
-      return Err(Error::InvalidRange(format!(
+      return Err(Error::invalid_range(format!(
         "ewf chunk index {chunk_index} is out of bounds"
       )));
     }
@@ -174,7 +174,7 @@ impl EwfImage {
       .segment_sources
       .get(&table_descriptor.segment_number)
       .ok_or_else(|| {
-        Error::NotFound(format!(
+        Error::not_found(format!(
           "ewf segment {} is missing for chunk {}",
           table_descriptor.segment_number, chunk_index
         ))
@@ -201,7 +201,7 @@ impl EwfImage {
         if table_descriptor.is_overflow_index(local_index + 1)
           || next_entry.raw_offset < current_offset
         {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "ewf chunk offsets must be monotonically increasing within a table".to_string(),
           ));
         }
@@ -213,16 +213,16 @@ impl EwfImage {
       table_descriptor
         .data_end_offset
         .checked_sub(table_descriptor.base_offset)
-        .ok_or_else(|| Error::InvalidRange("ewf chunk end offset underflow".to_string()))?
+        .ok_or_else(|| Error::invalid_range("ewf chunk end offset underflow"))?
     };
     let stored_size = u32::try_from(
       next_offset
         .checked_sub(u64::from(current_offset))
-        .ok_or_else(|| Error::InvalidRange("ewf chunk stored size underflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("ewf chunk stored size underflow"))?,
     )
-    .map_err(|_| Error::InvalidRange("ewf chunk stored size overflow".to_string()))?;
+    .map_err(|_| Error::invalid_range("ewf chunk stored size overflow"))?;
     if stored_size == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ewf chunk stored size must be non-zero".to_string(),
       ));
     }
@@ -230,16 +230,16 @@ impl EwfImage {
     let chunk_size = u64::from(self.chunk_size);
     let media_offset = u64::from(chunk_index)
       .checked_mul(chunk_size)
-      .ok_or_else(|| Error::InvalidRange("ewf chunk media offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ewf chunk media offset overflow"))?;
     let remaining_media_size = self
       .media_size
       .checked_sub(media_offset)
-      .ok_or_else(|| Error::InvalidRange("ewf chunk media range underflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ewf chunk media range underflow"))?;
     let logical_size = remaining_media_size.min(chunk_size) as u32;
     let stored_offset = table_descriptor
       .base_offset
       .checked_add(u64::from(current_offset))
-      .ok_or_else(|| Error::InvalidRange("ewf chunk file offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ewf chunk file offset overflow"))?;
 
     Ok(EwfChunkDescriptor {
       chunk_index,
@@ -263,7 +263,7 @@ impl EwfImage {
       .segment_sources
       .get(&chunk.segment_number)
       .ok_or_else(|| {
-        Error::NotFound(format!(
+        Error::not_found(format!(
           "ewf segment {} is missing for chunk {}",
           chunk.segment_number, chunk.chunk_index
         ))
@@ -288,10 +288,10 @@ impl EwfImage {
     let expected_stored_size = chunk
       .logical_size
       .checked_add(4)
-      .ok_or_else(|| Error::InvalidRange("ewf stored chunk size overflow".to_string()))?
+      .ok_or_else(|| Error::invalid_range("ewf stored chunk size overflow"))?
       as usize;
     if stored.len() != expected_stored_size {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf stored chunk size mismatch: expected {expected_stored_size}, got {}",
         stored.len()
       )));
@@ -306,7 +306,7 @@ impl EwfImage {
     ]);
     let calculated_checksum = adler32_slice(&stored[..data_len]);
     if stored_checksum != calculated_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf stored chunk checksum mismatch: stored 0x{stored_checksum:08x}, calculated 0x{calculated_checksum:08x}"
       )));
     }
@@ -333,16 +333,16 @@ impl ByteSource for EwfImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("ewf read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("ewf read offset overflow"))?;
       if absolute_offset >= self.media_size {
         break;
       }
 
       let chunk_size = u64::from(self.chunk_size);
       let chunk_index = u32::try_from(absolute_offset / chunk_size)
-        .map_err(|_| Error::InvalidRange("ewf chunk index overflow".to_string()))?;
+        .map_err(|_| Error::invalid_range("ewf chunk index overflow"))?;
       let chunk_offset = usize::try_from(absolute_offset % chunk_size)
-        .map_err(|_| Error::InvalidRange("ewf chunk offset overflow".to_string()))?;
+        .map_err(|_| Error::invalid_range("ewf chunk offset overflow"))?;
       let chunk = self.read_chunk(chunk_index)?;
       let available = (chunk.len() - chunk_offset).min(buf.len() - copied);
       buf[copied..copied + available]

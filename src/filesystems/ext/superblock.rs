@@ -45,14 +45,14 @@ impl ExtSuperblock {
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
     let superblock: &[u8; SUPERBLOCK_SIZE] = bytes
       .try_into()
-      .map_err(|_| Error::InvalidFormat("ext superblock must be exactly 1024 bytes".to_string()))?;
+      .map_err(|_| Error::invalid_format("ext superblock must be exactly 1024 bytes"))?;
     Self::from_superblock(superblock)
   }
 
   pub fn from_superblock(superblock: &[u8; SUPERBLOCK_SIZE]) -> Result<Self> {
     let magic = le_u16(&superblock[56..58]);
     if magic != SUPERBLOCK_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext superblock magic is missing".to_string(),
       ));
     }
@@ -60,9 +60,9 @@ impl ExtSuperblock {
     let log_block_size = le_u32(&superblock[24..28]);
     let block_size = 1024u32
       .checked_shl(log_block_size)
-      .ok_or_else(|| Error::InvalidRange("ext block size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ext block size overflow"))?;
     if block_size < 1024 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext block size must be at least 1024 bytes".to_string(),
       ));
     }
@@ -77,7 +77,7 @@ impl ExtSuperblock {
     };
     let blocks_count = blocks_count_lo | (blocks_count_hi << 32);
     if blocks_count == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext block count must be non-zero".to_string(),
       ));
     }
@@ -85,14 +85,14 @@ impl ExtSuperblock {
     let blocks_per_group = le_u32(&superblock[32..36]);
     let inodes_per_group = le_u32(&superblock[40..44]);
     if blocks_per_group == 0 || inodes_per_group == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext group sizes must be non-zero".to_string(),
       ));
     }
 
     let inode_size = le_u16(&superblock[88..90]);
     if inode_size < 128 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext inode size must be at least 128 bytes".to_string(),
       ));
     }
@@ -108,7 +108,7 @@ impl ExtSuperblock {
     let descriptor_size = if incompatible_features & 0x80 != 0 {
       let descriptor_size = le_u16(&superblock[254..256]);
       if descriptor_size < 32 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ext64 group descriptor size must be at least 32 bytes".to_string(),
         ));
       }
@@ -139,7 +139,7 @@ impl ExtSuperblock {
   pub fn block_offset(&self, block: u64) -> Result<u64> {
     block
       .checked_mul(self.block_size_u64())
-      .ok_or_else(|| Error::InvalidRange("ext block offset overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ext block offset overflow"))
   }
 
   pub fn group_count(&self) -> u64 {
@@ -160,10 +160,10 @@ pub(crate) fn read_group_descriptors(
 ) -> Result<Vec<ExtGroupDescriptor>> {
   let descriptor_size = usize::from(superblock.descriptor_size);
   let group_count = usize::try_from(superblock.group_count())
-    .map_err(|_| Error::InvalidRange("ext group count is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("ext group count is too large"))?;
   let table_size = descriptor_size
     .checked_mul(group_count)
-    .ok_or_else(|| Error::InvalidRange("ext descriptor table size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ext descriptor table size overflow"))?;
   let table = source.read_bytes_at(superblock.group_descriptor_table_offset(), table_size)?;
   let mut descriptors = Vec::with_capacity(group_count);
 

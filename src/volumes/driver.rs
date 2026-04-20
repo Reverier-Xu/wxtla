@@ -56,7 +56,7 @@ macro_rules! impl_volume_system_data_source {
             selector.matches(&crate::volumes::driver::volume_record_to_view(volume))
           })
           .ok_or_else(|| {
-            crate::Error::NotFound(format!(
+            crate::Error::not_found(format!(
               "{} child view was not found for selector {selector:?}",
               crate::volumes::driver::VolumeSystem::descriptor(self).id
             ))

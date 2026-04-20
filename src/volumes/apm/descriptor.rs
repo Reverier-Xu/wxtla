@@ -41,13 +41,13 @@ impl ApmDriverDescriptor {
   /// Parse a driver descriptor block from 512 bytes.
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() != BLOCK0_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "apm driver descriptor must be {BLOCK0_SIZE} bytes, got {}",
         data.len()
       )));
     }
     if &data[0..2] != DRIVER_DESCRIPTOR_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apm driver descriptor signature is missing".to_string(),
       ));
     }
@@ -56,7 +56,7 @@ impl ApmDriverDescriptor {
     let driver_count = usize::from(read_u16_be(data, 16));
     let available_driver_slots = (BLOCK0_SIZE - 18) / 8;
     if driver_count > available_driver_slots {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "apm driver descriptor count is too large: {driver_count}"
       )));
     }

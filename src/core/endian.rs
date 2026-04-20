@@ -40,7 +40,7 @@ pub(crate) fn decode_utf16_le_string(data: &[u8]) -> Result<String, crate::Error
     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
     .collect::<Vec<_>>();
   String::from_utf16(&units)
-    .map_err(|_| crate::Error::InvalidFormat("invalid UTF-16LE string".to_string()))
+    .map_err(|_| crate::Error::invalid_format("invalid UTF-16LE string"))
 }
 
 pub(crate) fn decode_utf16_be_string(data: &[u8]) -> Result<String, crate::Error> {
@@ -49,5 +49,5 @@ pub(crate) fn decode_utf16_be_string(data: &[u8]) -> Result<String, crate::Error
     .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
     .collect::<Vec<_>>();
   String::from_utf16(&units)
-    .map_err(|_| crate::Error::InvalidFormat("invalid UTF-16BE string".to_string()))
+    .map_err(|_| crate::Error::invalid_format("invalid UTF-16BE string"))
 }

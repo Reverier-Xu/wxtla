@@ -18,7 +18,7 @@ pub(super) fn apply(
   source: ByteSourceHandle, active_header: &VhdxImageHeader, active_header_offset: u64,
 ) -> Result<ByteSourceHandle> {
   if active_header.log_version != 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhdx active log uses an unsupported log format version".to_string(),
     ));
   }
@@ -43,7 +43,7 @@ pub(super) fn apply(
         patch
           .end()
           .map(|end| size.max(end))
-          .ok_or_else(|| Error::InvalidRange("vhdx replay patch range overflow".to_string()))
+          .ok_or_else(|| Error::invalid_range("vhdx replay patch range overflow"))
       })?;
 
   Ok(Arc::new(VhdxReplayLogDataSource {
@@ -143,9 +143,9 @@ impl ByteSource for VhdxReplayLogDataSource {
 fn apply_patch_to_buffer(patch: &ReplayPatch, offset: u64, buf: &mut [u8]) -> Result<()> {
   let request_end = offset
     .checked_add(buf.len() as u64)
-    .ok_or_else(|| Error::InvalidRange("vhdx replay read range overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhdx replay read range overflow"))?;
   let Some(patch_end) = patch.end() else {
-    return Err(Error::InvalidRange(
+    return Err(Error::invalid_range(
       "vhdx replay patch range overflow".to_string(),
     ));
   };
@@ -156,17 +156,17 @@ fn apply_patch_to_buffer(patch: &ReplayPatch, offset: u64, buf: &mut [u8]) -> Re
   let overlap_start = patch.offset.max(offset);
   let overlap_end = patch_end.min(request_end);
   let buffer_start = usize::try_from(overlap_start - offset)
-    .map_err(|_| Error::InvalidRange("vhdx replay overlap offset is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("vhdx replay overlap offset is too large"))?;
   let buffer_end = usize::try_from(overlap_end - offset)
-    .map_err(|_| Error::InvalidRange("vhdx replay overlap offset is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("vhdx replay overlap offset is too large"))?;
 
   match &patch.data {
     ReplayPatchData::Bytes(data) => {
       let source_start = usize::try_from(overlap_start - patch.offset)
-        .map_err(|_| Error::InvalidRange("vhdx replay overlap offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vhdx replay overlap offset is too large"))?;
       let source_end = source_start
         .checked_add(buffer_end - buffer_start)
-        .ok_or_else(|| Error::InvalidRange("vhdx replay overlap range overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vhdx replay overlap range overflow"))?;
       buf[buffer_start..buffer_end].copy_from_slice(&data[source_start..source_end]);
     }
     ReplayPatchData::Zero(_) => {
@@ -197,7 +197,7 @@ fn validate_log_bounds(source_size: u64, header: &VhdxImageHeader) -> Result<()>
   if header.log_offset < constants::VHDX_ALIGNMENT
     || !header.log_offset.is_multiple_of(constants::VHDX_ALIGNMENT)
   {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "invalid vhdx log offset: {}",
       header.log_offset
     )));
@@ -205,7 +205,7 @@ fn validate_log_bounds(source_size: u64, header: &VhdxImageHeader) -> Result<()>
   if header.log_length == 0
     || !u64::from(header.log_length).is_multiple_of(constants::VHDX_ALIGNMENT)
   {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "invalid vhdx log length: {}",
       header.log_length
     )));
@@ -213,9 +213,9 @@ fn validate_log_bounds(source_size: u64, header: &VhdxImageHeader) -> Result<()>
   let log_end = header
     .log_offset
     .checked_add(u64::from(header.log_length))
-    .ok_or_else(|| Error::InvalidRange("vhdx log range overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhdx log range overflow"))?;
   if log_end > source_size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhdx log region exceeds the source size".to_string(),
     ));
   }
@@ -228,8 +228,8 @@ fn find_active_sequence(
   let mut candidate = None::<ParsedLogSequence>;
 
   for tail in (0..u64::from(header.log_length)).step_by(LOG_SECTOR_SIZE as usize) {
-    let mut position = u32::try_from(tail)
-      .map_err(|_| Error::InvalidRange("vhdx log tail offset is too large".to_string()))?;
+    let mut position =
+      u32::try_from(tail).map_err(|_| Error::invalid_range("vhdx log tail offset is too large"))?;
     let mut expected_previous_sequence = None;
     let mut entries = Vec::new();
     let mut covered = 0u64;
@@ -245,7 +245,7 @@ fn find_active_sequence(
       };
       covered = covered
         .checked_add(u64::from(entry.entry_length))
-        .ok_or_else(|| Error::InvalidRange("vhdx log sequence length overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vhdx log sequence length overflow"))?;
       expected_previous_sequence = Some(entry.sequence_number);
       position = advance_log_offset(position, entry.entry_length, header.log_length)?;
       entries.push(entry);
@@ -276,12 +276,12 @@ fn find_active_sequence(
   }
 
   let candidate = candidate.ok_or_else(|| {
-    Error::InvalidFormat(
+    Error::invalid_format(
       "vhdx image header advertises an active log but no valid log sequence was found".to_string(),
     )
   })?;
   if candidate.flushed_file_offset > source_size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhdx active log references file data beyond the source size".to_string(),
     ));
   }
@@ -340,7 +340,7 @@ fn parse_log_entry(
     header.log_length,
     start,
     usize::try_from(entry_length)
-      .map_err(|_| Error::InvalidRange("vhdx log entry length is too large".to_string()))?,
+      .map_err(|_| Error::invalid_range("vhdx log entry length is too large"))?,
   )?;
   let stored_checksum = le_u32(&entry_bytes[4..8]);
   if calculate_crc32c(&entry_bytes, 4)? != stored_checksum {
@@ -349,23 +349,23 @@ fn parse_log_entry(
 
   let total_sectors = u64::from(entry_length) / LOG_SECTOR_SIZE;
   let data_section_offset = usize::try_from(expected_descriptor_sectors * LOG_SECTOR_SIZE)
-    .map_err(|_| Error::InvalidRange("vhdx log data section offset is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("vhdx log data section offset is too large"))?;
   let mut data_descriptor_count = 0usize;
   let mut patches = Vec::new();
 
   for descriptor_index in 0..usize::try_from(descriptor_count)
-    .map_err(|_| Error::InvalidRange("vhdx log descriptor count is too large".to_string()))?
+    .map_err(|_| Error::invalid_range("vhdx log descriptor count is too large"))?
   {
     let descriptor_offset = LOG_ENTRY_HEADER_SIZE
       .checked_add(
         descriptor_index
           .checked_mul(LOG_DESCRIPTOR_SIZE)
-          .ok_or_else(|| Error::InvalidRange("vhdx log descriptor offset overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("vhdx log descriptor offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("vhdx log descriptor offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vhdx log descriptor offset overflow"))?;
     let descriptor_end = descriptor_offset
       .checked_add(LOG_DESCRIPTOR_SIZE)
-      .ok_or_else(|| Error::InvalidRange("vhdx log descriptor range overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vhdx log descriptor range overflow"))?;
     let Some(descriptor_bytes) = entry_bytes.get(descriptor_offset..descriptor_end) else {
       return Ok(None);
     };
@@ -389,14 +389,12 @@ fn parse_log_entry(
           .checked_add(
             data_descriptor_count
               .checked_mul(LOG_SECTOR_SIZE as usize)
-              .ok_or_else(|| {
-                Error::InvalidRange("vhdx log data sector offset overflow".to_string())
-              })?,
+              .ok_or_else(|| Error::invalid_range("vhdx log data sector offset overflow"))?,
           )
-          .ok_or_else(|| Error::InvalidRange("vhdx log data sector offset overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("vhdx log data sector offset overflow"))?;
         let sector_end = sector_offset
           .checked_add(LOG_SECTOR_SIZE as usize)
-          .ok_or_else(|| Error::InvalidRange("vhdx log data sector range overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("vhdx log data sector range overflow"))?;
         let Some(sector_bytes) = entry_bytes.get(sector_offset..sector_end) else {
           return Ok(None);
         };
@@ -442,7 +440,7 @@ fn compute_descriptor_sectors(descriptor_count: u32) -> Option<u64> {
 fn advance_log_offset(start: u32, entry_length: u32, log_length: u32) -> Result<u32> {
   let advanced = u64::from(start)
     .checked_add(u64::from(entry_length))
-    .ok_or_else(|| Error::InvalidRange("vhdx log offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhdx log offset overflow"))?;
   Ok((advanced % u64::from(log_length)) as u32)
 }
 
@@ -456,7 +454,7 @@ fn read_wrapped_bytes(
   source.read_exact_at(
     log_offset
       .checked_add(start)
-      .ok_or_else(|| Error::InvalidRange("vhdx log read offset overflow".to_string()))?,
+      .ok_or_else(|| Error::invalid_range("vhdx log read offset overflow"))?,
     &mut bytes[..first_len],
   )?;
   if first_len < len {
@@ -499,7 +497,7 @@ fn materialize_range(
 fn calculate_crc32c(data: &[u8], checksum_offset: usize) -> Result<u32> {
   let checksum_end = checksum_offset
     .checked_add(4)
-    .ok_or_else(|| Error::InvalidRange("vhdx checksum offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhdx checksum offset overflow"))?;
   let mut checksum = crc32c::crc32c_append(0, &data[..checksum_offset]);
   checksum = crc32c::crc32c_append(checksum, &[0; 4]);
   checksum = crc32c::crc32c_append(checksum, &data[checksum_end..]);

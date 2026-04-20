@@ -44,38 +44,38 @@ impl VmdkSparseHeader {
 
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != constants::SPARSE_HEADER_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vmdk sparse header must be {} bytes, got {}",
         constants::SPARSE_HEADER_SIZE,
         data.len()
       )));
     }
     if &data[0..4] != constants::SPARSE_HEADER_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid vmdk sparse header signature".to_string(),
       ));
     }
     if data[73..77] != [0x0A, 0x20, 0x0D, 0x0A] {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid vmdk sparse header newline marker bytes".to_string(),
       ));
     }
 
     let format_version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
     if !(1..=3).contains(&format_version) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported vmdk sparse format version: {format_version}"
       )));
     }
 
     let flags = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
     if flags & !constants::SUPPORTED_HEADER_FLAGS != 0 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported vmdk sparse header flags: 0x{flags:08x}"
       )));
     }
     if flags & constants::FLAG_VALID_NEWLINE_TEST == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk sparse header must enable newline validation".to_string(),
       ));
     }
@@ -104,53 +104,53 @@ impl VmdkSparseHeader {
     ]);
 
     if capacity_sectors == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk sparse header capacity must be non-zero".to_string(),
       ));
     }
     if sectors_per_grain < 8 || !sectors_per_grain.is_power_of_two() {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid vmdk sectors-per-grain value: {sectors_per_grain}"
       )));
     }
     if (descriptor_start_sector == 0) != (descriptor_size_sectors == 0) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk sparse header descriptor location must be fully specified or fully absent"
           .to_string(),
       ));
     }
     if grain_table_entries == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk sparse header grain-table entry count must be non-zero".to_string(),
       ));
     }
     let grain_table_bytes = u64::from(grain_table_entries)
       .checked_mul(4)
-      .ok_or_else(|| Error::InvalidRange("vmdk grain-table size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("vmdk grain-table size overflow"))?;
     if !grain_table_bytes.is_multiple_of(constants::BYTES_PER_SECTOR) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk grain table must occupy a whole number of sectors".to_string(),
       ));
     }
     if primary_grain_directory_start_sector == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk sparse header primary grain directory must be non-zero".to_string(),
       ));
     }
     if flags & constants::FLAG_USE_SECONDARY_GD != 0 && secondary_grain_directory_start_sector == 0
     {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk sparse header requires a non-zero secondary grain directory".to_string(),
       ));
     }
     let compression_method = u16::from_le_bytes([data[77], data[78]]);
     if compression_method > 1 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported vmdk compression method: {compression_method}"
       )));
     }
     if compression_method != 0 && flags & constants::FLAG_HAS_COMPRESSED_GRAINS == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk compression method requires the compressed-grains flag".to_string(),
       ));
     }
@@ -175,14 +175,14 @@ impl VmdkSparseHeader {
     self
       .sectors_per_grain
       .checked_mul(constants::BYTES_PER_SECTOR)
-      .ok_or_else(|| Error::InvalidRange("vmdk grain size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("vmdk grain size overflow"))
   }
 
   pub fn virtual_size_bytes(self) -> Result<u64> {
     self
       .capacity_sectors
       .checked_mul(constants::BYTES_PER_SECTOR)
-      .ok_or_else(|| Error::InvalidRange("vmdk virtual size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("vmdk virtual size overflow"))
   }
 
   pub fn uses_secondary_grain_directory(self) -> bool {

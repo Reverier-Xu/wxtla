@@ -34,46 +34,46 @@ impl FatBootSector {
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
     let sector: &[u8; BOOT_SECTOR_SIZE] = bytes
       .try_into()
-      .map_err(|_| Error::InvalidFormat("fat boot sector must be exactly 512 bytes".to_string()))?;
+      .map_err(|_| Error::invalid_format("fat boot sector must be exactly 512 bytes"))?;
     Self::from_sector(sector)
   }
 
   pub fn from_sector(sector: &[u8; BOOT_SECTOR_SIZE]) -> Result<Self> {
     if !has_valid_boot_jump(sector) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fat boot sector has an invalid jump instruction".to_string(),
       ));
     }
     if !has_boot_signature(sector) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fat boot sector is missing the 0x55aa signature".to_string(),
       ));
     }
 
     let bytes_per_sector = le_u16(&sector[11..13]);
     if !valid_bytes_per_sector(bytes_per_sector) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported fat bytes-per-sector value: {bytes_per_sector}"
       )));
     }
 
     let sectors_per_cluster = sector[13];
     if !valid_sectors_per_cluster(sectors_per_cluster) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported fat sectors-per-cluster value: {sectors_per_cluster}"
       )));
     }
 
     let reserved_sectors = le_u16(&sector[14..16]);
     if reserved_sectors == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fat reserved sector count must be non-zero".to_string(),
       ));
     }
 
     let fat_count = sector[16];
     if fat_count == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fat must contain at least one FAT table".to_string(),
       ));
     }
@@ -87,14 +87,14 @@ impl FatBootSector {
       total_sectors_32
     };
     if total_sectors == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fat total sector count must be non-zero".to_string(),
       ));
     }
 
     let media_descriptor = sector[21];
     if !matches!(media_descriptor, 0xF0 | 0xF8..=0xFF) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported fat media descriptor: 0x{media_descriptor:02x}"
       )));
     }
@@ -107,7 +107,7 @@ impl FatBootSector {
       sectors_per_fat_32
     };
     if sectors_per_fat == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fat sectors-per-fat must be non-zero".to_string(),
       ));
     }
@@ -115,7 +115,7 @@ impl FatBootSector {
     let root_dir_sectors = div_ceil_u32(
       u32::from(root_entry_count)
         .checked_mul(32)
-        .ok_or_else(|| Error::InvalidRange("fat root directory size overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("fat root directory size overflow"))?,
       u32::from(bytes_per_sector),
     );
     let data_sectors = total_sectors
@@ -124,12 +124,12 @@ impl FatBootSector {
           .checked_add(
             u32::from(fat_count)
               .checked_mul(sectors_per_fat)
-              .ok_or_else(|| Error::InvalidRange("fat table area size overflow".to_string()))?,
+              .ok_or_else(|| Error::invalid_range("fat table area size overflow"))?,
           )
           .and_then(|value| value.checked_add(root_dir_sectors))
-          .ok_or_else(|| Error::InvalidRange("fat layout size overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("fat layout size overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidFormat("fat data area is out of bounds".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("fat data area is out of bounds"))?;
     let cluster_count = data_sectors / u32::from(sectors_per_cluster);
     let fat_type = if cluster_count < 4_085 {
       FatType::Fat12
@@ -142,19 +142,19 @@ impl FatBootSector {
     let root_cluster = if fat_type == FatType::Fat32 {
       let root_cluster = le_u32(&sector[44..48]);
       if root_entry_count != 0 || sectors_per_fat_16 != 0 || sectors_per_fat_32 == 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "fat32 requires a zero root-entry count and 32-bit sectors-per-fat".to_string(),
         ));
       }
       if root_cluster < 2 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "fat32 root cluster must be at least 2".to_string(),
         ));
       }
       root_cluster
     } else {
       if root_entry_count == 0 || sectors_per_fat_16 == 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "fat12/16 require a fixed root directory and 16-bit sectors-per-fat".to_string(),
         ));
       }
@@ -178,7 +178,7 @@ impl FatBootSector {
   pub fn cluster_size(&self) -> Result<u64> {
     u64::from(self.bytes_per_sector)
       .checked_mul(u64::from(self.sectors_per_cluster))
-      .ok_or_else(|| Error::InvalidRange("fat cluster size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("fat cluster size overflow"))
   }
 
   pub fn root_dir_sectors(&self) -> u32 {
@@ -193,21 +193,21 @@ impl FatBootSector {
       .checked_add(
         u64::from(index)
           .checked_mul(u64::from(self.sectors_per_fat))
-          .ok_or_else(|| Error::InvalidRange("fat table offset overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("fat table offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("fat table offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("fat table offset overflow"))?;
     sector_offset
       .checked_mul(u64::from(self.bytes_per_sector))
-      .ok_or_else(|| Error::InvalidRange("fat table byte offset overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("fat table byte offset overflow"))
   }
 
   pub fn fat_size_bytes(&self) -> Result<usize> {
     usize::try_from(
       u64::from(self.sectors_per_fat)
         .checked_mul(u64::from(self.bytes_per_sector))
-        .ok_or_else(|| Error::InvalidRange("fat table byte size overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("fat table byte size overflow"))?,
     )
-    .map_err(|_| Error::InvalidRange("fat table is too large to map".to_string()))
+    .map_err(|_| Error::invalid_range("fat table is too large to map"))
   }
 
   pub fn root_dir_offset(&self) -> Result<u64> {
@@ -215,21 +215,21 @@ impl FatBootSector {
       .checked_add(
         u64::from(self.fat_count)
           .checked_mul(u64::from(self.sectors_per_fat))
-          .ok_or_else(|| Error::InvalidRange("fat root directory offset overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("fat root directory offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("fat root directory offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("fat root directory offset overflow"))?;
     sector_offset
       .checked_mul(u64::from(self.bytes_per_sector))
-      .ok_or_else(|| Error::InvalidRange("fat root directory offset overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("fat root directory offset overflow"))
   }
 
   pub fn root_dir_size_bytes(&self) -> Result<usize> {
     usize::try_from(
       u64::from(self.root_dir_sectors())
         .checked_mul(u64::from(self.bytes_per_sector))
-        .ok_or_else(|| Error::InvalidRange("fat root directory size overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("fat root directory size overflow"))?,
     )
-    .map_err(|_| Error::InvalidRange("fat root directory is too large to map".to_string()))
+    .map_err(|_| Error::invalid_range("fat root directory is too large to map"))
   }
 
   pub fn data_offset(&self) -> Result<u64> {
@@ -237,18 +237,18 @@ impl FatBootSector {
       .checked_add(
         u64::from(self.fat_count)
           .checked_mul(u64::from(self.sectors_per_fat))
-          .ok_or_else(|| Error::InvalidRange("fat data offset overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("fat data offset overflow"))?,
       )
       .and_then(|value| value.checked_add(u64::from(self.root_dir_sectors())))
-      .ok_or_else(|| Error::InvalidRange("fat data offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("fat data offset overflow"))?;
     data_sector
       .checked_mul(u64::from(self.bytes_per_sector))
-      .ok_or_else(|| Error::InvalidRange("fat data offset overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("fat data offset overflow"))
   }
 
   pub fn cluster_offset(&self, cluster: u32) -> Result<u64> {
     if cluster < 2 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "fat cluster numbers start at 2, got {cluster}"
       )));
     }
@@ -258,9 +258,9 @@ impl FatBootSector {
       .checked_add(
         u64::from(cluster - 2)
           .checked_mul(self.cluster_size()?)
-          .ok_or_else(|| Error::InvalidRange("fat cluster offset overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("fat cluster offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("fat cluster offset overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("fat cluster offset overflow"))
   }
 }
 

@@ -134,21 +134,18 @@ impl VmdkDescriptor {
     }
 
     let descriptor = Self {
-      version: version.ok_or_else(|| {
-        Error::InvalidFormat("vmdk descriptor is missing the version field".to_string())
-      })?,
-      content_id: content_id.ok_or_else(|| {
-        Error::InvalidFormat("vmdk descriptor is missing the cid field".to_string())
-      })?,
+      version: version
+        .ok_or_else(|| Error::invalid_format("vmdk descriptor is missing the version field"))?,
+      content_id: content_id
+        .ok_or_else(|| Error::invalid_format("vmdk descriptor is missing the cid field"))?,
       parent_content_id,
-      file_type: file_type.ok_or_else(|| {
-        Error::InvalidFormat("vmdk descriptor is missing the createtype field".to_string())
-      })?,
+      file_type: file_type
+        .ok_or_else(|| Error::invalid_format("vmdk descriptor is missing the createtype field"))?,
       extents,
       parent_file_name_hint,
     };
     if descriptor.extents.is_empty() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk descriptor must declare at least one extent".to_string(),
       ));
     }
@@ -158,15 +155,12 @@ impl VmdkDescriptor {
 }
 
 fn parse_extent_bytes(line: &[u8], encoding: &'static Encoding) -> Result<VmdkDescriptorExtent> {
-  let (access_mode, rest) = next_token(line).ok_or_else(|| {
-    Error::InvalidFormat("vmdk extent line is missing the access mode".to_string())
-  })?;
-  let (sector_count, rest) = next_token(rest).ok_or_else(|| {
-    Error::InvalidFormat("vmdk extent line is missing the sector count".to_string())
-  })?;
-  let (extent_type, rest) = next_token(rest).ok_or_else(|| {
-    Error::InvalidFormat("vmdk extent line is missing the extent type".to_string())
-  })?;
+  let (access_mode, rest) = next_token(line)
+    .ok_or_else(|| Error::invalid_format("vmdk extent line is missing the access mode"))?;
+  let (sector_count, rest) = next_token(rest)
+    .ok_or_else(|| Error::invalid_format("vmdk extent line is missing the sector count"))?;
+  let (extent_type, rest) = next_token(rest)
+    .ok_or_else(|| Error::invalid_format("vmdk extent line is missing the extent type"))?;
   let rest = trim_ascii_start(rest);
 
   let access_mode = match ascii_lowercase(access_mode).as_slice() {
@@ -189,14 +183,14 @@ fn parse_extent_bytes(line: &[u8], encoding: &'static Encoding) -> Result<VmdkDe
   };
   let sector_count = parse_decimal_u64_bytes(sector_count)?;
   if sector_count == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk extent sector count must be non-zero".to_string(),
     ));
   }
 
   if extent_type == VmdkExtentType::Zero {
     if !trim_ascii(rest).is_empty() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vmdk ZERO extents must not carry a file name".to_string(),
       ));
     }
@@ -210,12 +204,12 @@ fn parse_extent_bytes(line: &[u8], encoding: &'static Encoding) -> Result<VmdkDe
   }
 
   if !rest.starts_with(b"\"") {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vmdk extent file names must be quoted".to_string(),
     ));
   }
   let Some(quote_end) = rest[1..].iter().position(|byte| *byte == b'"') else {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "unterminated vmdk extent file name".to_string(),
     ));
   };
@@ -225,7 +219,7 @@ fn parse_extent_bytes(line: &[u8], encoding: &'static Encoding) -> Result<VmdkDe
     0
   } else {
     let (offset_token, _) = next_token(tail)
-      .ok_or_else(|| Error::InvalidFormat("vmdk extent start sector is missing".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("vmdk extent start sector is missing"))?;
     parse_decimal_u64_bytes(offset_token)?
   };
 
@@ -268,7 +262,7 @@ fn resolve_encoding(label: &[u8]) -> Result<&'static Encoding> {
   }
 
   Encoding::for_label(&normalized).ok_or_else(|| {
-    Error::InvalidFormat(format!(
+    Error::invalid_format(format!(
       "unsupported vmdk descriptor encoding: {}",
       String::from_utf8_lossy(label)
     ))
@@ -282,7 +276,7 @@ fn strip_utf8_bom(data: &[u8]) -> &[u8] {
 fn decode_bytes(data: &[u8], encoding: &'static Encoding, label: &str) -> Result<String> {
   let (decoded, _, had_errors) = encoding.decode(data);
   if had_errors {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "{label} contains bytes that are invalid for {}",
       encoding.name()
     )));
@@ -300,7 +294,7 @@ fn parse_quoted_ascii(value: &[u8]) -> Result<&[u8]> {
   if quoted.iter().all(u8::is_ascii) {
     Ok(quoted)
   } else {
-    Err(Error::InvalidFormat(
+    Err(Error::invalid_format(
       "vmdk descriptor control values must be ASCII".to_string(),
     ))
   }
@@ -308,7 +302,7 @@ fn parse_quoted_ascii(value: &[u8]) -> Result<&[u8]> {
 
 fn parse_quoted_bytes(value: &[u8]) -> Result<&[u8]> {
   if value.len() < 2 || value[0] != b'"' || value[value.len() - 1] != b'"' {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "expected a quoted vmdk descriptor value: {}",
       String::from_utf8_lossy(value)
     )));
@@ -318,7 +312,7 @@ fn parse_quoted_bytes(value: &[u8]) -> Result<&[u8]> {
 
 fn parse_decimal_u32_bytes(value: &[u8]) -> Result<u32> {
   parse_decimal_u64_bytes(value)?.try_into().map_err(|_| {
-    Error::InvalidFormat(format!(
+    Error::invalid_format(format!(
       "invalid decimal vmdk descriptor value: {}",
       String::from_utf8_lossy(value)
     ))
@@ -328,13 +322,13 @@ fn parse_decimal_u32_bytes(value: &[u8]) -> Result<u32> {
 fn parse_decimal_u64_bytes(value: &[u8]) -> Result<u64> {
   let mut result = 0u64;
   if value.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "invalid decimal vmdk descriptor value: <empty>".to_string(),
     ));
   }
   for byte in value {
     if !byte.is_ascii_digit() {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid decimal vmdk descriptor value: {}",
         String::from_utf8_lossy(value)
       )));
@@ -343,7 +337,7 @@ fn parse_decimal_u64_bytes(value: &[u8]) -> Result<u64> {
       .checked_mul(10)
       .and_then(|current| current.checked_add(u64::from(byte - b'0')))
       .ok_or_else(|| {
-        Error::InvalidFormat(format!(
+        Error::invalid_format(format!(
           "invalid decimal vmdk descriptor value: {}",
           String::from_utf8_lossy(value)
         ))
@@ -355,7 +349,7 @@ fn parse_decimal_u64_bytes(value: &[u8]) -> Result<u64> {
 fn parse_hex_u32_bytes(value: &[u8]) -> Result<u32> {
   let mut result = 0u32;
   if value.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "invalid hexadecimal vmdk descriptor value: <empty>".to_string(),
     ));
   }
@@ -365,7 +359,7 @@ fn parse_hex_u32_bytes(value: &[u8]) -> Result<u32> {
       b'a'..=b'f' => u32::from(byte - b'a' + 10),
       b'A'..=b'F' => u32::from(byte - b'A' + 10),
       _ => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "invalid hexadecimal vmdk descriptor value: {}",
           String::from_utf8_lossy(value)
         )));
@@ -375,7 +369,7 @@ fn parse_hex_u32_bytes(value: &[u8]) -> Result<u32> {
       .checked_mul(16)
       .and_then(|current| current.checked_add(digit))
       .ok_or_else(|| {
-        Error::InvalidFormat(format!(
+        Error::invalid_format(format!(
           "invalid hexadecimal vmdk descriptor value: {}",
           String::from_utf8_lossy(value)
         ))

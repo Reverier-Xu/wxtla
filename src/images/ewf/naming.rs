@@ -28,7 +28,7 @@ impl EwfSegmentPathInfo {
   /// Parse the segment naming info from a source identity.
   pub fn from_identity(identity: &SourceIdentity) -> Result<Self> {
     let entry_name = identity.entry_name().ok_or_else(|| {
-      Error::InvalidSourceReference("ewf source identity is missing an entry name".to_string())
+      Error::invalid_source_reference("ewf source identity is missing an entry name")
     })?;
     Self::parse_entry_name(entry_name)
   }
@@ -37,7 +37,7 @@ impl EwfSegmentPathInfo {
     identity: &SourceIdentity, file_header: &EwfFileHeader,
   ) -> Result<Self> {
     let entry_name = identity.entry_name().ok_or_else(|| {
-      Error::InvalidSourceReference("ewf source identity is missing an entry name".to_string())
+      Error::invalid_source_reference("ewf source identity is missing an entry name")
     })?;
     Self::parse_entry_name_with_header(entry_name, file_header)
   }
@@ -45,12 +45,12 @@ impl EwfSegmentPathInfo {
   /// Parse the segment naming info from an entry name such as `image.E01`.
   pub fn parse_entry_name(entry_name: &str) -> Result<Self> {
     let (base_name, extension) = entry_name.rsplit_once('.').ok_or_else(|| {
-      Error::InvalidSourceReference(format!(
+      Error::invalid_source_reference(format!(
         "ewf segment file name is missing an extension: {entry_name}"
       ))
     })?;
     if extension.len() != 3 {
-      return Err(Error::InvalidSourceReference(format!(
+      return Err(Error::invalid_source_reference(format!(
         "unsupported ewf segment extension: {extension}"
       )));
     }
@@ -63,7 +63,7 @@ impl EwfSegmentPathInfo {
       b'L' => EwfSegmentNamingScheme::L01Upper,
       b'l' => EwfSegmentNamingScheme::L01Lower,
       _ => {
-        return Err(Error::InvalidSourceReference(format!(
+        return Err(Error::invalid_source_reference(format!(
           "unsupported ewf segment extension prefix: {extension}"
         )));
       }
@@ -71,17 +71,17 @@ impl EwfSegmentPathInfo {
 
     let suffix = &extension[1..];
     if !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
-      return Err(Error::InvalidSourceReference(format!(
+      return Err(Error::invalid_source_reference(format!(
         "opening non-numeric ewf segment names directly is not supported: {entry_name}"
       )));
     }
     let segment_number = suffix.parse::<u16>().map_err(|_| {
-      Error::InvalidSourceReference(format!(
+      Error::invalid_source_reference(format!(
         "invalid ewf segment number in extension: {extension}"
       ))
     })?;
     if segment_number == 0 {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "ewf segment numbers start at 1".to_string(),
       ));
     }
@@ -101,12 +101,12 @@ impl EwfSegmentPathInfo {
     }
 
     let (base_name, extension) = entry_name.rsplit_once('.').ok_or_else(|| {
-      Error::InvalidSourceReference(format!(
+      Error::invalid_source_reference(format!(
         "ewf segment file name is missing an extension: {entry_name}"
       ))
     })?;
     if extension.len() != 3 {
-      return Err(Error::InvalidSourceReference(format!(
+      return Err(Error::invalid_source_reference(format!(
         "unsupported ewf segment extension: {extension}"
       )));
     }
@@ -139,12 +139,12 @@ impl EwfSegmentPathInfo {
     let naming_scheme = match matches.as_slice() {
       [scheme] => *scheme,
       [] => {
-        return Err(Error::InvalidSourceReference(format!(
+        return Err(Error::invalid_source_reference(format!(
           "unable to infer ewf naming scheme from extension: {extension}"
         )));
       }
       _ => {
-        return Err(Error::InvalidSourceReference(format!(
+        return Err(Error::invalid_source_reference(format!(
           "ambiguous ewf segment naming scheme for extension: {extension}"
         )));
       }
@@ -171,7 +171,7 @@ impl EwfSegmentNamingScheme {
   /// Return the file extension for a segment number.
   pub fn extension_for(self, segment_number: u16) -> Result<String> {
     if segment_number == 0 {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "ewf segment numbers start at 1".to_string(),
       ));
     }
@@ -190,22 +190,22 @@ impl EwfSegmentNamingScheme {
       value /= 26;
       let first_codepoint = u32::from(first) + value;
       if first_codepoint > alpha_limit {
-        return Err(Error::InvalidSourceReference(format!(
+        return Err(Error::invalid_source_reference(format!(
           "ewf segment number {segment_number} exceeds the supported naming schema"
         )));
       }
       let first_character = char::from_u32(first_codepoint).ok_or_else(|| {
-        Error::InvalidSourceReference(format!(
+        Error::invalid_source_reference(format!(
           "ewf segment number {segment_number} produced an invalid extension prefix"
         ))
       })?;
       let second_character = char::from_u32(second).ok_or_else(|| {
-        Error::InvalidSourceReference(format!(
+        Error::invalid_source_reference(format!(
           "ewf segment number {segment_number} produced an invalid extension middle character"
         ))
       })?;
       let third_character = char::from_u32(third).ok_or_else(|| {
-        Error::InvalidSourceReference(format!(
+        Error::invalid_source_reference(format!(
           "ewf segment number {segment_number} produced an invalid extension suffix"
         ))
       })?;

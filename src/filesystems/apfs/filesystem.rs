@@ -1,23 +1,29 @@
 //! APFS live-volume namespace and stream access.
 
 use std::{
-  collections::{HashMap, HashSet},
-  io::Read,
+  collections::HashMap,
   sync::{Arc, Mutex},
 };
 
-use flate2::read::ZlibDecoder;
-use lzfse::decode_buffer;
 use lzvn::decode_decmpfs as decode_lzvn_decmpfs;
-use unicode_casefold::UnicodeCaseFold;
-use unicode_normalization::UnicodeNormalization;
 
 use super::{
   DESCRIPTOR,
   btree::ApfsBTree,
   container::{ApfsVolume, ApfsVolumeInfo, lookup_omap_address, read_blocks, read_object_map},
+  datasource::{
+    ApfsDecmpfsDataSource, ApfsExtent, ApfsExtentDataSource, DECMPFS_LZFSE_ATTR,
+    DECMPFS_LZFSE_RSRC, DECMPFS_LZVN_ATTR, DECMPFS_LZVN_RSRC, DECMPFS_PLAIN_ATTR,
+    DECMPFS_PLAIN_RSRC, DECMPFS_SPARSE_ATTR, DECMPFS_ZLIB_ATTR, DECMPFS_ZLIB_RSRC,
+    XATTR_DECMPFS_NAME, decode_compressed_chunk, parse_compressed_resource_entries,
+    parse_decmpfs_header,
+  },
+  helpers::{
+    apfs_lookup_name_key, build_path_index, decode_node_id, ensure_openable_content_node,
+    special_file_kind_from_mode,
+  },
   keybag::{password_hint_for_volume, unlock_volume},
-  ondisk::{ApfsIntegrityMetadata, read_u64_le},
+  ondisk::ApfsIntegrityMetadata,
   records::{
     APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_FILE_INFO,
     APFS_TYPE_INODE, APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, ApfsDirectoryRecord, ApfsFextRecord,
@@ -27,11 +33,10 @@ use super::{
   },
 };
 use crate::{
-  ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, DataSource,
-  DataSourceFacets, DataViewId, DataViewKind, DataViewRecord, DataViewSelector, Error,
-  FormatDescriptor, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind,
-  NamespaceNodeRecord, NamespaceSource, NamespaceStreamId, NamespaceStreamKind,
-  NamespaceStreamRecord, OpenOptions, Result, filesystems::driver::FileSystem,
+  ByteSourceHandle, BytesDataSource, DataSource, DataSourceFacets, DataViewId, DataViewKind,
+  DataViewRecord, DataViewSelector, Error, FormatDescriptor, NamespaceDirectoryEntry,
+  NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord, NamespaceSource, NamespaceStreamId,
+  NamespaceStreamKind, NamespaceStreamRecord, OpenOptions, Result, filesystems::driver::FileSystem,
 };
 
 type ApfsNodeMap = Arc<HashMap<u64, Arc<ApfsNode>>>;
@@ -39,20 +44,6 @@ type ApfsChildrenMap = Arc<HashMap<u64, Arc<[NamespaceDirectoryEntry]>>>;
 type ApfsXattrMap = Arc<HashMap<u64, Arc<[ApfsStoredXattr]>>>;
 type ApfsExtentMap = Arc<HashMap<u64, Arc<[ApfsExtent]>>>;
 type ApfsPathMap = Arc<HashMap<u64, Arc<[String]>>>;
-
-const XATTR_DECMPFS_NAME: &str = "com.apple.decmpfs";
-const DECMPFS_MAGIC: &[u8; 4] = b"fpmc";
-const DECMPFS_BLOCK_SIZE: u64 = 65_536;
-
-const DECMPFS_ZLIB_ATTR: u32 = 3;
-const DECMPFS_ZLIB_RSRC: u32 = 4;
-const DECMPFS_SPARSE_ATTR: u32 = 5;
-const DECMPFS_LZVN_ATTR: u32 = 7;
-const DECMPFS_LZVN_RSRC: u32 = 8;
-const DECMPFS_PLAIN_ATTR: u32 = 9;
-const DECMPFS_PLAIN_RSRC: u32 = 10;
-const DECMPFS_LZFSE_ATTR: u32 = 11;
-const DECMPFS_LZFSE_RSRC: u32 = 12;
 
 #[derive(Clone)]
 pub struct ApfsExtendedAttribute {
@@ -163,71 +154,34 @@ pub(crate) struct ApfsVolumeIndex {
   paths: ApfsPathMap,
 }
 
-struct ApfsNode {
-  record: NamespaceNodeRecord,
-  parent_id: u64,
-  create_time: u64,
-  modification_time: u64,
-  change_time: u64,
-  access_time: u64,
-  children_or_links: u32,
-  protection_class: u32,
-  write_generation_counter: u32,
-  private_id: u64,
-  owner: u32,
-  group: u32,
-  mode: u16,
-  internal_flags: u64,
-  data_size: u64,
-  bsd_flags: u32,
-  snapshot_xid: Option<u64>,
-  document_id: Option<u32>,
-  sparse_bytes: Option<u64>,
-  rdev: Option<u32>,
-  compressed: bool,
+pub(super) struct ApfsNode {
+  pub(super) record: NamespaceNodeRecord,
+  pub(super) parent_id: u64,
+  pub(super) create_time: u64,
+  pub(super) modification_time: u64,
+  pub(super) change_time: u64,
+  pub(super) access_time: u64,
+  pub(super) children_or_links: u32,
+  pub(super) protection_class: u32,
+  pub(super) write_generation_counter: u32,
+  pub(super) private_id: u64,
+  pub(super) owner: u32,
+  pub(super) group: u32,
+  pub(super) mode: u16,
+  pub(super) internal_flags: u64,
+  pub(super) data_size: u64,
+  pub(super) bsd_flags: u32,
+  pub(super) snapshot_xid: Option<u64>,
+  pub(super) document_id: Option<u32>,
+  pub(super) sparse_bytes: Option<u64>,
+  pub(super) rdev: Option<u32>,
+  pub(super) compressed: bool,
 }
 
 #[derive(Clone)]
 struct ApfsStoredXattr {
   name: String,
   storage: ApfsStreamStorageSpec,
-}
-
-#[derive(Clone, Copy)]
-struct ApfsExtent {
-  logical_address: u64,
-  length: u64,
-  physical_block_number: u64,
-  crypto_id: u64,
-}
-
-struct ApfsExtentDataSource {
-  source: ByteSourceHandle,
-  block_size: u64,
-  sectors_per_block: u64,
-  file_size: u64,
-  extents: Arc<[ApfsExtent]>,
-  decryptor: Option<Arc<super::crypto::ApfsXtsCipher>>,
-}
-
-struct ApfsDecmpfsDataSource {
-  source: ByteSourceHandle,
-  algorithm: u32,
-  file_size: u64,
-  entries: Arc<[ApfsCompressedEntry]>,
-  cache: Mutex<HashMap<usize, Arc<[u8]>>>,
-}
-
-#[derive(Clone, Copy)]
-struct ApfsCompressedEntry {
-  offset: u64,
-  length: u64,
-  uncompressed_size: u64,
-}
-
-struct ApfsDecmpfsHeader {
-  algorithm: u32,
-  uncompressed_size: u64,
 }
 
 impl ApfsVolume {
@@ -252,7 +206,7 @@ impl ApfsVolume {
       Ok(xattr) => self.open_storage(&xattr.storage)?.read_all()?,
       Err(Error::NotFound(_)) if !firmlink_flag => return Ok(None),
       Err(Error::NotFound(_)) => {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "apfs firmlink inode is missing the firmlink xattr".to_string(),
         ));
       }
@@ -373,7 +327,7 @@ impl ApfsVolume {
       .snapshots()?
       .into_iter()
       .find(|snapshot| snapshot.name() == name)
-      .ok_or_else(|| Error::NotFound(format!("apfs snapshot name was not found: {name}")))?;
+      .ok_or_else(|| Error::not_found(format!("apfs snapshot name was not found: {name}")))?;
     self.open_snapshot(snapshot)
   }
 
@@ -382,7 +336,7 @@ impl ApfsVolume {
       .snapshots()?
       .into_iter()
       .find(|snapshot| snapshot.xid() == xid)
-      .ok_or_else(|| Error::NotFound(format!("apfs snapshot xid was not found: {xid}")))?;
+      .ok_or_else(|| Error::not_found(format!("apfs snapshot xid was not found: {xid}")))?;
     self.open_snapshot(snapshot)
   }
 
@@ -450,7 +404,7 @@ impl ApfsVolume {
 
   pub fn file_info_records(&self) -> Result<Vec<ApfsFileInfoRecord>> {
     if self.info().is_encrypted() && self.unlock_state.is_none() {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "apfs volume is locked; reopen the volume with credentials".to_string(),
       ));
     }
@@ -530,7 +484,7 @@ impl ApfsVolume {
     }
 
     if self.info().is_encrypted() && self.unlock_state.is_none() {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "apfs volume is locked; reopen the volume with credentials".to_string(),
       ));
     }
@@ -700,7 +654,7 @@ impl ApfsVolume {
     );
 
     if !nodes.contains_key(&APFS_ROOT_DIRECTORY_OBJECT_ID) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs root inode is missing from the fs tree".to_string(),
       ));
     }
@@ -784,7 +738,7 @@ impl ApfsVolume {
       .nodes
       .get(&identifier)
       .cloned()
-      .ok_or_else(|| Error::NotFound(format!("apfs inode {identifier} was not found")))
+      .ok_or_else(|| Error::not_found(format!("apfs inode {identifier} was not found")))
   }
 
   fn lookup_xattr(&self, node_id: &NamespaceNodeId, name: &str) -> Result<ApfsStoredXattr> {
@@ -796,7 +750,7 @@ impl ApfsVolume {
       .and_then(|attributes| attributes.iter().find(|attribute| attribute.name == name))
       .cloned()
       .ok_or_else(|| {
-        Error::NotFound(format!(
+        Error::not_found(format!(
           "apfs extended attribute {name} was not found on inode {identifier}"
         ))
       })
@@ -821,7 +775,7 @@ impl ApfsVolume {
     }
     let index = self.namespace_index()?;
     let extents = index.extents.get(&object_id).cloned().ok_or_else(|| {
-      Error::NotFound(format!(
+      Error::not_found(format!(
         "apfs extents were not found for object id {object_id}"
       ))
     })?;
@@ -868,7 +822,7 @@ impl ApfsVolume {
       .into_iter()
       .find(|snapshot| selector.matches(&snapshot.to_view_record()))
       .ok_or_else(|| {
-        Error::NotFound(format!(
+        Error::not_found(format!(
           "apfs snapshot selector did not match any snapshot: {selector:?}"
         ))
       })?;
@@ -892,7 +846,7 @@ impl FileSystem for ApfsVolume {
       .nodes
       .get(&identifier)
       .cloned()
-      .ok_or_else(|| Error::NotFound(format!("apfs inode {identifier} was not found")))?
+      .ok_or_else(|| Error::not_found(format!("apfs inode {identifier} was not found")))?
       .record
       .clone();
     if let Some(paths) = index.paths.get(&identifier).and_then(|paths| paths.first()) {
@@ -904,7 +858,7 @@ impl FileSystem for ApfsVolume {
   fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let node = self.lookup_node(directory_id)?;
     if node.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs directory reads require a directory inode".to_string(),
       ));
     }
@@ -970,7 +924,7 @@ impl FileSystem for ApfsVolume {
       NamespaceStreamKind::Data => self.open_content_stream(node_id),
       NamespaceStreamKind::Fork => {
         if stream_id.name.as_deref() != Some("ResourceFork") {
-          return Err(Error::NotFound(format!(
+          return Err(Error::not_found(format!(
             "apfs fork was not found: {:?}",
             stream_id.name
           )));
@@ -981,11 +935,11 @@ impl FileSystem for ApfsVolume {
         let name = stream_id
           .name
           .as_deref()
-          .ok_or_else(|| Error::NotFound("apfs xattr stream requires a name".to_string()))?;
+          .ok_or_else(|| Error::not_found("apfs xattr stream requires a name"))?;
         let xattr = self.lookup_xattr(node_id, name)?;
         self.open_storage(&xattr.storage)
       }
-      NamespaceStreamKind::NamedData | NamespaceStreamKind::Other => Err(Error::NotFound(
+      NamespaceStreamKind::NamedData | NamespaceStreamKind::Other => Err(Error::not_found(
         "apfs does not expose this stream kind".to_string(),
       )),
     }
@@ -1010,7 +964,7 @@ impl NamespaceSource for ApfsVolume {
   ) -> Result<NamespaceDirectoryEntry> {
     let node = self.lookup_node(directory_id)?;
     if node.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs directory lookups require a directory inode".to_string(),
       ));
     }
@@ -1020,7 +974,7 @@ impl NamespaceSource for ApfsVolume {
       return entries
         .into_iter()
         .find(|entry| entry.name == name)
-        .ok_or_else(|| Error::NotFound(format!("apfs entry not found: {name}")));
+        .ok_or_else(|| Error::not_found(format!("apfs entry not found: {name}")));
     }
 
     let wanted = apfs_lookup_name_key(
@@ -1037,7 +991,7 @@ impl NamespaceSource for ApfsVolume {
           self.info().is_normalization_insensitive(),
         ) == wanted
       })
-      .ok_or_else(|| Error::NotFound(format!("apfs entry not found: {name}")))
+      .ok_or_else(|| Error::not_found(format!("apfs entry not found: {name}")))
   }
 
   fn data_streams(&self, node_id: &NamespaceNodeId) -> Result<Vec<NamespaceStreamRecord>> {
@@ -1108,7 +1062,7 @@ impl ApfsVolume {
     let header = parse_decmpfs_header(&header_and_payload)?;
     let payload = header_and_payload
       .get(16..)
-      .ok_or_else(|| Error::InvalidFormat("apfs decmpfs payload is truncated".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("apfs decmpfs payload is truncated"))?;
 
     match header.algorithm {
       DECMPFS_ZLIB_ATTR | DECMPFS_SPARSE_ATTR | DECMPFS_PLAIN_ATTR | DECMPFS_LZFSE_ATTR => {
@@ -1144,443 +1098,17 @@ impl ApfsVolume {
         let decoded: Arc<[u8]> = Arc::from(
           decode_lzvn_decmpfs(&header_and_payload, resource_fork.as_deref())
             .map_err(|error| {
-              Error::InvalidFormat(format!("apfs lzvn decmpfs decode failed: {error}"))
+              Error::invalid_format(format!("apfs lzvn decmpfs decode failed: {error}"))
             })?
             .into_boxed_slice(),
         );
         Ok(Arc::new(BytesDataSource::new(decoded)) as ByteSourceHandle)
       }
-      algorithm => Err(Error::Unsupported(format!(
+      algorithm => Err(Error::unsupported(format!(
         "unsupported apfs decmpfs algorithm: {algorithm}"
       ))),
     }
   }
-}
-
-impl ByteSource for ApfsExtentDataSource {
-  fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-    if offset >= self.file_size || buf.is_empty() {
-      return Ok(0);
-    }
-
-    let mut remaining = buf.len().min((self.file_size - offset) as usize);
-    let mut written = 0usize;
-    let mut file_offset = offset;
-
-    while remaining > 0 {
-      let extent = self.extent_for_offset(file_offset).ok_or_else(|| {
-        Error::InvalidFormat("apfs extent is missing for a data stream offset".to_string())
-      })?;
-      let extent_offset = file_offset - extent.logical_address;
-      let step = remaining.min((extent.length - extent_offset) as usize);
-
-      if extent.physical_block_number == 0 {
-        buf[written..written + step].fill(0);
-      } else {
-        if let Some(decryptor) = &self.decryptor {
-          let sector_offset = extent_offset / 512;
-          let sector_padding = usize::try_from(extent_offset % 512).map_err(|_| {
-            Error::InvalidRange("apfs encrypted extent offset exceeds usize".to_string())
-          })?;
-          let cipher_length = align_up_512(u64::try_from(sector_padding + step).map_err(|_| {
-            Error::InvalidRange("apfs encrypted extent length exceeds u64".to_string())
-          })?);
-          let physical_offset = extent
-            .physical_block_number
-            .checked_mul(self.block_size)
-            .and_then(|base| base.checked_add(sector_offset * 512))
-            .ok_or_else(|| Error::InvalidRange("apfs physical offset overflow".to_string()))?;
-          let mut ciphertext = self.source.read_bytes_at(
-            physical_offset,
-            usize::try_from(cipher_length).map_err(|_| {
-              Error::InvalidRange("apfs encrypted read length exceeds usize".to_string())
-            })?,
-          )?;
-          decryptor.decrypt(
-            extent
-              .crypto_id
-              .checked_mul(self.sectors_per_block)
-              .and_then(|base| base.checked_add(sector_offset))
-              .ok_or_else(|| {
-                Error::InvalidRange("apfs encrypted sector index overflow".to_string())
-              })?,
-            &mut ciphertext,
-          )?;
-          buf[written..written + step]
-            .copy_from_slice(&ciphertext[sector_padding..sector_padding + step]);
-        } else {
-          let physical_offset = extent
-            .physical_block_number
-            .checked_mul(self.block_size)
-            .and_then(|base| base.checked_add(extent_offset))
-            .ok_or_else(|| Error::InvalidRange("apfs physical offset overflow".to_string()))?;
-          self
-            .source
-            .read_exact_at(physical_offset, &mut buf[written..written + step])?;
-        }
-      }
-
-      remaining -= step;
-      written += step;
-      file_offset += step as u64;
-    }
-
-    Ok(written)
-  }
-
-  fn size(&self) -> Result<u64> {
-    Ok(self.file_size)
-  }
-
-  fn capabilities(&self) -> ByteSourceCapabilities {
-    self.source.capabilities()
-  }
-}
-
-impl ApfsExtentDataSource {
-  fn extent_for_offset(&self, offset: u64) -> Option<&ApfsExtent> {
-    let index = self
-      .extents
-      .partition_point(|extent| extent.logical_address <= offset)
-      .checked_sub(1)?;
-    let extent = self.extents.get(index)?;
-    let end = extent.logical_address.checked_add(extent.length)?;
-    (offset < end).then_some(extent)
-  }
-}
-
-impl ByteSource for ApfsDecmpfsDataSource {
-  fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-    if offset >= self.file_size || buf.is_empty() {
-      return Ok(0);
-    }
-
-    let mut remaining = buf.len().min((self.file_size - offset) as usize);
-    let mut written = 0usize;
-    let mut file_offset = offset;
-
-    while remaining > 0 {
-      let block_index = usize::try_from(file_offset / DECMPFS_BLOCK_SIZE).map_err(|_| {
-        Error::InvalidRange("apfs compressed block index exceeds usize".to_string())
-      })?;
-      let block_offset = (file_offset % DECMPFS_BLOCK_SIZE) as usize;
-      let chunk = self.decoded_block(block_index)?;
-      let step = remaining.min(chunk.len().saturating_sub(block_offset));
-      if step == 0 {
-        return Err(Error::InvalidFormat(
-          "apfs compressed block mapping is inconsistent".to_string(),
-        ));
-      }
-      buf[written..written + step].copy_from_slice(&chunk[block_offset..block_offset + step]);
-      written += step;
-      remaining -= step;
-      file_offset += step as u64;
-    }
-
-    Ok(written)
-  }
-
-  fn size(&self) -> Result<u64> {
-    Ok(self.file_size)
-  }
-
-  fn capabilities(&self) -> ByteSourceCapabilities {
-    self.source.capabilities()
-  }
-}
-
-impl ApfsDecmpfsDataSource {
-  fn decoded_block(&self, index: usize) -> Result<Arc<[u8]>> {
-    if let Some(chunk) = self
-      .cache
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-      .get(&index)
-      .cloned()
-    {
-      return Ok(chunk);
-    }
-
-    let entry = self.entries.get(index).copied().ok_or_else(|| {
-      Error::NotFound(format!(
-        "apfs compressed block index {index} is out of bounds"
-      ))
-    })?;
-    let compressed = self.source.read_bytes_at(
-      entry.offset,
-      usize::try_from(entry.length)
-        .map_err(|_| Error::InvalidRange("apfs compressed chunk is too large".to_string()))?,
-    )?;
-    let decoded: Arc<[u8]> = Arc::from(
-      decode_compressed_chunk(self.algorithm, &compressed, entry.uncompressed_size)?
-        .into_boxed_slice(),
-    );
-
-    let mut cache = self
-      .cache
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(existing) = cache.get(&index).cloned() {
-      return Ok(existing);
-    }
-    cache.insert(index, decoded.clone());
-    Ok(decoded)
-  }
-}
-
-fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
-  let bytes = node_id.as_bytes();
-  if bytes.len() != 8 {
-    return Err(Error::InvalidFormat(
-      "apfs node identifiers must be 8 bytes".to_string(),
-    ));
-  }
-  read_u64_le(bytes, 0)
-}
-
-fn align_up_512(value: u64) -> u64 {
-  (value + 511) & !511
-}
-
-fn apfs_lookup_name_key(
-  name: &str, case_insensitive: bool, normalization_insensitive: bool,
-) -> String {
-  let normalized = if case_insensitive || normalization_insensitive {
-    name.nfd().collect::<String>()
-  } else {
-    name.to_string()
-  };
-  if case_insensitive {
-    normalized.case_fold().collect::<String>()
-  } else {
-    normalized
-  }
-}
-
-fn special_file_kind_from_mode(mode: u16) -> Option<ApfsSpecialFileKind> {
-  match mode & 0xF000 {
-    0x1000 => Some(ApfsSpecialFileKind::Fifo),
-    0x2000 => Some(ApfsSpecialFileKind::CharacterDevice),
-    0x6000 => Some(ApfsSpecialFileKind::BlockDevice),
-    0xC000 => Some(ApfsSpecialFileKind::Socket),
-    0xE000 => Some(ApfsSpecialFileKind::Whiteout),
-    _ => None,
-  }
-}
-
-fn parse_decmpfs_header(bytes: &[u8]) -> Result<ApfsDecmpfsHeader> {
-  if bytes.len() < 16 {
-    return Err(Error::InvalidFormat(
-      "apfs decmpfs header is too short".to_string(),
-    ));
-  }
-  let magic = bytes
-    .get(0..4)
-    .ok_or_else(|| Error::InvalidFormat("apfs decmpfs header is truncated".to_string()))?;
-  if magic != DECMPFS_MAGIC {
-    return Err(Error::InvalidFormat(format!(
-      "invalid apfs decmpfs magic: {magic:?}"
-    )));
-  }
-
-  Ok(ApfsDecmpfsHeader {
-    algorithm: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-    uncompressed_size: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
-  })
-}
-
-fn parse_compressed_resource_entries(
-  source: &dyn ByteSource, algorithm: u32, uncompressed_size: u64,
-) -> Result<Vec<ApfsCompressedEntry>> {
-  match algorithm {
-    DECMPFS_ZLIB_RSRC | DECMPFS_PLAIN_RSRC => {
-      let header = source.read_bytes_at(0, 16)?;
-      let data_offset = u64::from(u32::from_be_bytes(header[0..4].try_into().unwrap()));
-      let metadata = source.read_bytes_at(data_offset, 8)?;
-      let block_count = usize::try_from(u32::from_le_bytes(metadata[4..8].try_into().unwrap()))
-        .map_err(|_| {
-          Error::InvalidRange("apfs compressed block count exceeds usize".to_string())
-        })?;
-      let descriptors = source.read_bytes_at(
-        data_offset + 8,
-        block_count.checked_mul(8).ok_or_else(|| {
-          Error::InvalidRange("apfs compressed descriptor size overflow".to_string())
-        })?,
-      )?;
-      let mut entries = Vec::with_capacity(block_count);
-      for index in 0..block_count {
-        let descriptor = &descriptors[index * 8..index * 8 + 8];
-        let offset = u64::from(u32::from_le_bytes(descriptor[0..4].try_into().unwrap()));
-        let length = u64::from(u32::from_le_bytes(descriptor[4..8].try_into().unwrap()));
-        entries.push(ApfsCompressedEntry {
-          offset: data_offset + 4 + offset,
-          length,
-          uncompressed_size: chunk_uncompressed_size(uncompressed_size, index),
-        });
-      }
-      Ok(entries)
-    }
-    DECMPFS_LZFSE_RSRC => {
-      let block_count =
-        usize::try_from(uncompressed_size.div_ceil(DECMPFS_BLOCK_SIZE)).map_err(|_| {
-          Error::InvalidRange("apfs compressed block count exceeds usize".to_string())
-        })?;
-      let offsets = source.read_bytes_at(
-        0,
-        (block_count + 1).checked_mul(4).ok_or_else(|| {
-          Error::InvalidRange("apfs compressed offsets table size overflow".to_string())
-        })?,
-      )?;
-      let mut entries = Vec::with_capacity(block_count);
-      for index in 0..block_count {
-        let start = u64::from(u32::from_le_bytes(
-          offsets[index * 4..index * 4 + 4].try_into().unwrap(),
-        ));
-        let end = u64::from(u32::from_le_bytes(
-          offsets[(index + 1) * 4..(index + 2) * 4]
-            .try_into()
-            .unwrap(),
-        ));
-        entries.push(ApfsCompressedEntry {
-          offset: start,
-          length: end.checked_sub(start).ok_or_else(|| {
-            Error::InvalidFormat("apfs compressed resource offsets are not monotonic".to_string())
-          })?,
-          uncompressed_size: chunk_uncompressed_size(uncompressed_size, index),
-        });
-      }
-      Ok(entries)
-    }
-    _ => Err(Error::Unsupported(format!(
-      "unsupported apfs resource compression algorithm: {algorithm}"
-    ))),
-  }
-}
-
-fn decode_compressed_chunk(algorithm: u32, chunk: &[u8], expected_size: u64) -> Result<Vec<u8>> {
-  let expected_size = usize::try_from(expected_size)
-    .map_err(|_| Error::InvalidRange("apfs decompressed chunk is too large".to_string()))?;
-  let decoded = match algorithm {
-    DECMPFS_ZLIB_ATTR | DECMPFS_ZLIB_RSRC => decode_zlib_chunk(chunk)?,
-    DECMPFS_SPARSE_ATTR => vec![0; expected_size],
-    DECMPFS_PLAIN_ATTR | DECMPFS_PLAIN_RSRC => decode_plain_chunk(chunk)?,
-    DECMPFS_LZFSE_ATTR | DECMPFS_LZFSE_RSRC => decode_lzfse_chunk(chunk, expected_size)?,
-    _ => {
-      return Err(Error::Unsupported(format!(
-        "unsupported apfs decmpfs algorithm: {algorithm}"
-      )));
-    }
-  };
-
-  if decoded.len() != expected_size {
-    return Err(Error::InvalidFormat(format!(
-      "apfs compressed chunk decoded to {} bytes, expected {expected_size}",
-      decoded.len()
-    )));
-  }
-  Ok(decoded)
-}
-
-fn decode_zlib_chunk(chunk: &[u8]) -> Result<Vec<u8>> {
-  let Some(first) = chunk.first().copied() else {
-    return Ok(Vec::new());
-  };
-  if (first & 0x0F) == 0x0F {
-    return Ok(chunk[1..].to_vec());
-  }
-
-  let mut decoder = ZlibDecoder::new(chunk);
-  let mut decoded = Vec::new();
-  decoder.read_to_end(&mut decoded)?;
-  Ok(decoded)
-}
-
-fn decode_plain_chunk(chunk: &[u8]) -> Result<Vec<u8>> {
-  let Some(_) = chunk.first() else {
-    return Ok(Vec::new());
-  };
-  Ok(chunk[1..].to_vec())
-}
-
-fn decode_lzfse_chunk(chunk: &[u8], expected_size: usize) -> Result<Vec<u8>> {
-  let Some(first) = chunk.first().copied() else {
-    return Ok(Vec::new());
-  };
-  if first == 0xFF {
-    return Ok(chunk[1..].to_vec());
-  }
-
-  let mut decoded = vec![0; expected_size.saturating_add(1)];
-  let length = decode_buffer(chunk, &mut decoded)
-    .map_err(|error| Error::InvalidFormat(format!("apfs lzfse decode failed: {error:?}")))?;
-  Ok(decoded[..length].to_vec())
-}
-
-fn chunk_uncompressed_size(total_size: u64, index: usize) -> u64 {
-  let logical_offset = DECMPFS_BLOCK_SIZE.saturating_mul(index as u64);
-  (total_size - logical_offset).min(DECMPFS_BLOCK_SIZE)
-}
-
-fn build_path_index(children: &ApfsChildrenMap) -> HashMap<u64, Vec<String>> {
-  fn walk(
-    children: &ApfsChildrenMap, directory_id: u64, current_path: &str,
-    visited_dirs: &mut HashSet<u64>, paths: &mut HashMap<u64, Vec<String>>,
-  ) {
-    if !visited_dirs.insert(directory_id) {
-      return;
-    }
-    let Some(entries) = children.get(&directory_id) else {
-      return;
-    };
-    for entry in entries.iter() {
-      let child_id = decode_node_id(&entry.node_id).unwrap_or_default();
-      let path = if current_path == "/" {
-        format!("/{name}", name = entry.name)
-      } else {
-        format!("{current_path}/{name}", name = entry.name)
-      };
-      paths.entry(child_id).or_default().push(path.clone());
-      if entry.kind == NamespaceNodeKind::Directory {
-        walk(children, child_id, &path, visited_dirs, paths);
-      }
-    }
-  }
-
-  let mut paths = HashMap::new();
-  paths.insert(APFS_ROOT_DIRECTORY_OBJECT_ID, vec!["/".to_string()]);
-  let mut visited_dirs = HashSet::new();
-  walk(
-    children,
-    APFS_ROOT_DIRECTORY_OBJECT_ID,
-    "/",
-    &mut visited_dirs,
-    &mut paths,
-  );
-  paths
-}
-
-fn ensure_openable_content_node(node: &ApfsNode) -> Result<()> {
-  match node.record.kind {
-    NamespaceNodeKind::Directory | NamespaceNodeKind::Special => {
-      return Err(Error::InvalidFormat(
-        "apfs file opens require a regular file or symlink inode".to_string(),
-      ));
-    }
-    NamespaceNodeKind::Symlink => {
-      return Err(Error::InvalidFormat(
-        "apfs symlink content is stored in com.apple.fs.symlink".to_string(),
-      ));
-    }
-    NamespaceNodeKind::File => {}
-  }
-
-  if (node.bsd_flags & super::records::SF_DATALESS) != 0 {
-    return Err(Error::InvalidSourceReference(
-      "apfs dataless file content is not locally present".to_string(),
-    ));
-  }
-
-  Ok(())
 }
 
 #[cfg(test)]

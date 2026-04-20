@@ -3,9 +3,11 @@
 mod btree;
 mod container;
 mod crypto;
+mod datasource;
 mod driver;
 mod filesystem;
 mod group;
+mod helpers;
 mod keybag;
 mod ondisk;
 mod records;

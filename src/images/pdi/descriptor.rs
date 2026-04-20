@@ -46,20 +46,21 @@ pub struct PdiDescriptor {
 impl PdiDescriptor {
   pub fn from_xml(text: &str) -> Result<Self> {
     let document = Document::parse(text).map_err(|error| {
-      Error::InvalidFormat(format!("unable to parse pdi descriptor XML: {error}"))
+      Error::invalid_format(format!("unable to parse pdi descriptor XML: {error}"))
     })?;
     let root = document.root_element();
     if root.tag_name().name() != "Parallels_disk_image" {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "pdi descriptor root element must be Parallels_disk_image".to_string(),
       ));
     }
 
-    let version = root.attribute("Version").map(str::trim).ok_or_else(|| {
-      Error::InvalidFormat("pdi descriptor is missing the Version attribute".to_string())
-    })?;
+    let version = root
+      .attribute("Version")
+      .map(str::trim)
+      .ok_or_else(|| Error::invalid_format("pdi descriptor is missing the Version attribute"))?;
     if version != "1.0" {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported pdi descriptor version: {}",
         version
       )));
@@ -69,21 +70,21 @@ impl PdiDescriptor {
     let logical_sector_size =
       optional_child_number(disk_parameters, "LogicSectorSize")?.unwrap_or(512);
     if logical_sector_size == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "pdi logical sector size must be non-zero".to_string(),
       ));
     }
     let physical_sector_size =
       optional_child_number(disk_parameters, "PhysicalSectorSize")?.unwrap_or(4096);
     if physical_sector_size == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "pdi physical sector size must be non-zero".to_string(),
       ));
     }
 
     let disk_size_sectors = child_number(disk_parameters, "Disk_size")?;
     if disk_size_sectors == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "pdi disk size must be non-zero".to_string(),
       ));
     }
@@ -96,13 +97,13 @@ impl PdiDescriptor {
       let end_sector = child_number(storage, "End")?;
       let block_size_sectors = child_number(storage, "Blocksize")?;
       if start_sector >= end_sector {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "pdi storage start sector {} must be smaller than end sector {}",
           start_sector, end_sector
         )));
       }
       if block_size_sectors == 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "pdi storage block size must be non-zero".to_string(),
         ));
       }
@@ -112,7 +113,7 @@ impl PdiDescriptor {
       for image in image_nodes {
         let file_name = child_text(image, "File")?;
         if file_name.is_empty() {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "pdi storage image file name must not be empty".to_string(),
           ));
         }
@@ -121,7 +122,7 @@ impl PdiDescriptor {
           "Compressed" => PdiDescriptorImageType::Compressed,
           "Plain" => PdiDescriptorImageType::Plain,
           other => {
-            return Err(Error::InvalidFormat(format!(
+            return Err(Error::invalid_format(format!(
               "unsupported pdi storage image type: {other}"
             )));
           }
@@ -134,7 +135,7 @@ impl PdiDescriptor {
         });
       }
       if images.is_empty() {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "pdi storage extents must contain at least one image".to_string(),
         ));
       }
@@ -147,7 +148,7 @@ impl PdiDescriptor {
       });
     }
     if extents.is_empty() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "pdi descriptor must contain storage extents".to_string(),
       ));
     }
@@ -180,7 +181,7 @@ impl PdiDescriptor {
     self
       .disk_size_sectors
       .checked_mul(FIXED_SECTOR_SIZE)
-      .ok_or_else(|| Error::InvalidRange("pdi media size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("pdi media size overflow"))
   }
 }
 
@@ -188,7 +189,7 @@ fn child_element<'a, 'input>(parent: Node<'a, 'input>, name: &str) -> Result<Nod
   parent
     .children()
     .find(|child| child.is_element() && child.tag_name().name() == name)
-    .ok_or_else(|| Error::InvalidFormat(format!("pdi descriptor is missing {name}")))
+    .ok_or_else(|| Error::invalid_format(format!("pdi descriptor is missing {name}")))
 }
 
 fn child_elements<'a, 'input>(parent: Node<'a, 'input>, name: &str) -> Vec<Node<'a, 'input>> {
@@ -203,7 +204,7 @@ fn child_text<'a, 'input>(parent: Node<'a, 'input>, name: &str) -> Result<&'a st
   child
     .text()
     .map(str::trim)
-    .ok_or_else(|| Error::InvalidFormat(format!("pdi descriptor {name} is missing text")))
+    .ok_or_else(|| Error::invalid_format(format!("pdi descriptor {name} is missing text")))
 }
 
 fn child_number<T>(parent: Node<'_, '_>, name: &str) -> Result<T>
@@ -212,7 +213,7 @@ where
   T::Err: std::fmt::Display, {
   child_text(parent, name)?
     .parse::<T>()
-    .map_err(|error| Error::InvalidFormat(format!("invalid pdi descriptor {name} value: {error}")))
+    .map_err(|error| Error::invalid_format(format!("invalid pdi descriptor {name} value: {error}")))
 }
 
 fn optional_child_number<T>(parent: Node<'_, '_>, name: &str) -> Result<Option<T>>
@@ -228,11 +229,11 @@ where
   let text = child
     .text()
     .map(str::trim)
-    .ok_or_else(|| Error::InvalidFormat(format!("pdi descriptor {name} is missing text")))?;
+    .ok_or_else(|| Error::invalid_format(format!("pdi descriptor {name} is missing text")))?;
   text
     .parse::<T>()
     .map(Some)
-    .map_err(|error| Error::InvalidFormat(format!("invalid pdi descriptor {name} value: {error}")))
+    .map_err(|error| Error::invalid_format(format!("invalid pdi descriptor {name} value: {error}")))
 }
 
 fn normalize_guid(value: &str) -> Result<String> {
@@ -244,21 +245,21 @@ fn normalize_guid(value: &str) -> Result<String> {
     .to_ascii_lowercase();
   let mut parts = value.split('-');
   let Some(a) = parts.next() else {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "pdi guid must not be empty".to_string(),
     ));
   };
   let Some(b) = parts.next() else {
-    return Err(Error::InvalidFormat(format!("invalid pdi guid: {value}")));
+    return Err(Error::invalid_format(format!("invalid pdi guid: {value}")));
   };
   let Some(c) = parts.next() else {
-    return Err(Error::InvalidFormat(format!("invalid pdi guid: {value}")));
+    return Err(Error::invalid_format(format!("invalid pdi guid: {value}")));
   };
   let Some(d) = parts.next() else {
-    return Err(Error::InvalidFormat(format!("invalid pdi guid: {value}")));
+    return Err(Error::invalid_format(format!("invalid pdi guid: {value}")));
   };
   let Some(e) = parts.next() else {
-    return Err(Error::InvalidFormat(format!("invalid pdi guid: {value}")));
+    return Err(Error::invalid_format(format!("invalid pdi guid: {value}")));
   };
   if parts.next().is_some()
     || a.len() != 8
@@ -270,7 +271,7 @@ fn normalize_guid(value: &str) -> Result<String> {
       .bytes()
       .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
   {
-    return Err(Error::InvalidFormat(format!("invalid pdi guid: {value}")));
+    return Err(Error::invalid_format(format!("invalid pdi guid: {value}")));
   }
   Ok(value)
 }

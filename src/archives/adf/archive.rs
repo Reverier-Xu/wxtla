@@ -59,19 +59,19 @@ impl AdfArchive {
       .joined
       .len()
       .checked_sub(FOOTER_SIZE)
-      .ok_or_else(|| Error::InvalidFormat("ad1 payload is too small for a footer".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("ad1 payload is too small for a footer"))?;
     let item_limit = footer_base;
 
     let mut reader = JoinedReader::new(&joined.joined);
     let image_header = reader.read_bytes(HEADER_SIGNATURE_LENGTH, true)?;
     if &image_header[0..14] != IMAGE_HEADER_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ad1 image header signature is missing".to_string(),
       ));
     }
     let version = read_u32_le(&reader.read_bytes(4, true)?)?;
     if version != 3 && version != 4 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported ad1 image version: {version}"
       )));
     }
@@ -80,29 +80,26 @@ impl AdfArchive {
     let _image_header_length = read_u64_le(&reader.read_bytes(8, true)?)?;
     let image_header_info_length = read_u64_le(&reader.read_bytes(8, true)?)?;
     let path_length = usize::try_from(read_u32_le(&reader.read_bytes(4, true)?)?)
-      .map_err(|_| Error::InvalidRange("ad1 path length is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("ad1 path length is too large"))?;
     if version == 4 {
       reader.read_bytes(44, true)?;
       let footer_hash_start = joined
         .joined
         .len()
         .checked_sub(FOOTER_HASH_SIZE)
-        .ok_or_else(|| {
-          Error::InvalidFormat("ad1 payload is too small for the footer hash".to_string())
-        })?;
+        .ok_or_else(|| Error::invalid_format("ad1 payload is too small for the footer hash"))?;
       reader
         .meta_digest
         .update(&joined.joined[footer_hash_start..]);
     }
     let logical_image_path_bytes = reader.read_bytes(path_length, true)?;
-    let logical_image_path = String::from_utf8(logical_image_path_bytes.clone()).map_err(|_| {
-      Error::InvalidFormat("ad1 logical image path must be valid UTF-8".to_string())
-    })?;
+    let logical_image_path = String::from_utf8(logical_image_path_bytes.clone())
+      .map_err(|_| Error::invalid_format("ad1 logical image path must be valid UTF-8"))?;
     if logical_image_path_bytes.as_slice() != MULTI_IMAGE_PATH {
       let target = usize::try_from(image_header_info_length)
-        .map_err(|_| Error::InvalidRange("ad1 image header length is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("ad1 image header length is too large"))?;
       if target < reader.offset {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ad1 image header length points before the current reader position".to_string(),
         ));
       }
@@ -129,10 +126,10 @@ impl AdfArchive {
       let decompressed_size = read_i64_le(&reader.read_bytes(8, true)?)?;
       let item_type = read_u32_le(&reader.read_bytes(4, true)?)?;
       let name_length = usize::try_from(read_u32_le(&reader.read_bytes(4, true)?)?)
-        .map_err(|_| Error::InvalidRange("ad1 item name length is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("ad1 item name length is too large"))?;
       let name_bytes = reader.read_bytes(name_length, true)?;
       let name = String::from_utf8(name_bytes)
-        .map_err(|_| Error::InvalidFormat("ad1 item names must be valid UTF-8".to_string()))?;
+        .map_err(|_| Error::invalid_format("ad1 item names must be valid UTF-8"))?;
       let group_index = read_i64_le(&reader.read_bytes(8, true)?)?;
       let parent_id = if group_index == 0 {
         ROOT_ENTRY_ID
@@ -140,12 +137,11 @@ impl AdfArchive {
         entry_id_to_u64(
           folder_map
             .get(
-              &(u64::try_from(group_index).map_err(|_| {
-                Error::InvalidFormat("ad1 group index must be non-negative".to_string())
-              })?
+              &(u64::try_from(group_index)
+                .map_err(|_| Error::invalid_format("ad1 group index must be non-negative"))?
                 + MARGIN_SIZE as u64),
             )
-            .ok_or_else(|| Error::InvalidFormat("ad1 folder reference is missing".to_string()))?,
+            .ok_or_else(|| Error::invalid_format("ad1 folder reference is missing"))?,
         )?
       };
       let parent_path = entries[parent_id as usize].record.path.clone();
@@ -159,7 +155,7 @@ impl AdfArchive {
         Some(read_compressed_item(
           &mut reader,
           u64::try_from(decompressed_size)
-            .map_err(|_| Error::InvalidFormat("ad1 item size must be non-negative".to_string()))?,
+            .map_err(|_| Error::invalid_format("ad1 item size must be non-negative"))?,
         )?)
       } else {
         None
@@ -172,7 +168,7 @@ impl AdfArchive {
         let _category = read_u32_le(&reader.read_bytes(4, true)?)?;
         let _key = read_u32_le(&reader.read_bytes(4, true)?)?;
         let value_length = usize::try_from(read_u32_le(&reader.read_bytes(4, true)?)?)
-          .map_err(|_| Error::InvalidRange("ad1 metadata value length is too large".to_string()))?;
+          .map_err(|_| Error::invalid_range("ad1 metadata value length is too large"))?;
         reader.read_bytes(value_length, true)?;
       }
 
@@ -200,7 +196,7 @@ impl AdfArchive {
       });
 
       if next_group < 0 || next_in_group < 0 {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ad1 item offsets must be non-negative".to_string(),
         ));
       }
@@ -250,7 +246,7 @@ impl Archive for AdfArchive {
   fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let entry = self.entry_ref(directory_id)?;
     if entry.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ad1 directory reads require a directory entry".to_string(),
       ));
     }
@@ -260,13 +256,14 @@ impl Archive for AdfArchive {
   fn open_file(&self, entry_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     let entry = self.entry_ref(entry_id)?;
     if entry.record.kind != NamespaceNodeKind::File {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ad1 file opens require a regular file entry".to_string(),
       ));
     }
-    let content = entry.content.clone().ok_or_else(|| {
-      Error::InvalidFormat("ad1 file entries must carry content bytes".to_string())
-    })?;
+    let content = entry
+      .content
+      .clone()
+      .ok_or_else(|| Error::invalid_format("ad1 file entries must carry content bytes"))?;
     Ok(Arc::new(BytesDataSource { data: content }) as ByteSourceHandle)
   }
 }
@@ -274,9 +271,9 @@ impl Archive for AdfArchive {
 impl AdfArchive {
   fn entry_ref(&self, entry_id: &NamespaceNodeId) -> Result<&AdfEntry> {
     let index = usize::try_from(entry_id_to_u64(entry_id)?)
-      .map_err(|_| Error::InvalidRange("ad1 entry index is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("ad1 entry index is too large"))?;
     self.entries.get(index).ok_or_else(|| {
-      Error::NotFound(format!(
+      Error::not_found(format!(
         "missing ad1 archive entry: {}",
         entry_id_to_u64(entry_id).unwrap_or(0)
       ))
@@ -288,14 +285,14 @@ fn read_segments(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Seg
   let first_margin = source.read_bytes_at(0, MARGIN_SIZE)?;
   let first = Ad1Margin::from_bytes(&first_margin)?;
   if first.segment_number != 1 {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "ad1 archives must be opened from the first segment".to_string(),
     ));
   }
 
   let mut joined = source.read_all()?;
   if joined.len() < MARGIN_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ad1 segment is smaller than the margin".to_string(),
     ));
   }
@@ -303,21 +300,19 @@ fn read_segments(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Seg
 
   if first.number_of_segments > 1 {
     let resolver = hints.resolver().ok_or_else(|| {
-      Error::InvalidSourceReference(
+      Error::invalid_source_reference(
         "multi-segment ad1 archives require a related-source resolver".to_string(),
       )
     })?;
     let identity = hints.source_identity().ok_or_else(|| {
-      Error::InvalidSourceReference(
+      Error::invalid_source_reference(
         "multi-segment ad1 archives require a source identity hint".to_string(),
       )
     })?;
     let set = Ad1SegmentSet::parse(identity.entry_name().ok_or_else(|| {
-      Error::InvalidSourceReference("ad1 archives require a segment file name".to_string())
+      Error::invalid_source_reference("ad1 archives require a segment file name")
     })?)
-    .ok_or_else(|| {
-      Error::InvalidSourceReference("ad1 segment names must look like *.ad1".to_string())
-    })?;
+    .ok_or_else(|| Error::invalid_source_reference("ad1 segment names must look like *.ad1"))?;
 
     for segment_number in 2..=first.number_of_segments {
       let segment_name = set.segment_name(segment_number);
@@ -328,22 +323,22 @@ fn read_segments(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Seg
       );
       let segment_source = resolver
         .resolve(&request)?
-        .ok_or_else(|| Error::NotFound(format!("missing ad1 segment: {segment_path}")))?;
+        .ok_or_else(|| Error::not_found(format!("missing ad1 segment: {segment_path}")))?;
       let segment_bytes = segment_source.read_all()?;
       if segment_bytes.len() < MARGIN_SIZE {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ad1 segment is smaller than the margin".to_string(),
         ));
       }
       let margin = Ad1Margin::from_bytes(&segment_bytes[..MARGIN_SIZE])?;
       if margin.segment_number != segment_number {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "ad1 segment number mismatch: expected {segment_number}, found {}",
           margin.segment_number
         )));
       }
       if margin.number_of_segments != first.number_of_segments {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ad1 segment count mismatch across segments".to_string(),
         ));
       }
@@ -359,17 +354,17 @@ fn read_segments(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Seg
 fn read_compressed_item(reader: &mut JoinedReader<'_>, declared_size: u64) -> Result<Arc<[u8]>> {
   let chunk_count_minus_one = read_i64_le(&reader.read_bytes(8, false)?)?;
   if chunk_count_minus_one < 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ad1 chunk count must be non-negative".to_string(),
     ));
   }
   let chunk_count = usize::try_from(chunk_count_minus_one + 1)
-    .map_err(|_| Error::InvalidRange("ad1 chunk count is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("ad1 chunk count is too large"))?;
   let mut chunk_offsets = Vec::with_capacity(chunk_count);
   for _ in 0..chunk_count {
     let offset = read_i64_le(&reader.read_bytes(8, false)?)?;
     if offset < 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ad1 chunk offsets must be non-negative".to_string(),
       ));
     }
@@ -380,10 +375,10 @@ fn read_compressed_item(reader: &mut JoinedReader<'_>, declared_size: u64) -> Re
   for window in chunk_offsets.windows(2) {
     let compressed_size = window[1]
       .checked_sub(window[0])
-      .ok_or_else(|| Error::InvalidFormat("ad1 chunk offsets must be increasing".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("ad1 chunk offsets must be increasing"))?;
     let compressed = reader.read_bytes(
       usize::try_from(compressed_size)
-        .map_err(|_| Error::InvalidRange("ad1 compressed chunk is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("ad1 compressed chunk is too large"))?,
       false,
     )?;
     let mut decoder = ZlibDecoder::new(compressed.as_slice());
@@ -394,7 +389,7 @@ fn read_compressed_item(reader: &mut JoinedReader<'_>, declared_size: u64) -> Re
   }
 
   if content.len() as u64 != declared_size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ad1 decompressed item size does not match its header".to_string(),
     ));
   }
@@ -404,25 +399,25 @@ fn read_compressed_item(reader: &mut JoinedReader<'_>, declared_size: u64) -> Re
 
 fn read_u32_le(data: &[u8]) -> Result<u32> {
   Ok(u32::from_le_bytes(data.try_into().map_err(|_| {
-    Error::InvalidFormat("ad1 integer length mismatch".to_string())
+    Error::invalid_format("ad1 integer length mismatch")
   })?))
 }
 
 fn read_u64_le(data: &[u8]) -> Result<u64> {
   Ok(u64::from_le_bytes(data.try_into().map_err(|_| {
-    Error::InvalidFormat("ad1 integer length mismatch".to_string())
+    Error::invalid_format("ad1 integer length mismatch")
   })?))
 }
 
 fn read_i64_le(data: &[u8]) -> Result<i64> {
   Ok(i64::from_le_bytes(data.try_into().map_err(|_| {
-    Error::InvalidFormat("ad1 integer length mismatch".to_string())
+    Error::invalid_format("ad1 integer length mismatch")
   })?))
 }
 
 fn entry_id_to_u64(entry_id: &NamespaceNodeId) -> Result<u64> {
   let bytes: [u8; 8] = entry_id.as_bytes().try_into().map_err(|_| {
-    Error::InvalidFormat("ad1 archive entry identifiers must be native u64 values".to_string())
+    Error::invalid_format("ad1 archive entry identifiers must be native u64 values")
   })?;
   Ok(u64::from_le_bytes(bytes))
 }
@@ -430,12 +425,12 @@ fn entry_id_to_u64(entry_id: &NamespaceNodeId) -> Result<u64> {
 impl Ad1Margin {
   fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != MARGIN_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ad1 margin must be exactly 512 bytes".to_string(),
       ));
     }
     if &data[0..15] != SEGMENT_MARGIN_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ad1 segment margin signature is missing".to_string(),
       ));
     }
@@ -461,7 +456,7 @@ impl<'a> JoinedReader<'a> {
     let end = self
       .offset
       .checked_add(len)
-      .ok_or_else(|| Error::InvalidRange("ad1 reader offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ad1 reader offset overflow"))?;
     let bytes = self
       .data
       .get(self.offset..end)
@@ -484,8 +479,8 @@ struct BytesDataSource {
 
 impl ByteSource for BytesDataSource {
   fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-    let offset = usize::try_from(offset)
-      .map_err(|_| Error::InvalidRange("ad1 file offset is too large".to_string()))?;
+    let offset =
+      usize::try_from(offset).map_err(|_| Error::invalid_range("ad1 file offset is too large"))?;
     if offset >= self.data.len() {
       return Ok(0);
     }
@@ -541,7 +536,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

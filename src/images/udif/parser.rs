@@ -28,7 +28,7 @@ pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedUdif> {
     trailer
       .sector_count
       .checked_mul(super::block_map::SECTOR_SIZE)
-      .ok_or_else(|| Error::InvalidRange("udif media size overflow".to_string()))?
+      .ok_or_else(|| Error::invalid_range("udif media size overflow"))?
   } else {
     trailer.data_fork_size
   };
@@ -44,7 +44,7 @@ pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedUdif> {
     (vec![range], UdifCompressionMethod::None, false)
   } else {
     let plist_size = usize::try_from(trailer.plist_size)
-      .map_err(|_| Error::InvalidRange("udif plist size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("udif plist size is too large"))?;
     let plist_data = source.read_bytes_at(trailer.plist_offset, plist_size)?;
     let parsed = parse_block_maps(&plist_data, &trailer, media_size, source_size)?;
     verify_master_checksum(&trailer, &parsed)?;
@@ -68,13 +68,13 @@ pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedUdif> {
 fn validate_trailer_bounds(source_size: u64, trailer: &UdifTrailer) -> Result<()> {
   let trailer_offset = source_size
     .checked_sub(TRAILER_SIZE as u64)
-    .ok_or_else(|| Error::InvalidRange("udif trailer offset underflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("udif trailer offset underflow"))?;
   let data_fork_end = trailer
     .data_fork_offset
     .checked_add(trailer.data_fork_size)
-    .ok_or_else(|| Error::InvalidRange("udif data fork end overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("udif data fork end overflow"))?;
   if data_fork_end > source_size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "udif data fork exceeds the source size".to_string(),
     ));
   }
@@ -83,9 +83,9 @@ fn validate_trailer_bounds(source_size: u64, trailer: &UdifTrailer) -> Result<()
     let plist_end = trailer
       .plist_offset
       .checked_add(trailer.plist_size)
-      .ok_or_else(|| Error::InvalidRange("udif plist end overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("udif plist end overflow"))?;
     if plist_end > trailer_offset {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "udif plist exceeds the trailer boundary".to_string(),
       ));
     }
@@ -104,21 +104,21 @@ fn verify_data_fork_checksum(source: &dyn ByteSource, trailer: &UdifTrailer) -> 
   let end = trailer
     .data_fork_offset
     .checked_add(trailer.data_fork_size)
-    .ok_or_else(|| Error::InvalidRange("udif data fork end overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("udif data fork end overflow"))?;
   while offset < end {
     let remaining = end - offset;
     let chunk = usize::try_from(remaining.min(1024 * 1024))
-      .map_err(|_| Error::InvalidRange("udif checksum chunk is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("udif checksum chunk is too large"))?;
     let data = source.read_bytes_at(offset, chunk)?;
     hasher.update(&data);
     offset = offset
       .checked_add(chunk as u64)
-      .ok_or_else(|| Error::InvalidRange("udif checksum offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("udif checksum offset overflow"))?;
   }
 
   let actual = hasher.finalize();
   if actual != expected_crc32 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "udif data fork checksum mismatch: 0x{actual:08x} != 0x{expected_crc32:08x}"
     )));
   }
@@ -137,7 +137,7 @@ fn verify_master_checksum(trailer: &UdifTrailer, parsed: &ParsedBlockMaps) -> Re
   }
   let actual = crc32fast::hash(&data);
   if actual != expected_crc32 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "udif master checksum mismatch: 0x{actual:08x} != 0x{expected_crc32:08x}"
     )));
   }

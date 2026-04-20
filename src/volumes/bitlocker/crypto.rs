@@ -36,7 +36,7 @@ pub(super) fn password_hash(password: &str) -> [u8; 32] {
 pub(super) fn recovery_password_hash(recovery_password: &str) -> Result<[u8; 32]> {
   let segments = recovery_password.split('-').collect::<Vec<_>>();
   if segments.len() != 8 {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "bitlocker recovery passwords must contain 8 numeric groups".to_string(),
     ));
   }
@@ -44,18 +44,18 @@ pub(super) fn recovery_password_hash(recovery_password: &str) -> Result<[u8; 32]
   let mut binary = [0u8; 16];
   for (index, segment) in segments.iter().enumerate() {
     let value = segment.parse::<u64>().map_err(|_| {
-      Error::InvalidSourceReference(
+      Error::invalid_source_reference(
         "bitlocker recovery passwords must be decimal numbers".to_string(),
       )
     })?;
     if value % 11 != 0 {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "bitlocker recovery password groups must be divisible by 11".to_string(),
       ));
     }
     let decoded = value / 11;
     let decoded = u16::try_from(decoded).map_err(|_| {
-      Error::InvalidSourceReference(
+      Error::invalid_source_reference(
         "bitlocker recovery password groups are out of range".to_string(),
       )
     })?;
@@ -88,19 +88,19 @@ pub(super) fn decrypt_aes_ccm_key_blob(
   aes_ccm_key: &[u8; 32], nonce: &[u8; 12], encrypted: &[u8],
 ) -> Result<Vec<u8>> {
   if encrypted.len() < 16 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker AES-CCM key blobs must include a 16-byte authentication tag".to_string(),
     ));
   }
 
   let cipher = Aes256Ccm::new_from_slice(aes_ccm_key)
-    .map_err(|_| Error::InvalidFormat("bitlocker AES-CCM key size is invalid".to_string()))?;
+    .map_err(|_| Error::invalid_format("bitlocker AES-CCM key size is invalid"))?;
   let tag = &encrypted[..16];
   let mut ciphertext = encrypted[16..].to_vec();
   let tag = GenericArray::from_slice(tag);
   cipher
     .decrypt_in_place_detached(nonce.into(), b"", &mut ciphertext, tag)
-    .map_err(|_| Error::InvalidSourceReference("bitlocker key decryption failed".to_string()))?;
+    .map_err(|_| Error::invalid_source_reference("bitlocker key decryption failed"))?;
 
   let mut output = Vec::with_capacity(encrypted.len());
   output.extend_from_slice(&encrypted[..16]);
@@ -119,14 +119,14 @@ pub(super) fn decrypt_sector(
     BitlockerEncryptionMethod::Aes128CbcDiffuser => {
       aes_cbc_crypt::<Aes128>(false, fvek, block_key, data)?;
       let tweak = tweak_key.ok_or_else(|| {
-        Error::InvalidFormat("bitlocker diffuser encryption requires a tweak key".to_string())
+        Error::invalid_format("bitlocker diffuser encryption requires a tweak key")
       })?;
       diffuser_apply::<Aes128>(false, tweak, block_key, data)
     }
     BitlockerEncryptionMethod::Aes256CbcDiffuser => {
       aes_cbc_crypt::<Aes256>(false, fvek, block_key, data)?;
       let tweak = tweak_key.ok_or_else(|| {
-        Error::InvalidFormat("bitlocker diffuser encryption requires a tweak key".to_string())
+        Error::invalid_format("bitlocker diffuser encryption requires a tweak key")
       })?;
       diffuser_apply::<Aes256>(false, tweak, block_key, data)
     }
@@ -146,14 +146,14 @@ pub(super) fn encrypt_sector(
     BitlockerEncryptionMethod::Aes256Cbc => aes_cbc_crypt::<Aes256>(true, fvek, block_key, data),
     BitlockerEncryptionMethod::Aes128CbcDiffuser => {
       let tweak = tweak_key.ok_or_else(|| {
-        Error::InvalidFormat("bitlocker diffuser encryption requires a tweak key".to_string())
+        Error::invalid_format("bitlocker diffuser encryption requires a tweak key")
       })?;
       diffuser_apply::<Aes128>(true, tweak, block_key, data)?;
       aes_cbc_crypt::<Aes128>(true, fvek, block_key, data)
     }
     BitlockerEncryptionMethod::Aes256CbcDiffuser => {
       let tweak = tweak_key.ok_or_else(|| {
-        Error::InvalidFormat("bitlocker diffuser encryption requires a tweak key".to_string())
+        Error::invalid_format("bitlocker diffuser encryption requires a tweak key")
       })?;
       diffuser_apply::<Aes256>(true, tweak, block_key, data)?;
       aes_cbc_crypt::<Aes256>(true, fvek, block_key, data)
@@ -167,13 +167,12 @@ fn aes_cbc_crypt<C>(encrypt: bool, key: &[u8], block_key: u64, data: &mut [u8]) 
 where
   C: BlockEncrypt + BlockDecrypt + KeyInit + BlockSizeUser<BlockSize = BlockU16>, {
   if !data.len().is_multiple_of(16) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker AES-CBC sectors must be aligned to 16-byte blocks".to_string(),
     ));
   }
-  let cipher = C::new_from_slice(key).map_err(|_| {
-    Error::InvalidFormat("bitlocker FVEK length does not match the AES mode".to_string())
-  })?;
+  let cipher = C::new_from_slice(key)
+    .map_err(|_| Error::invalid_format("bitlocker FVEK length does not match the AES mode"))?;
   let mut iv_block = [0u8; 16];
   iv_block[..8].copy_from_slice(&block_key.to_le_bytes());
   let iv = encrypt_block_ecb(&cipher, iv_block);
@@ -211,12 +210,10 @@ where
     + Clone
     + BlockSizeUser<BlockSize = BlockU16>, {
   let half = key.len() / 2;
-  let cipher_1 = C::new_from_slice(&key[..half]).map_err(|_| {
-    Error::InvalidFormat("bitlocker XTS key length does not match the AES mode".to_string())
-  })?;
-  let cipher_2 = C::new_from_slice(&key[half..]).map_err(|_| {
-    Error::InvalidFormat("bitlocker XTS key length does not match the AES mode".to_string())
-  })?;
+  let cipher_1 = C::new_from_slice(&key[..half])
+    .map_err(|_| Error::invalid_format("bitlocker XTS key length does not match the AES mode"))?;
+  let cipher_2 = C::new_from_slice(&key[half..])
+    .map_err(|_| Error::invalid_format("bitlocker XTS key length does not match the AES mode"))?;
   let xts = Xts128::<C>::new(cipher_1, cipher_2);
   if encrypt {
     xts.encrypt_sector(data, get_tweak_default(u128::from(sector_index)));
@@ -232,14 +229,13 @@ fn diffuser_apply<C>(
 where
   C: BlockEncrypt + KeyInit + BlockSizeUser<BlockSize = BlockU16>, {
   if !data.len().is_multiple_of(4) || data.len() < 32 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker diffuser blocks must be at least 32 bytes and 4-byte aligned".to_string(),
     ));
   }
 
-  let cipher = C::new_from_slice(tweak_key).map_err(|_| {
-    Error::InvalidFormat("bitlocker tweak key length does not match the AES mode".to_string())
-  })?;
+  let cipher = C::new_from_slice(tweak_key)
+    .map_err(|_| Error::invalid_format("bitlocker tweak key length does not match the AES mode"))?;
   let mut first_input = [0u8; 16];
   first_input[..8].copy_from_slice(&block_key.to_le_bytes());
   let first = encrypt_block_ecb(&cipher, first_input);

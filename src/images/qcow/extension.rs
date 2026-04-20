@@ -37,14 +37,14 @@ impl QcowHeaderExtension {
     let mut extensions = Vec::new();
 
     while cursor < data.len() {
-      let header = data.get(cursor..cursor + 8).ok_or_else(|| {
-        Error::InvalidFormat("qcow header extension header is truncated".to_string())
-      })?;
+      let header = data
+        .get(cursor..cursor + 8)
+        .ok_or_else(|| Error::invalid_format("qcow header extension header is truncated"))?;
       let kind_raw = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
       let data_len = usize::try_from(u32::from_be_bytes([
         header[4], header[5], header[6], header[7],
       ]))
-      .map_err(|_| Error::InvalidRange("qcow header extension length is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("qcow header extension length is too large"))?;
       cursor += 8;
 
       if kind_raw == 0 {
@@ -55,21 +55,21 @@ impl QcowHeaderExtension {
         break;
       }
 
-      let payload = data.get(cursor..cursor + data_len).ok_or_else(|| {
-        Error::InvalidFormat("qcow header extension payload is truncated".to_string())
-      })?;
+      let payload = data
+        .get(cursor..cursor + data_len)
+        .ok_or_else(|| Error::invalid_format("qcow header extension payload is truncated"))?;
       extensions.push(Self {
         kind: kind_from_u32(kind_raw),
         data: payload.to_vec(),
       });
       cursor = cursor
         .checked_add(data_len)
-        .ok_or_else(|| Error::InvalidRange("qcow header extension cursor overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("qcow header extension cursor overflow"))?;
 
       let padding = (8 - (cursor % 8)) % 8;
-      cursor = cursor.checked_add(padding).ok_or_else(|| {
-        Error::InvalidRange("qcow header extension alignment overflow".to_string())
-      })?;
+      cursor = cursor
+        .checked_add(padding)
+        .ok_or_else(|| Error::invalid_range("qcow header extension alignment overflow"))?;
     }
 
     Ok(extensions)
@@ -83,9 +83,8 @@ impl QcowHeaderExtension {
         while data.last() == Some(&0) {
           data.pop();
         }
-        let string = String::from_utf8(data).map_err(|_| {
-          Error::InvalidFormat("qcow header extension string is not valid UTF-8".to_string())
-        })?;
+        let string = String::from_utf8(data)
+          .map_err(|_| Error::invalid_format("qcow header extension string is not valid UTF-8"))?;
         Ok(Some(string))
       }
       _ => Ok(None),

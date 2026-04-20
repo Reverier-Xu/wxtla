@@ -17,28 +17,28 @@ pub struct SplitRawImage {
 
 impl SplitRawImage {
   pub fn open(_source: ByteSourceHandle) -> Result<Self> {
-    Err(Error::InvalidSourceReference(
+    Err(Error::invalid_source_reference(
       "split raw images require source hints, a resolver, and a source identity".to_string(),
     ))
   }
 
   pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let resolver = hints.resolver().ok_or_else(|| {
-      Error::InvalidSourceReference(
+      Error::invalid_source_reference(
         "split raw images require a related-source resolver".to_string(),
       )
     })?;
     let identity = hints.source_identity().ok_or_else(|| {
-      Error::InvalidSourceReference("split raw images require a source identity hint".to_string())
+      Error::invalid_source_reference("split raw images require a source identity hint")
     })?;
     let entry_name = identity.entry_name().ok_or_else(|| {
-      Error::InvalidSourceReference("split raw images require a segment entry name".to_string())
+      Error::invalid_source_reference("split raw images require a segment entry name")
     })?;
     let sequence = SplitSegmentSequence::parse(entry_name).ok_or_else(|| {
-      Error::InvalidSourceReference("source does not look like a split raw segment".to_string())
+      Error::invalid_source_reference("source does not look like a split raw segment")
     })?;
     if !sequence.is_first_segment() {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "split raw images must be opened from the first segment".to_string(),
       ));
     }
@@ -65,7 +65,7 @@ impl SplitRawImage {
       );
       let Some(segment_source) = resolver.resolve(&request)? else {
         if sequence.expected_total_segments().is_some() {
-          return Err(Error::NotFound(format!(
+          return Err(Error::not_found(format!(
             "missing split raw segment: {}",
             segment_path
           )));
@@ -76,7 +76,7 @@ impl SplitRawImage {
         let lookahead_request =
           crate::RelatedSourceRequest::new(crate::RelatedSourcePurpose::Segment, lookahead_path);
         if resolver.resolve(&lookahead_request)?.is_some() {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "split raw segment sequence contains a gap".to_string(),
           ));
         }
@@ -84,7 +84,7 @@ impl SplitRawImage {
       };
 
       if !seen_paths.insert(segment_path.to_string()) {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "split raw segment sequence must not repeat segment names".to_string(),
         ));
       }
@@ -94,27 +94,27 @@ impl SplitRawImage {
         && segment_index + 1 < sequence.expected_total_segments().unwrap_or(u64::MAX)
         && segment_size != first_segment_size
       {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "all non-final split raw segments must have the same size".to_string(),
         ));
       }
 
       media_size = media_size
         .checked_add(segment_size)
-        .ok_or_else(|| Error::InvalidRange("split raw media size overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("split raw media size overflow"))?;
       segments.push(segment_source);
       segment_index += 1;
     }
 
     if segments.len() < 2 {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "split raw images require at least two segments".to_string(),
       ));
     }
     if segments.len() > 2 {
       for segment in &segments[1..segments.len() - 1] {
         if segment.size()? != first_segment_size {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "all non-final split raw segments must have the same size".to_string(),
           ));
         }
@@ -127,7 +127,7 @@ impl SplitRawImage {
       offsets.push(current_offset);
       current_offset = current_offset
         .checked_add(segment.size()?)
-        .ok_or_else(|| Error::InvalidRange("split raw offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("split raw offset overflow"))?;
     }
 
     Ok(Self {
@@ -153,7 +153,7 @@ impl ByteSource for SplitRawImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("split raw read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("split raw read offset overflow"))?;
       if absolute_offset >= self.media_size {
         break;
       }
@@ -162,7 +162,7 @@ impl ByteSource for SplitRawImage {
         .segment_offsets
         .partition_point(|segment_offset| *segment_offset <= absolute_offset)
         .checked_sub(1)
-        .ok_or_else(|| Error::InvalidFormat("split raw segment offsets are empty".to_string()))?;
+        .ok_or_else(|| Error::invalid_format("split raw segment offsets are empty"))?;
       let segment = &self.segments[index];
       let segment_offset = self.segment_offsets[index];
       let within_segment = absolute_offset - segment_offset;
@@ -171,7 +171,7 @@ impl ByteSource for SplitRawImage {
           .min(self.media_size - absolute_offset)
           .min((buf.len() - copied) as u64),
       )
-      .map_err(|_| Error::InvalidRange("split raw read size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("split raw read size is too large"))?;
       segment.read_exact_at(within_segment, &mut buf[copied..copied + available])?;
       copied += available;
     }
@@ -214,7 +214,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

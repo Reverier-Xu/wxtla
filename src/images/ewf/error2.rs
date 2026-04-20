@@ -25,7 +25,7 @@ impl EwfErrorSection {
   /// Parse an error2 section payload.
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() < ERROR2_HEADER_SIZE + ERROR2_FOOTER_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ewf error2 section payload is too small".to_string(),
       ));
     }
@@ -35,12 +35,12 @@ impl EwfErrorSection {
       .checked_add(
         entry_count
           .checked_mul(ERROR2_ENTRY_SIZE)
-          .ok_or_else(|| Error::InvalidRange("ewf error2 entry array size overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("ewf error2 entry array size overflow"))?,
       )
       .and_then(|size| size.checked_add(ERROR2_FOOTER_SIZE))
-      .ok_or_else(|| Error::InvalidRange("ewf error2 size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ewf error2 size overflow"))?;
     if data.len() != expected_size {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf error2 payload size does not match entry count: expected {expected_size}, got {}",
         data.len()
       )));
@@ -49,7 +49,7 @@ impl EwfErrorSection {
     let stored_header_checksum = read_u32_le(data, 516);
     let calculated_header_checksum = adler32_slice(&data[..516]);
     if stored_header_checksum != calculated_header_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf error2 header checksum mismatch: stored 0x{stored_header_checksum:08x}, calculated 0x{calculated_header_checksum:08x}"
       )));
     }
@@ -59,7 +59,7 @@ impl EwfErrorSection {
     let stored_entry_checksum = read_u32_le(data, entries_end);
     let calculated_entry_checksum = adler32_slice(&data[entries_start..entries_end]);
     if stored_entry_checksum != calculated_entry_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf error2 entry checksum mismatch: stored 0x{stored_entry_checksum:08x}, calculated 0x{calculated_entry_checksum:08x}"
       )));
     }

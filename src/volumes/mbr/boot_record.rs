@@ -26,13 +26,13 @@ impl MbrBootRecord {
   /// Parse a boot record from exactly 512 bytes.
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() != BOOT_RECORD_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "mbr boot record must be {BOOT_RECORD_SIZE} bytes, got {}",
         data.len()
       )));
     }
     if data[BOOT_SIGNATURE_OFFSET..BOOT_SIGNATURE_OFFSET + 2] != BOOT_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "mbr boot record signature is missing".to_string(),
       ));
     }

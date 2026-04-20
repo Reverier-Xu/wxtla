@@ -107,11 +107,11 @@ impl LvmVolumeSystem {
     }
 
     let logical_volume = self.logical_volumes.get(index).ok_or_else(|| {
-      Error::NotFound(format!("lvm logical volume index {index} is out of bounds"))
+      Error::not_found(format!("lvm logical volume index {index} is out of bounds"))
     })?;
     let (chunks, size) = if let Some(infos) = self.logical_volume_infos.get() {
       let info = infos.get(index).ok_or_else(|| {
-        Error::NotFound(format!("lvm logical volume index {index} is out of bounds"))
+        Error::not_found(format!("lvm logical volume index {index} is out of bounds"))
       })?;
       (info.chunks.clone(), info.size)
     } else {

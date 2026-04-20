@@ -76,7 +76,7 @@ impl UdifImage {
 
   fn read_decompressed_range(&self, index: usize, range: &UdifRange) -> Result<Arc<Vec<u8>>> {
     let expected_size = usize::try_from(range.size)
-      .map_err(|_| Error::InvalidRange("udif range size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("udif range size is too large"))?;
     let load_range = || self.decompress_range(index, range, expected_size);
 
     if should_cache_decompressed_range(expected_size) {
@@ -94,7 +94,7 @@ impl UdifImage {
     let compressed = self.source.read_bytes_at(
       range.data_offset,
       usize::try_from(range.data_size)
-        .map_err(|_| Error::InvalidRange("udif compressed range is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("udif compressed range is too large"))?,
     )?;
     let mut output = vec![0u8; expected_size];
 
@@ -114,13 +114,13 @@ impl UdifImage {
       UdifRangeKind::Lzfse => {
         let output_len = expected_size
           .checked_add(1)
-          .ok_or_else(|| Error::InvalidRange("udif lzfse buffer overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("udif lzfse buffer overflow"))?;
         let mut decoded = vec![0u8; output_len];
         let decoded_size = lzfse::decode_buffer(&compressed, &mut decoded).map_err(|error| {
-          Error::InvalidFormat(format!("unable to decompress udif lzfse block: {error:?}"))
+          Error::invalid_format(format!("unable to decompress udif lzfse block: {error:?}"))
         })?;
         if decoded_size != expected_size {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "udif lzfse block does not expand to the expected size".to_string(),
           ));
         }
@@ -131,7 +131,7 @@ impl UdifImage {
         read_full(&mut decoder, &mut output)?;
       }
       UdifRangeKind::Raw | UdifRangeKind::Sparse => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "udif range {index} does not require decompression"
         )));
       }
@@ -155,18 +155,18 @@ impl ByteSource for UdifImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("udif read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("udif read offset overflow"))?;
       if absolute_offset >= self.media_size {
         break;
       }
 
       let remaining = usize::try_from(self.media_size - absolute_offset)
-        .map_err(|_| Error::InvalidRange("udif remaining size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("udif remaining size is too large"))?;
       if let Some(range_index) = self.find_range_index(absolute_offset) {
         let range = &self.ranges[range_index];
         let within_range = absolute_offset - range.media_offset;
         let available = usize::try_from(range.size - within_range)
-          .map_err(|_| Error::InvalidRange("udif range size is too large".to_string()))?
+          .map_err(|_| Error::invalid_range("udif range size is too large"))?
           .min(buf.len() - copied)
           .min(remaining);
 
@@ -179,7 +179,7 @@ impl ByteSource for UdifImage {
               buf[copied..copied + available].fill(0);
             } else {
               let readable = usize::try_from(range.data_size - within_range)
-                .map_err(|_| Error::InvalidRange("udif raw payload is too large".to_string()))?
+                .map_err(|_| Error::invalid_range("udif raw payload is too large"))?
                 .min(available);
               self.source.read_exact_at(
                 range.data_offset + within_range,
@@ -197,7 +197,7 @@ impl ByteSource for UdifImage {
           | UdifRangeKind::Lzma => {
             let range_data = self.read_decompressed_range(range_index, range)?;
             let range_offset = usize::try_from(within_range)
-              .map_err(|_| Error::InvalidRange("udif range offset is too large".to_string()))?;
+              .map_err(|_| Error::invalid_range("udif range offset is too large"))?;
             buf[copied..copied + available]
               .copy_from_slice(&range_data[range_offset..range_offset + available]);
           }
@@ -212,7 +212,7 @@ impl ByteSource for UdifImage {
           .map(|range| range.media_offset)
           .unwrap_or(self.media_size);
         let gap = usize::try_from(next_offset - absolute_offset)
-          .map_err(|_| Error::InvalidRange("udif gap size is too large".to_string()))?
+          .map_err(|_| Error::invalid_range("udif gap size is too large"))?
           .min(buf.len() - copied)
           .min(remaining);
         buf[copied..copied + gap].fill(0);
@@ -296,7 +296,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }
@@ -314,7 +314,7 @@ mod tests {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       self.reads.fetch_add(1, Ordering::Relaxed);
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

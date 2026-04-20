@@ -32,7 +32,7 @@ impl ApfsXtsCipher {
     let key = key.into();
     match key.len() {
       32 | 64 => Ok(Self { key }),
-      length => Err(Error::InvalidFormat(format!(
+      length => Err(Error::invalid_format(format!(
         "apfs xts key length must be 32 or 64 bytes, got {length}"
       ))),
     }
@@ -40,7 +40,7 @@ impl ApfsXtsCipher {
 
   pub(crate) fn decrypt(&self, sector_index: u64, data: &mut [u8]) -> Result<()> {
     if !data.len().is_multiple_of(APFS_CRYPTO_SECTOR_SIZE) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs encrypted data must be 512-byte aligned".to_string(),
       ));
     }
@@ -48,7 +48,7 @@ impl ApfsXtsCipher {
     match self.key.len() {
       32 => xts_decrypt::<Aes128>(&self.key, sector_index, data),
       64 => xts_decrypt::<Aes256>(&self.key, sector_index, data),
-      _ => Err(Error::InvalidFormat(
+      _ => Err(Error::invalid_format(
         "apfs xts key length is invalid".to_string(),
       )),
     }
@@ -61,7 +61,7 @@ pub(crate) fn verify_keybag_hmac(blob_der: &[u8], salt: &[u8], expected: &[u8]) 
   digest.update(salt);
   let key = digest.finalize();
   let mut mac = <HmacSha256 as Mac>::new_from_slice(&key)
-    .map_err(|_| Error::InvalidFormat("invalid apfs keybag hmac key".to_string()))?;
+    .map_err(|_| Error::invalid_format("invalid apfs keybag hmac key"))?;
   mac.update(blob_der);
   Ok(mac.verify_slice(expected).is_ok())
 }
@@ -70,7 +70,7 @@ pub(crate) fn derive_password_key(
   password: &str, salt: &[u8], iterations: u64,
 ) -> Result<[u8; 32]> {
   let iterations = u32::try_from(iterations)
-    .map_err(|_| Error::InvalidRange("apfs keybag iteration count exceeds u32".to_string()))?;
+    .map_err(|_| Error::invalid_range("apfs keybag iteration count exceeds u32"))?;
   Ok(pbkdf2_hmac_array::<Sha256, 32>(
     password.as_bytes(),
     salt,
@@ -80,7 +80,7 @@ pub(crate) fn derive_password_key(
 
 pub(crate) fn aes_unwrap(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>> {
   if wrapped.len() < 16 || !wrapped.len().is_multiple_of(8) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "apfs wrapped key length is invalid".to_string(),
     ));
   }
@@ -88,7 +88,7 @@ pub(crate) fn aes_unwrap(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>> {
   match kek.len() {
     16 => aes_unwrap_inner::<Aes128>(kek, wrapped),
     32 => aes_unwrap_inner::<Aes256>(kek, wrapped),
-    length => Err(Error::InvalidFormat(format!(
+    length => Err(Error::invalid_format(format!(
       "apfs KEK length must be 16 or 32 bytes, got {length}"
     ))),
   }
@@ -96,7 +96,7 @@ pub(crate) fn aes_unwrap(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>> {
 
 pub(crate) fn sha256_prefix(data: &[u8], prefix_len: usize) -> Result<Vec<u8>> {
   if prefix_len > 32 {
-    return Err(Error::InvalidRange(
+    return Err(Error::invalid_range(
       "apfs sha256 prefix length exceeds digest size".to_string(),
     ));
   }
@@ -112,19 +112,17 @@ where
     + Clone
     + BlockSizeUser<BlockSize = BlockU16>, {
   let half = key.len() / 2;
-  let cipher_1 = C::new_from_slice(&key[..half]).map_err(|_| {
-    Error::InvalidFormat("apfs xts key length does not match the AES mode".to_string())
-  })?;
-  let cipher_2 = C::new_from_slice(&key[half..]).map_err(|_| {
-    Error::InvalidFormat("apfs xts key length does not match the AES mode".to_string())
-  })?;
+  let cipher_1 = C::new_from_slice(&key[..half])
+    .map_err(|_| Error::invalid_format("apfs xts key length does not match the AES mode"))?;
+  let cipher_2 = C::new_from_slice(&key[half..])
+    .map_err(|_| Error::invalid_format("apfs xts key length does not match the AES mode"))?;
   let xts = Xts128::<C>::new(cipher_1, cipher_2);
 
   for (index, sector) in data.chunks_exact_mut(APFS_CRYPTO_SECTOR_SIZE).enumerate() {
     let tweak = get_tweak_default(u128::from(
       sector_index
         .checked_add(index as u64)
-        .ok_or_else(|| Error::InvalidRange("apfs sector index overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("apfs sector index overflow"))?,
     ));
     xts.decrypt_sector(sector, tweak);
   }
@@ -136,7 +134,7 @@ fn aes_unwrap_inner<C>(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>>
 where
   C: BlockDecrypt + KeyInit, {
   let cipher = C::new_from_slice(kek)
-    .map_err(|_| Error::InvalidFormat("apfs KEK length does not match AES mode".to_string()))?;
+    .map_err(|_| Error::invalid_format("apfs KEK length does not match AES mode"))?;
 
   let n = wrapped.len() / 8 - 1;
   let mut registers = Vec::with_capacity(n + 1);
@@ -167,7 +165,7 @@ where
   }
 
   if u64::from_be_bytes(a) != RFC3394_IV {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "apfs wrapped key integrity verification failed".to_string(),
     ));
   }

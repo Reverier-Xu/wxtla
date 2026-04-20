@@ -13,12 +13,12 @@ pub(super) fn validate_partitions(source_size: u64, partitions: &[MbrPartitionIn
 fn validate_bounds(source_size: u64, partitions: &[MbrPartitionInfo]) -> Result<()> {
   for partition in partitions {
     let Some(end_offset) = partition.record.span.end_offset() else {
-      return Err(Error::InvalidRange(
+      return Err(Error::invalid_range(
         "mbr partition end offset overflow".to_string(),
       ));
     };
     if end_offset > source_size {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "mbr partition {} exceeds source size",
         partition.record.index
       )));
@@ -40,7 +40,7 @@ fn validate_extended_container(partitions: &[MbrPartitionInfo]) -> Result<()> {
     }
 
     if extended_containers.is_empty() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "logical partitions require an extended container".to_string(),
       ));
     }
@@ -49,7 +49,7 @@ fn validate_extended_container(partitions: &[MbrPartitionInfo]) -> Result<()> {
       .record
       .span
       .end_offset()
-      .ok_or_else(|| Error::InvalidRange("logical partition end offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("logical partition end offset overflow"))?;
     let inside_any_container = extended_containers.iter().any(|container| {
       let Some(container_end) = container.record.span.end_offset() else {
         return false;
@@ -58,7 +58,7 @@ fn validate_extended_container(partitions: &[MbrPartitionInfo]) -> Result<()> {
         && partition_end <= container_end
     });
     if !inside_any_container {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "logical partition {} falls outside the extended container",
         partition.record.index
       )));
@@ -77,7 +77,7 @@ fn validate_overlaps(partitions: &[MbrPartitionInfo]) -> Result<()> {
         continue;
       }
       if spans_overlap(left, right)? {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "mbr partitions {} and {} overlap",
           left.record.index, right.record.index
         )));
@@ -103,12 +103,12 @@ fn spans_overlap(left: &MbrPartitionInfo, right: &MbrPartitionInfo) -> Result<bo
     .record
     .span
     .end_offset()
-    .ok_or_else(|| Error::InvalidRange("left partition end offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("left partition end offset overflow"))?;
   let right_end = right
     .record
     .span
     .end_offset()
-    .ok_or_else(|| Error::InvalidRange("right partition end offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("right partition end offset overflow"))?;
 
   Ok(left.record.span.byte_offset < right_end && right.record.span.byte_offset < left_end)
 }

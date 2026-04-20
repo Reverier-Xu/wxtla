@@ -56,7 +56,7 @@ pub(crate) fn read_directory_index_entries(
 ) -> Result<Vec<NamespaceDirectoryEntry>> {
   let root_header = parse_index_root_header(root_data)?;
   if root_header.attribute_type != ATTRIBUTE_TYPE_FILE_NAME {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported ntfs $I30 index root attribute type: 0x{:08x}",
       root_header.attribute_type
     )));
@@ -89,17 +89,17 @@ fn collect_directory_entries_from_node(
   let mut entry_offset = node_offset
     .checked_add(
       usize::try_from(node_header.values_offset)
-        .map_err(|_| Error::InvalidRange("ntfs index values offset is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("ntfs index values offset is too large"))?,
     )
-    .ok_or_else(|| Error::InvalidRange("ntfs index entry offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ntfs index entry offset overflow"))?;
   let entry_end = node_offset
     .checked_add(
       usize::try_from(node_header.size)
-        .map_err(|_| Error::InvalidRange("ntfs index node size is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("ntfs index node size is too large"))?,
     )
-    .ok_or_else(|| Error::InvalidRange("ntfs index node size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ntfs index node size overflow"))?;
   if entry_end > data.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs index node extends past the available bytes".to_string(),
     ));
   }
@@ -108,28 +108,28 @@ fn collect_directory_entries_from_node(
     let entry = parse_index_entry_header(data, entry_offset, entry_end)?;
     let key_offset = entry_offset
       .checked_add(INDEX_ENTRY_HEADER_SIZE)
-      .ok_or_else(|| Error::InvalidRange("ntfs index key offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs index key offset overflow"))?;
     let key_end = key_offset
       .checked_add(usize::from(entry.key_size))
-      .ok_or_else(|| Error::InvalidRange("ntfs index key range overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs index key range overflow"))?;
     let entry_end_offset = entry_offset
       .checked_add(usize::from(entry.entry_size))
-      .ok_or_else(|| Error::InvalidRange("ntfs index entry range overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs index entry range overflow"))?;
     if key_end > entry_end_offset || entry_end_offset > entry_end {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs index entry exceeds the available node bytes".to_string(),
       ));
     }
     let value_size = usize::from(entry.entry_size)
       .checked_sub(INDEX_ENTRY_HEADER_SIZE + usize::from(entry.key_size))
-      .ok_or_else(|| Error::InvalidFormat("ntfs index entry key size is invalid".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("ntfs index entry key size is invalid"))?;
 
     if entry.flags & INDEX_ENTRY_FLAG_BRANCH != 0 {
       let child_vcn = read_branch_vcn(data, entry_end_offset, value_size)?;
       if visited_subnodes.insert(child_vcn) {
         let subnode = read_index_record(
           allocation.source.ok_or_else(|| {
-            Error::InvalidFormat(
+            Error::invalid_format(
               "ntfs $I30 index refers to index-allocation buffers, but $INDEX_ALLOCATION is missing"
                 .to_string(),
             )
@@ -153,7 +153,7 @@ fn collect_directory_entries_from_node(
       break;
     }
     if entry.key_size == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs index entry is missing its file-name key".to_string(),
       ));
     }
@@ -180,15 +180,15 @@ fn read_index_record(
 ) -> Result<Vec<u8>> {
   let offset = child_vcn
     .checked_mul(cluster_size)
-    .ok_or_else(|| Error::InvalidRange("ntfs index record offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ntfs index record offset overflow"))?;
   let raw = source.read_bytes_at(
     offset,
     usize::try_from(index_record_size)
-      .map_err(|_| Error::InvalidRange("ntfs index record size is too large".to_string()))?,
+      .map_err(|_| Error::invalid_range("ntfs index record size is too large"))?,
   )?;
   let fixed = apply_update_sequence(&raw)?;
   if fixed.len() < INDEX_RECORD_NODE_OFFSET || &fixed[0..4] != INDEX_RECORD_SIGNATURE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs index-allocation buffer has an invalid signature".to_string(),
     ));
   }
@@ -197,7 +197,7 @@ fn read_index_record(
 
 fn parse_index_root_header(data: &[u8]) -> Result<NtfsIndexRootHeader> {
   if data.len() < INDEX_ROOT_HEADER_SIZE + INDEX_NODE_HEADER_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs $INDEX_ROOT attribute is truncated".to_string(),
     ));
   }
@@ -211,14 +211,14 @@ fn parse_index_root_header(data: &[u8]) -> Result<NtfsIndexRootHeader> {
 fn parse_index_node_header(data: &[u8], node_offset: usize) -> Result<NtfsIndexNodeHeader> {
   let header_end = node_offset
     .checked_add(INDEX_NODE_HEADER_SIZE)
-    .ok_or_else(|| Error::InvalidRange("ntfs index node header overflow".to_string()))?;
-  let header = data.get(node_offset..header_end).ok_or_else(|| {
-    Error::InvalidFormat("ntfs index node header exceeds the available bytes".to_string())
-  })?;
+    .ok_or_else(|| Error::invalid_range("ntfs index node header overflow"))?;
+  let header = data
+    .get(node_offset..header_end)
+    .ok_or_else(|| Error::invalid_format("ntfs index node header exceeds the available bytes"))?;
   let values_offset = le_u32(&header[0..4]);
   let size = le_u32(&header[4..8]);
   if values_offset < INDEX_NODE_HEADER_SIZE as u32 || values_offset >= size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs index node values offset is invalid".to_string(),
     ));
   }
@@ -234,15 +234,15 @@ fn parse_index_entry_header(
 ) -> Result<NtfsIndexEntryHeader> {
   let header_end = entry_offset
     .checked_add(INDEX_ENTRY_HEADER_SIZE)
-    .ok_or_else(|| Error::InvalidRange("ntfs index entry header overflow".to_string()))?;
-  let header = data.get(entry_offset..header_end).ok_or_else(|| {
-    Error::InvalidFormat("ntfs index entry header exceeds the available bytes".to_string())
-  })?;
+    .ok_or_else(|| Error::invalid_range("ntfs index entry header overflow"))?;
+  let header = data
+    .get(entry_offset..header_end)
+    .ok_or_else(|| Error::invalid_format("ntfs index entry header exceeds the available bytes"))?;
   let entry_size = le_u16(&header[8..10]);
   if usize::from(entry_size) < INDEX_ENTRY_HEADER_SIZE
     || entry_offset + usize::from(entry_size) > entry_end
   {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs index entry size is invalid".to_string(),
     ));
   }
@@ -257,7 +257,7 @@ fn parse_index_entry_header(
 
 fn parse_index_file_name_key(data: &[u8]) -> Result<NtfsIndexFileNameKey> {
   if data.len() < 66 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs directory index file-name key is truncated".to_string(),
     ));
   }
@@ -275,21 +275,21 @@ fn parse_index_file_name_key(data: &[u8]) -> Result<NtfsIndexFileNameKey> {
 
 fn read_branch_vcn(data: &[u8], entry_end: usize, value_size: usize) -> Result<u64> {
   if value_size < 8 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs branch index entry is missing its child VCN".to_string(),
     ));
   }
   let value_offset = entry_end
     .checked_sub(8)
-    .ok_or_else(|| Error::InvalidRange("ntfs branch VCN offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ntfs branch VCN offset overflow"))?;
   Ok(le_u64(data.get(value_offset..entry_end).ok_or_else(
-    || Error::InvalidFormat("ntfs branch VCN exceeds the available bytes".to_string()),
+    || Error::invalid_format("ntfs branch VCN exceeds the available bytes"),
   )?))
 }
 
 fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
   if raw.len() < 48 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs index record is too small".to_string(),
     ));
   }
@@ -298,18 +298,18 @@ fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
   let update_sequence_offset = usize::from(le_u16(&fixed[4..6]));
   let update_sequence_count = usize::from(le_u16(&fixed[6..8]));
   if update_sequence_count == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs index update-sequence array must contain at least one element".to_string(),
     ));
   }
   let array_size = update_sequence_count
     .checked_mul(2)
-    .ok_or_else(|| Error::InvalidRange("ntfs index update-sequence overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ntfs index update-sequence overflow"))?;
   let update_sequence_end = update_sequence_offset
     .checked_add(array_size)
-    .ok_or_else(|| Error::InvalidRange("ntfs index update-sequence overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ntfs index update-sequence overflow"))?;
   if update_sequence_end > fixed.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs index update-sequence array exceeds the index record".to_string(),
     ));
   }
@@ -321,21 +321,21 @@ fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
   for index in 1..update_sequence_count {
     let sector_end = index
       .checked_mul(512)
-      .ok_or_else(|| Error::InvalidRange("ntfs index sector end overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs index sector end overflow"))?;
     if sector_end > fixed.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs index update-sequence array references data beyond the index record".to_string(),
       ));
     }
     if fixed[sector_end - 2..sector_end] != sequence {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs index update-sequence array does not match the protected sector suffix".to_string(),
       ));
     }
 
     let replacement_offset = update_sequence_offset
       .checked_add(index * 2)
-      .ok_or_else(|| Error::InvalidRange("ntfs index replacement offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs index replacement offset overflow"))?;
     fixed[sector_end - 2] = fixed[replacement_offset];
     fixed[sector_end - 1] = fixed[replacement_offset + 1];
   }
@@ -346,19 +346,19 @@ fn apply_update_sequence(raw: &[u8]) -> Result<Vec<u8>> {
 fn read_utf16le(bytes: &[u8], offset: usize, chars: usize, label: &str) -> Result<String> {
   let byte_len = chars
     .checked_mul(2)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} length overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} length overflow")))?;
   let end = offset
     .checked_add(byte_len)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} offset overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} offset overflow")))?;
   let slice = bytes
     .get(offset..end)
-    .ok_or_else(|| Error::InvalidFormat(format!("{label} exceeds the available bytes")))?;
+    .ok_or_else(|| Error::invalid_format(format!("{label} exceeds the available bytes")))?;
   let units = slice
     .chunks_exact(2)
     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
     .collect::<Vec<_>>();
   String::from_utf16(&units)
-    .map_err(|_| Error::InvalidFormat(format!("{label} is not valid UTF-16")))
+    .map_err(|_| Error::invalid_format(format!("{label} is not valid UTF-16")))
 }
 
 fn decode_file_reference(bytes: &[u8]) -> u64 {
@@ -392,7 +392,7 @@ fn align_up(value: usize, alignment: usize) -> Result<usize> {
   } else {
     value
       .checked_add(alignment - remainder)
-      .ok_or_else(|| Error::InvalidRange("ntfs index alignment overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ntfs index alignment overflow"))
   }
 }
 

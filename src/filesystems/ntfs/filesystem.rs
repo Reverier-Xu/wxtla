@@ -1,29 +1,29 @@
 //! Read-only NTFS filesystem surface.
 
 use std::{
-  collections::{BTreeMap, HashMap},
+  collections::HashMap,
   sync::{Arc, Mutex},
 };
 
 use super::{
   DESCRIPTOR,
-  attribute_list::{NtfsAttributeListEntry, parse_attribute_list},
   boot_sector::NtfsBootSector,
   index::read_directory_index_entries,
-  record::{
-    NtfsDataAttribute, NtfsDataAttributeValue, NtfsFileRecord, NtfsNonResidentAttribute,
-    parse_file_record,
+  record::{NtfsDataAttribute, NtfsFileRecord, parse_file_record},
+  reparse::NtfsReparsePointInfo,
+  stream::{
+    build_default_data_source, build_stream_data_source, classify_node, decode_node_id,
+    grouped_stream_attributes, i30_attributes, load_attribute_list_entries, read_file_record,
+    resident_index_root_data, resolve_attribute_list_record, resolve_bootstrap_mft_record,
+    stream_size,
   },
-  reparse::{NtfsReparsePointInfo, NtfsReparsePointKind},
-  runlist::{NtfsCompressedDataSource, NtfsDataRun, NtfsNonResidentDataSource, parse_runlist},
 };
 use crate::{
-  ByteSourceHandle, BytesDataSource, Error, NamespaceDirectoryEntry, NamespaceNodeId,
-  NamespaceNodeKind, NamespaceNodeRecord, Result, SourceHints, filesystems::FileSystem,
+  ByteSourceHandle, Error, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind,
+  NamespaceNodeRecord, Result, SourceHints, filesystems::FileSystem,
 };
 
 const ROOT_FILE_RECORD_NUMBER: u64 = 5;
-const DEFAULT_NTFS_COMPRESSION_UNIT_CLUSTERS: u64 = 16;
 
 pub struct NtfsFileSystem {
   source: ByteSourceHandle,
@@ -61,9 +61,8 @@ impl NtfsFileSystem {
     let file_record_size = boot_sector.file_record_size()?;
     let mft_offset = boot_sector.mft_offset()?;
     let first_record = read_file_record(source.as_ref(), mft_offset, file_record_size)?;
-    let mft_record = parse_file_record(&first_record, 0)?.ok_or_else(|| {
-      Error::InvalidFormat("ntfs master file table record is not in use".to_string())
-    })?;
+    let mft_record = parse_file_record(&first_record, 0)?
+      .ok_or_else(|| Error::invalid_format("ntfs master file table record is not in use"))?;
     let bootstrap_mft_stream =
       build_stream_data_source(source.clone(), &boot_sector, &mft_record.data_attributes)?;
     let resolved_mft_record = resolve_bootstrap_mft_record(
@@ -86,7 +85,7 @@ impl NtfsFileSystem {
     };
     let mft_stream_size = mft_stream.size()?;
     if mft_stream_size < file_record_size {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs master file table is smaller than one file record".to_string(),
       ));
     }
@@ -102,7 +101,7 @@ impl NtfsFileSystem {
     };
     let root_id = NamespaceNodeId::from_u64(ROOT_FILE_RECORD_NUMBER);
     if filesystem.lookup_node(&root_id).is_err() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs root directory record is missing".to_string(),
       ));
     }
@@ -134,7 +133,7 @@ impl NtfsFileSystem {
       .collect::<Vec<_>>();
     if attributes.is_empty() {
       let stream_name = name.unwrap_or("$DATA");
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "ntfs data stream {stream_name} was not found on node {}",
         decode_node_id(node_id)?
       )));
@@ -161,7 +160,7 @@ impl NtfsFileSystem {
     let record_number = decode_node_id(node_id)?;
     self
       .load_node(record_number)?
-      .ok_or_else(|| Error::NotFound(format!("ntfs node {record_number} was not found")))
+      .ok_or_else(|| Error::not_found(format!("ntfs node {record_number} was not found")))
   }
 
   fn load_node(&self, record_number: u64) -> Result<Option<Arc<NtfsNode>>> {
@@ -241,7 +240,7 @@ impl NtfsFileSystem {
       self.mft_stream.as_ref(),
       record_number
         .checked_mul(self.file_record_size)
-        .ok_or_else(|| Error::InvalidRange("ntfs MFT record offset overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("ntfs MFT record offset overflow"))?,
       self.file_record_size,
     )?;
     parse_file_record(&record_bytes, record_number)
@@ -285,7 +284,7 @@ impl NtfsFileSystem {
               .load_node(child_record_number)?
               .map(|child| child.record.kind)
               .ok_or_else(|| {
-                Error::NotFound(format!(
+                Error::not_found(format!(
                   "ntfs index entry points to missing record {child_record_number}"
                 ))
               })
@@ -345,7 +344,7 @@ impl FileSystem for NtfsFileSystem {
     let record_number = decode_node_id(directory_id)?;
     let node = self.lookup_node(directory_id)?;
     if node.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "ntfs node {record_number} is not a directory"
       )));
     }
@@ -357,7 +356,7 @@ impl FileSystem for NtfsFileSystem {
     let record_number = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
     if node.record.kind == NamespaceNodeKind::Directory {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "ntfs node {record_number} is not a readable file"
       )));
     }
@@ -370,456 +369,23 @@ impl FileSystem for NtfsFileSystem {
   }
 }
 
-fn grouped_stream_attributes(
-  data_attributes: &[NtfsDataAttribute],
-) -> BTreeMap<Option<String>, Vec<NtfsDataAttribute>> {
-  let mut streams = BTreeMap::<Option<String>, Vec<NtfsDataAttribute>>::new();
-  for attribute in data_attributes {
-    streams
-      .entry(attribute.name.clone())
-      .or_default()
-      .push(attribute.clone());
-  }
-  streams
-}
-
-fn resolve_bootstrap_mft_record(
-  source: ByteSourceHandle, boot_sector: &NtfsBootSector, bootstrap_mft_stream: ByteSourceHandle,
-  file_record_size: u64, record: &NtfsFileRecord,
-) -> Result<NtfsFileRecord> {
-  let attribute_list_entries = load_attribute_list_entries(source, boot_sector, record)?;
-  if attribute_list_entries.is_empty() {
-    return Ok(record.clone());
-  }
-
-  let record_count = bootstrap_mft_stream.size()? / file_record_size;
-  resolve_attribute_list_record(
-    0,
-    record,
-    &attribute_list_entries,
-    &mut |referenced_record| {
-      if referenced_record >= record_count {
-        return Ok(None);
-      }
-
-      let record_offset = referenced_record
-        .checked_mul(file_record_size)
-        .ok_or_else(|| Error::InvalidRange("ntfs MFT record offset overflow".to_string()))?;
-      let bytes = read_file_record(
-        bootstrap_mft_stream.as_ref(),
-        record_offset,
-        file_record_size,
-      )?;
-      parse_file_record(&bytes, referenced_record)
-    },
-  )
-}
-
-fn resolve_attribute_list_record<F>(
-  record_number: u64, record: &NtfsFileRecord, attribute_list_entries: &[NtfsAttributeListEntry],
-  load_record: &mut F,
-) -> Result<NtfsFileRecord>
-where
-  F: FnMut(u64) -> Result<Option<NtfsFileRecord>>, {
-  if attribute_list_entries.is_empty() {
-    return Ok(record.clone());
-  }
-
-  let mut resolved = record.clone();
-  resolved.attribute_list_entries = attribute_list_entries.to_vec();
-  let mut referenced_records = BTreeMap::<u64, ()>::new();
-  for entry in attribute_list_entries {
-    if entry.base_file_record != record_number {
-      referenced_records.insert(entry.base_file_record, ());
-    }
-  }
-
-  for referenced_record in referenced_records.keys() {
-    let extension = load_record(*referenced_record)?.ok_or_else(|| {
-      Error::InvalidFormat(format!(
-        "ntfs attribute list references missing file record {referenced_record}"
-      ))
-    })?;
-
-    for file_name in &extension.file_names {
-      if !resolved.file_names.contains(file_name) {
-        resolved.file_names.push(file_name.clone());
-      }
-    }
-    for data_attribute in &extension.data_attributes {
-      if !resolved.data_attributes.contains(data_attribute) {
-        resolved.data_attributes.push(data_attribute.clone());
-      }
-    }
-    for index_root_attribute in &extension.index_root_attributes {
-      if !resolved
-        .index_root_attributes
-        .contains(index_root_attribute)
-      {
-        resolved
-          .index_root_attributes
-          .push(index_root_attribute.clone());
-      }
-    }
-    for index_allocation_attribute in &extension.index_allocation_attributes {
-      if !resolved
-        .index_allocation_attributes
-        .contains(index_allocation_attribute)
-      {
-        resolved
-          .index_allocation_attributes
-          .push(index_allocation_attribute.clone());
-      }
-    }
-    for attribute_list_attribute in &extension.attribute_list_attributes {
-      if !resolved
-        .attribute_list_attributes
-        .contains(attribute_list_attribute)
-      {
-        resolved
-          .attribute_list_attributes
-          .push(attribute_list_attribute.clone());
-      }
-    }
-    if resolved.reparse_point.is_none() && extension.reparse_point.is_some() {
-      resolved.reparse_point = extension.reparse_point.clone();
-      resolved.has_reparse_point = true;
-    }
-  }
-
-  Ok(resolved)
-}
-
-fn load_attribute_list_entries(
-  source: ByteSourceHandle, boot_sector: &NtfsBootSector, record: &NtfsFileRecord,
-) -> Result<Vec<NtfsAttributeListEntry>> {
-  if record.attribute_list_attributes.is_empty() {
-    return Ok(record.attribute_list_entries.clone());
-  }
-  if !record.attribute_list_entries.is_empty() {
-    return Err(Error::InvalidFormat(
-      "ntfs file record stores $ATTRIBUTE_LIST as both resident and non-resident".to_string(),
-    ));
-  }
-
-  let data =
-    build_stream_data_source(source, boot_sector, &record.attribute_list_attributes)?.read_all()?;
-  parse_attribute_list(&data)
-}
-
-fn i30_attributes(attributes: &[NtfsDataAttribute]) -> Vec<&NtfsDataAttribute> {
-  let named = attributes
-    .iter()
-    .filter(|attribute| attribute.name.as_deref() == Some("$I30"))
-    .collect::<Vec<_>>();
-  if named.is_empty() {
-    attributes.iter().collect()
-  } else {
-    named
-  }
-}
-
-fn resident_index_root_data(attributes: &[NtfsDataAttribute]) -> Result<Option<Arc<[u8]>>> {
-  let attributes = i30_attributes(attributes);
-  if attributes.is_empty() {
-    return Ok(None);
-  }
-  if attributes.len() != 1 {
-    return Err(Error::InvalidFormat(
-      "ntfs fragmented $INDEX_ROOT attributes are not supported".to_string(),
-    ));
-  }
-
-  match &attributes[0].value {
-    NtfsDataAttributeValue::Resident(data) => Ok(Some(data.clone())),
-    NtfsDataAttributeValue::NonResident(_) => Err(Error::InvalidFormat(
-      "ntfs non-resident $INDEX_ROOT attributes are not supported".to_string(),
-    )),
-  }
-}
-
-fn classify_node(record: &NtfsFileRecord) -> Result<(NamespaceNodeKind, u64)> {
-  if record.is_directory() {
-    let kind = match record.reparse_point.as_ref().map(|info| info.kind) {
-      Some(NtfsReparsePointKind::MountPoint | NtfsReparsePointKind::SymbolicLink) => {
-        NamespaceNodeKind::Symlink
-      }
-      _ => NamespaceNodeKind::Directory,
-    };
-    return Ok((kind, 0));
-  }
-
-  let size = default_stream_size(&record.data_attributes)?;
-  let kind = match record.reparse_point.as_ref().map(|info| info.kind) {
-    Some(NtfsReparsePointKind::MountPoint | NtfsReparsePointKind::SymbolicLink) => {
-      NamespaceNodeKind::Symlink
-    }
-    _ => NamespaceNodeKind::File,
-  };
-  Ok((kind, size))
-}
-
-fn build_default_data_source(
-  source: ByteSourceHandle, boot_sector: &NtfsBootSector, data_attributes: &[NtfsDataAttribute],
-) -> Result<ByteSourceHandle> {
-  let data_attributes = data_attributes
-    .iter()
-    .filter(|attribute| attribute.name.is_none())
-    .cloned()
-    .collect::<Vec<_>>();
-  build_stream_data_source(source, boot_sector, &data_attributes)
-}
-
-fn default_stream_size(data_attributes: &[NtfsDataAttribute]) -> Result<u64> {
-  let data_attributes = data_attributes
-    .iter()
-    .filter(|attribute| attribute.name.is_none())
-    .cloned()
-    .collect::<Vec<_>>();
-
-  stream_size(&data_attributes)
-}
-
-fn stream_size(attributes: &[NtfsDataAttribute]) -> Result<u64> {
-  if attributes.is_empty() {
-    return Ok(0);
-  }
-
-  let resident = attributes
-    .iter()
-    .map(|attribute| match &attribute.value {
-      NtfsDataAttributeValue::Resident(data) => Some(data.len()),
-      NtfsDataAttributeValue::NonResident(_) => None,
-    })
-    .collect::<Option<Vec<_>>>();
-  if let Some(mut resident) = resident {
-    if resident.len() != 1 {
-      return Err(Error::InvalidFormat(
-        "ntfs fragmented resident data attributes are not supported".to_string(),
-      ));
-    }
-    return u64::try_from(resident.remove(0))
-      .map_err(|_| Error::InvalidRange("ntfs resident data size is too large".to_string()));
-  }
-
-  let mut non_resident = attributes
-    .iter()
-    .map(|attribute| match &attribute.value {
-      NtfsDataAttributeValue::Resident(_) => Err(Error::InvalidFormat(
-        "ntfs mixed resident and non-resident data attributes are not supported".to_string(),
-      )),
-      NtfsDataAttributeValue::NonResident(non_resident) => Ok(non_resident),
-    })
-    .collect::<Result<Vec<_>>>()?;
-  non_resident.sort_by_key(|attribute| attribute.first_vcn);
-
-  let stream_size = primary_non_resident_sizes(non_resident.iter().copied()).0;
-  let mut expected_vcn = 0u64;
-  for attribute in non_resident {
-    if attribute.first_vcn != expected_vcn {
-      return Err(Error::InvalidFormat(
-        "ntfs non-resident attribute chains must have continuous VCN ranges".to_string(),
-      ));
-    }
-    expected_vcn = next_vcn_after_attribute(attribute)?;
-  }
-
-  Ok(stream_size)
-}
-
-fn build_stream_data_source(
-  source: ByteSourceHandle, boot_sector: &NtfsBootSector, attributes: &[NtfsDataAttribute],
-) -> Result<ByteSourceHandle> {
-  if attributes.is_empty() {
-    return Ok(
-      Arc::new(BytesDataSource::new(Arc::<[u8]>::from(Vec::<u8>::new()))) as ByteSourceHandle,
-    );
-  }
-
-  let resident = attributes
-    .iter()
-    .map(|attribute| match &attribute.value {
-      NtfsDataAttributeValue::Resident(data) => Some(data.clone()),
-      NtfsDataAttributeValue::NonResident(_) => None,
-    })
-    .collect::<Option<Vec<_>>>();
-  if let Some(mut resident) = resident {
-    if resident.len() != 1 {
-      return Err(Error::InvalidFormat(
-        "ntfs fragmented resident data attributes are not supported".to_string(),
-      ));
-    }
-    return Ok(Arc::new(BytesDataSource::new(resident.remove(0))) as ByteSourceHandle);
-  }
-
-  let cluster_size = boot_sector.cluster_size()?;
-  let mut non_resident = attributes
-    .iter()
-    .map(|attribute| match &attribute.value {
-      NtfsDataAttributeValue::Resident(_) => unreachable!(),
-      NtfsDataAttributeValue::NonResident(non_resident) => {
-        Ok((attribute.data_flags, non_resident.clone()))
-      }
-    })
-    .collect::<Result<Vec<_>>>()?;
-  non_resident.sort_by_key(|(_, attribute)| attribute.first_vcn);
-
-  let (stream_size, valid_size) =
-    primary_non_resident_sizes(non_resident.iter().map(|(_, attribute)| attribute));
-  let compression_unit_size = compression_unit_size(
-    non_resident
-      .iter()
-      .map(|(data_flags, attribute)| (*data_flags, attribute)),
-    cluster_size,
-  )?;
-  let mut expected_vcn = 0u64;
-  let mut runs = Vec::<NtfsDataRun>::new();
-
-  for (_, attribute) in non_resident {
-    if attribute.first_vcn != expected_vcn {
-      return Err(Error::InvalidFormat(
-        "ntfs non-resident attribute chains must have continuous VCN ranges".to_string(),
-      ));
-    }
-
-    let base_logical_offset = attribute
-      .first_vcn
-      .checked_mul(cluster_size)
-      .ok_or_else(|| Error::InvalidRange("ntfs VCN offset overflow".to_string()))?;
-    runs.extend(parse_attribute_runs(
-      &attribute,
-      cluster_size,
-      base_logical_offset,
-    )?);
-    expected_vcn = next_vcn_after_attribute(&attribute)?;
-  }
-
-  let runs = Arc::from(runs.into_boxed_slice());
-  let valid_size = valid_size.min(stream_size);
-
-  if let Some(compression_unit_size) = compression_unit_size {
-    return Ok(Arc::new(NtfsCompressedDataSource::new(
-      source,
-      runs,
-      stream_size,
-      valid_size,
-      cluster_size,
-      compression_unit_size,
-    )) as ByteSourceHandle);
-  }
-
-  Ok(Arc::new(NtfsNonResidentDataSource::new(
-    source,
-    runs,
-    stream_size,
-    valid_size,
-  )) as ByteSourceHandle)
-}
-
-fn primary_non_resident_sizes<'a>(
-  attributes: impl IntoIterator<Item = &'a NtfsNonResidentAttribute>,
-) -> (u64, u64) {
-  attributes
-    .into_iter()
-    .find(|attribute| attribute.first_vcn == 0)
-    .map_or((0, 0), |attribute| {
-      (attribute.data_size, attribute.valid_data_size)
-    })
-}
-
-fn next_vcn_after_attribute(attribute: &NtfsNonResidentAttribute) -> Result<u64> {
-  if attribute.first_vcn == 0 && attribute.last_vcn == u64::MAX && attribute.data_size == 0 {
-    return Ok(0);
-  }
-
-  attribute
-    .last_vcn
-    .checked_add(1)
-    .ok_or_else(|| Error::InvalidRange("ntfs VCN range overflow".to_string()))
-}
-
-fn compression_unit_size<'a>(
-  attributes: impl IntoIterator<Item = (u16, &'a NtfsNonResidentAttribute)>, cluster_size: u64,
-) -> Result<Option<u64>> {
-  let mut compression_unit_clusters = None;
-
-  for (data_flags, attribute) in attributes {
-    let compression_method = data_flags & 0x00FF;
-    if compression_method == 0 {
-      continue;
-    }
-    if compression_method != 1 {
-      return Err(Error::InvalidFormat(format!(
-        "unsupported ntfs compression method 0x{compression_method:04x}"
-      )));
-    }
-
-    let unit_clusters = if attribute.compression_unit == 0 {
-      DEFAULT_NTFS_COMPRESSION_UNIT_CLUSTERS
-    } else {
-      1u64
-        .checked_shl(u32::from(attribute.compression_unit))
-        .ok_or_else(|| Error::InvalidRange("ntfs compression unit overflow".to_string()))?
-    };
-    if let Some(current) = compression_unit_clusters {
-      if current != unit_clusters {
-        return Err(Error::InvalidFormat(
-          "ntfs compressed attribute chains must use a consistent compression unit".to_string(),
-        ));
-      }
-    } else {
-      compression_unit_clusters = Some(unit_clusters);
-    }
-  }
-
-  compression_unit_clusters
-    .map(|unit_clusters| {
-      unit_clusters
-        .checked_mul(cluster_size)
-        .ok_or_else(|| Error::InvalidRange("ntfs compression unit size overflow".to_string()))
-    })
-    .transpose()
-}
-
-fn parse_attribute_runs(
-  attribute: &NtfsNonResidentAttribute, cluster_size: u64, base_logical_offset: u64,
-) -> Result<Vec<NtfsDataRun>> {
-  let mut runs = parse_runlist(attribute.runlist.as_ref(), cluster_size)?;
-  for run in &mut runs {
-    run.logical_offset = run
-      .logical_offset
-      .checked_add(base_logical_offset)
-      .ok_or_else(|| Error::InvalidRange("ntfs run logical offset overflow".to_string()))?;
-  }
-  Ok(runs)
-}
-
-fn read_file_record(
-  source: &dyn crate::ByteSource, offset: u64, record_size: u64,
-) -> Result<Vec<u8>> {
-  let record_size = usize::try_from(record_size)
-    .map_err(|_| Error::InvalidRange("ntfs file-record size is too large".to_string()))?;
-  source.read_bytes_at(offset, record_size)
-}
-
-fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
-  let bytes = node_id.as_bytes();
-  if bytes.len() != 8 {
-    return Err(Error::InvalidSourceReference(
-      "ntfs node identifiers must be encoded as 8-byte little-endian values".to_string(),
-    ));
-  }
-  let mut raw = [0u8; 8];
-  raw.copy_from_slice(bytes);
-  Ok(u64::from_le_bytes(raw))
-}
-
 #[cfg(test)]
 mod tests {
   use std::{collections::HashMap, sync::Arc};
 
   use super::*;
-  use crate::filesystems::ntfs::NtfsAttributeListEntry;
+  use crate::{
+    ByteSourceHandle, BytesDataSource,
+    filesystems::ntfs::{
+      NtfsAttributeListEntry,
+      record::{NtfsDataAttributeValue, NtfsFileNameAttribute, NtfsNonResidentAttribute},
+      reparse::NtfsReparsePointKind,
+      stream::{
+        build_stream_data_source, classify_node, load_attribute_list_entries,
+        resolve_attribute_list_record, resolve_bootstrap_mft_record, stream_size,
+      },
+    },
+  };
 
   #[derive(Clone, Copy, Default)]
   struct NonResidentOptions {
@@ -986,7 +552,7 @@ mod tests {
     let extension_record = NtfsFileRecord {
       flags: 0x0001,
       base_record_number: Some(5),
-      file_names: vec![super::super::record::NtfsFileNameAttribute {
+      file_names: vec![NtfsFileNameAttribute {
         attribute_id: 2,
         parent_record_number: 5,
         name: "merged.txt".to_string(),

@@ -61,20 +61,20 @@ impl QcowHeader {
   /// Parse a QCOW header from an in-memory prefix.
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() < QCOW_V1_HEADER_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "qcow header is too small: {}",
         data.len()
       )));
     }
     if &data[0..4] != super::constants::FILE_HEADER_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "qcow file header signature is missing".to_string(),
       ));
     }
 
     let version = read_u32_be(data, 4)?;
     if version != QCOW_VERSION_1 && version != QCOW_VERSION_2 && version != QCOW_VERSION_3 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported qcow version: {version}"
       )));
     }
@@ -87,39 +87,43 @@ impl QcowHeader {
       read_u32_be(data, 100)?
     };
     let header_size_usize = usize::try_from(header_size)
-      .map_err(|_| Error::InvalidRange("qcow header size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("qcow header size is too large"))?;
     if header_size_usize > data.len() {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported qcow header size: {header_size}"
       )));
     }
     if version == QCOW_VERSION_3 && header_size_usize < QCOW_V3_HEADER_MIN_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported qcow header size: {header_size}"
       )));
     }
 
     let cluster_bits = if version == QCOW_VERSION_1 {
-      u32::from(*data.get(32).ok_or_else(|| {
-        Error::InvalidFormat("qcow v1 header is missing cluster bits".to_string())
-      })?)
+      u32::from(
+        *data
+          .get(32)
+          .ok_or_else(|| Error::invalid_format("qcow v1 header is missing cluster bits"))?,
+      )
     } else {
       read_u32_be(data, 20)?
     };
     if !SUPPORTED_CLUSTER_BITS.contains(&cluster_bits) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported qcow cluster bit count: {cluster_bits}"
       )));
     }
 
     let l2_table_bits = if version == QCOW_VERSION_1 {
-      u32::from(*data.get(33).ok_or_else(|| {
-        Error::InvalidFormat("qcow v1 header is missing l2 table bits".to_string())
-      })?)
+      u32::from(
+        *data
+          .get(33)
+          .ok_or_else(|| Error::invalid_format("qcow v1 header is missing l2 table bits"))?,
+      )
     } else {
       cluster_bits
         .checked_sub(3)
-        .ok_or_else(|| Error::InvalidFormat("qcow cluster bits are too small".to_string()))?
+        .ok_or_else(|| Error::invalid_format("qcow cluster bits are too small"))?
     };
 
     let encryption_method = if version == QCOW_VERSION_1 {
@@ -128,7 +132,7 @@ impl QcowHeader {
       read_u32_be(data, 32)?
     };
     if encryption_method != QCOW_CRYPT_NONE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported qcow encryption method: {encryption_method}"
       )));
     }
@@ -140,7 +144,7 @@ impl QcowHeader {
         QCOW_COMPRESSION_ZLIB
       };
     if compression_method != QCOW_COMPRESSION_ZLIB && compression_method != QCOW_COMPRESSION_ZSTD {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported qcow compression method: {compression_method}"
       )));
     }
@@ -151,7 +155,7 @@ impl QcowHeader {
       SUPPORTED_REFCOUNT_ORDER
     };
     if refcount_order != SUPPORTED_REFCOUNT_ORDER {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported qcow refcount order: {refcount_order}"
       )));
     }
@@ -215,14 +219,14 @@ impl QcowHeader {
   pub fn cluster_size(&self) -> Result<u64> {
     1u64
       .checked_shl(self.cluster_bits)
-      .ok_or_else(|| Error::InvalidRange("qcow cluster size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("qcow cluster size overflow"))
   }
 
   /// Return the number of L2 entries per table for standard 8-byte entries.
   pub fn l2_entry_count(&self) -> Result<u64> {
     1u64
       .checked_shl(self.l2_table_bits)
-      .ok_or_else(|| Error::InvalidRange("qcow l2 entry count overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("qcow l2 entry count overflow"))
   }
 
   /// Return `true` when the image uses an external data file.
@@ -261,30 +265,30 @@ fn compute_v1_l1_entry_count(
 ) -> Result<u32> {
   let cluster_size = 1u64
     .checked_shl(cluster_bits)
-    .ok_or_else(|| Error::InvalidRange("qcow v1 cluster size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("qcow v1 cluster size overflow"))?;
   let l2_entry_count = 1u64
     .checked_shl(l2_table_bits)
-    .ok_or_else(|| Error::InvalidRange("qcow v1 l2 entry count overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("qcow v1 l2 entry count overflow"))?;
   let guest_size_per_l1_entry = cluster_size
     .checked_mul(l2_entry_count)
-    .ok_or_else(|| Error::InvalidRange("qcow v1 l1 coverage overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("qcow v1 l1 coverage overflow"))?;
   let l1_entry_count = virtual_size.div_ceil(guest_size_per_l1_entry);
 
   u32::try_from(l1_entry_count)
-    .map_err(|_| Error::InvalidRange("qcow v1 l1 entry count is too large".to_string()))
+    .map_err(|_| Error::invalid_range("qcow v1 l1 entry count is too large"))
 }
 
 fn read_u32_be(data: &[u8], offset: usize) -> Result<u32> {
   let bytes = data
     .get(offset..offset + 4)
-    .ok_or_else(|| Error::InvalidFormat(format!("qcow field at offset {offset} is truncated")))?;
+    .ok_or_else(|| Error::invalid_format(format!("qcow field at offset {offset} is truncated")))?;
   Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn read_u64_be(data: &[u8], offset: usize) -> Result<u64> {
   let bytes = data
     .get(offset..offset + 8)
-    .ok_or_else(|| Error::InvalidFormat(format!("qcow field at offset {offset} is truncated")))?;
+    .ok_or_else(|| Error::invalid_format(format!("qcow field at offset {offset} is truncated")))?;
   Ok(u64::from_be_bytes([
     bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
   ]))

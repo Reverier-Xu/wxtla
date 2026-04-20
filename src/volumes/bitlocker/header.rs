@@ -27,12 +27,12 @@ pub struct BitlockerVolumeHeader {
 impl BitlockerVolumeHeader {
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() < 512 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker volume header must be at least 512 bytes".to_string(),
       ));
     }
     if data[510..512] != [0x55, 0xAA] {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker volume header sector signature is missing".to_string(),
       ));
     }
@@ -42,20 +42,20 @@ impl BitlockerVolumeHeader {
     } else if &data[3..11] == SIGNATURE_TO_GO {
       (BitlockerHeaderFlavor::ToGo, 424usize, 440usize)
     } else {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker header signature is missing".to_string(),
       ));
     };
 
     let bytes_per_sector = u16::from_le_bytes([data[11], data[12]]);
     if bytes_per_sector == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker bytes-per-sector must be non-zero".to_string(),
       ));
     }
     let sectors_per_cluster = data[13];
     if sectors_per_cluster == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker sectors-per-cluster must be non-zero".to_string(),
       ));
     }
@@ -77,13 +77,15 @@ impl BitlockerVolumeHeader {
     };
     let volume_size = total_number_of_sectors
       .checked_mul(u64::from(bytes_per_sector))
-      .ok_or_else(|| Error::InvalidRange("bitlocker volume size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("bitlocker volume size overflow"))?;
     let mut metadata_offsets = [0u64; 3];
     for (index, slot) in metadata_offsets.iter_mut().enumerate() {
       let start = metadata_offset_base + index * 8;
-      *slot = u64::from_le_bytes(data[start..start + 8].try_into().map_err(|_| {
-        Error::InvalidFormat("bitlocker metadata offset length mismatch".to_string())
-      })?);
+      *slot = u64::from_le_bytes(
+        data[start..start + 8]
+          .try_into()
+          .map_err(|_| Error::invalid_format("bitlocker metadata offset length mismatch"))?,
+      );
     }
     let mut version = match flavor {
       BitlockerHeaderFlavor::Fixed => 7,
@@ -99,19 +101,19 @@ impl BitlockerVolumeHeader {
       if metadata_lcn != 0 {
         let cluster_size = u64::from(bytes_per_sector)
           .checked_mul(u64::from(sectors_per_cluster))
-          .ok_or_else(|| Error::InvalidRange("bitlocker cluster size overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("bitlocker cluster size overflow"))?;
         metadata_offsets[0] = metadata_lcn
           .checked_mul(cluster_size)
-          .ok_or_else(|| Error::InvalidRange("bitlocker metadata offset overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("bitlocker metadata offset overflow"))?;
         metadata_size = (16 * 1024u64)
           .div_ceil(cluster_size)
           .checked_mul(cluster_size)
-          .ok_or_else(|| Error::InvalidRange("bitlocker metadata size overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("bitlocker metadata size overflow"))?;
         version = 6;
       }
     }
     if metadata_offsets.iter().all(|offset| *offset == 0) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker headers must contain at least one metadata block offset".to_string(),
       ));
     }
@@ -126,7 +128,7 @@ impl BitlockerVolumeHeader {
       version,
       identifier: data[identifier_offset..identifier_offset + 16]
         .try_into()
-        .map_err(|_| Error::InvalidFormat("bitlocker identifier length mismatch".to_string()))?,
+        .map_err(|_| Error::invalid_format("bitlocker identifier length mismatch"))?,
       metadata_offsets,
     })
   }

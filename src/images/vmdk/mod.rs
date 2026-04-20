@@ -8,6 +8,7 @@ mod driver;
 mod header;
 mod image;
 mod parser;
+mod resolve;
 
 pub use cowd_header::VmdkCowdHeader;
 pub use descriptor::{
@@ -65,9 +66,8 @@ impl FormatProbe for VmdkDescriptorProbe {
 
     let bytes = context.read_bytes_at(
       0,
-      usize::try_from(size).map_err(|_| {
-        crate::Error::InvalidRange("vmdk descriptor probe size is too large".to_string())
-      })?,
+      usize::try_from(size)
+        .map_err(|_| crate::Error::invalid_range("vmdk descriptor probe size is too large"))?,
     )?;
     let Ok(descriptor) = VmdkDescriptor::from_bytes(&bytes) else {
       return Ok(ProbeResult::rejected());

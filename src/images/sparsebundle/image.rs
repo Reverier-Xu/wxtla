@@ -45,21 +45,21 @@ struct SparseBundleBandCacheState {
 
 impl SparseBundleImage {
   pub fn open(_source: ByteSourceHandle) -> Result<Self> {
-    Err(Error::InvalidSourceReference(
+    Err(Error::invalid_source_reference(
       "sparsebundle images require source hints, a resolver, and a source identity".to_string(),
     ))
   }
 
   pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let source_identity = hints.source_identity().ok_or_else(|| {
-      Error::InvalidSourceReference(
+      Error::invalid_source_reference(
         "sparsebundle images require a source identity hint".to_string(),
       )
     })?;
     let parsed = parse_info_plist(&source.read_all()?)?;
     let band_count = parsed.media_size.div_ceil(parsed.band_size);
     let parent = source_identity.logical_path().parent().ok_or_else(|| {
-      Error::InvalidSourceReference(
+      Error::invalid_source_reference(
         "sparsebundle source identity must have a lexical parent path".to_string(),
       )
     })?;
@@ -71,7 +71,7 @@ impl SparseBundleImage {
       })
     } else {
       let resolver = hints.resolver().ok_or_else(|| {
-        Error::InvalidSourceReference(
+        Error::invalid_source_reference(
           "sparsebundle images require a related-source resolver".to_string(),
         )
       })?;
@@ -87,7 +87,7 @@ impl SparseBundleImage {
         if let Some(band_source) = band {
           let size = band_source.size()?;
           if size > parsed.band_size {
-            return Err(Error::InvalidFormat(
+            return Err(Error::invalid_format(
               "sparsebundle band file exceeds the declared band size".to_string(),
             ));
           }
@@ -167,7 +167,7 @@ impl SparseBundleLazyBands {
       .map(|source| {
         let size = source.size()?;
         if size > band_size {
-          return Err(Error::InvalidFormat(
+          return Err(Error::invalid_format(
             "sparsebundle band file exceeds the declared band size".to_string(),
           ));
         }
@@ -188,7 +188,7 @@ impl ByteSource for SparseBundleImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("sparsebundle read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("sparsebundle read offset overflow"))?;
       if absolute_offset >= self.media_size {
         break;
       }
@@ -200,7 +200,7 @@ impl ByteSource for SparseBundleImage {
           .min(self.media_size - absolute_offset)
           .min((buf.len() - copied) as u64),
       )
-      .map_err(|_| Error::InvalidRange("sparsebundle read chunk is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("sparsebundle read chunk is too large"))?;
 
       match self.band_source(band_index)? {
         Some(band) => {
@@ -208,7 +208,7 @@ impl ByteSource for SparseBundleImage {
             buf[copied..copied + available].fill(0);
           } else {
             let readable = usize::try_from(band.size - within_band)
-              .map_err(|_| Error::InvalidRange("sparsebundle band tail is too large".to_string()))?
+              .map_err(|_| Error::invalid_range("sparsebundle band tail is too large"))?
               .min(available);
             band
               .source
@@ -283,7 +283,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

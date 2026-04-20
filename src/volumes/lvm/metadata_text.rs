@@ -43,21 +43,21 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
     .filter(|(_, node)| is_volume_group_node(node))
     .collect::<Vec<_>>();
   if vg_candidates.len() != 1 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "unsupported LVM metadata root layout".to_string(),
     ));
   }
 
   let (vg_name, vg_node) = vg_candidates
     .pop()
-    .ok_or_else(|| Error::InvalidFormat("empty LVM metadata".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("empty LVM metadata"))?;
   let vg = as_object(&vg_node)?;
 
   let seqno = get_number(vg, "seqno")?;
   let extent_size_sectors = get_number(vg, "extent_size")?;
   let extent_size_bytes = extent_size_sectors
     .checked_mul(512)
-    .ok_or_else(|| Error::InvalidRange("LVM extent size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("LVM extent size overflow"))?;
 
   let mut physical_volumes = Vec::new();
   if let Some(pv_section) = vg.get("physical_volumes") {
@@ -79,7 +79,7 @@ pub(super) fn parse_lvm_metadata(text: &str) -> Result<ParsedMetadata> {
   let mut logical_volumes = Vec::new();
   let lv_section = vg
     .get("logical_volumes")
-    .ok_or_else(|| Error::InvalidFormat("missing logical_volumes section".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("missing logical_volumes section"))?;
   let lvs = as_object(lv_section)?;
   logical_volumes.reserve(lvs.len());
   for (lv_name, lv_node) in lvs {
@@ -134,10 +134,10 @@ fn is_volume_group_node(node: &Node) -> bool {
 fn parse_segment_stripes(segment: &BTreeMap<String, Node>) -> Result<Vec<MetadataStripe>> {
   let stripes = segment
     .get("stripes")
-    .ok_or_else(|| Error::InvalidFormat("missing stripes in LVM segment".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("missing stripes in LVM segment"))?;
   let values = as_array(stripes)?;
   if values.len() % 2 != 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "invalid stripes list in LVM segment".to_string(),
     ));
   }
@@ -210,7 +210,7 @@ fn tokenize(text: &str) -> Result<Vec<Token>> {
           if byte == b'\\' {
             index += 1;
             if index >= bytes.len() {
-              return Err(Error::InvalidFormat(
+              return Err(Error::invalid_format(
                 "unterminated escape in LVM metadata string".to_string(),
               ));
             }
@@ -240,12 +240,11 @@ fn tokenize(text: &str) -> Result<Vec<Token>> {
           while index < bytes.len() && bytes[index].is_ascii_digit() {
             index += 1;
           }
-          let text = std::str::from_utf8(&bytes[start..index]).map_err(|_| {
-            Error::InvalidFormat("invalid numeric token in LVM metadata".to_string())
-          })?;
+          let text = std::str::from_utf8(&bytes[start..index])
+            .map_err(|_| Error::invalid_format("invalid numeric token in LVM metadata"))?;
           let value = text
             .parse::<i128>()
-            .map_err(|_| Error::InvalidFormat("invalid number in LVM metadata".to_string()))?;
+            .map_err(|_| Error::invalid_format("invalid number in LVM metadata"))?;
           tokens.push(Token::Number(value));
         } else {
           let start = index;
@@ -257,7 +256,7 @@ fn tokenize(text: &str) -> Result<Vec<Token>> {
             index += 1;
           }
           let ident = std::str::from_utf8(&bytes[start..index])
-            .map_err(|_| Error::InvalidFormat("invalid identifier in LVM metadata".to_string()))?;
+            .map_err(|_| Error::invalid_format("invalid identifier in LVM metadata"))?;
           tokens.push(Token::Ident(ident.to_string()));
         }
       }
@@ -283,7 +282,7 @@ fn parse_root(tokens: &[Token]) -> Result<BTreeMap<String, Node>> {
       let _ = parser.parse_value()?;
       continue;
     }
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unexpected LVM metadata token at root index {}: expected '{{' or '=', got {}",
       parser.cursor,
       parser.describe_current_token()
@@ -325,7 +324,7 @@ impl Parser<'_> {
 
   fn parse_value(&mut self) -> Result<Node> {
     let Some(token) = self.tokens.get(self.cursor) else {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unexpected end of LVM metadata".to_string(),
       ));
     };
@@ -358,7 +357,7 @@ impl Parser<'_> {
         }
         Ok(Node::Array(values))
       }
-      _ => Err(Error::InvalidFormat(format!(
+      _ => Err(Error::invalid_format(format!(
         "unsupported LVM metadata value token at index {}: {}",
         self.cursor,
         self.describe_current_token()
@@ -368,7 +367,7 @@ impl Parser<'_> {
 
   fn expect_ident(&mut self) -> Result<String> {
     let Some(token) = self.tokens.get(self.cursor) else {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unexpected end of LVM metadata".to_string(),
       ));
     };
@@ -377,7 +376,7 @@ impl Parser<'_> {
         self.cursor += 1;
         Ok(value.clone())
       }
-      _ => Err(Error::InvalidFormat(format!(
+      _ => Err(Error::invalid_format(format!(
         "expected LVM metadata identifier at index {}, got {}",
         self.cursor,
         self.describe_current_token()
@@ -390,7 +389,7 @@ impl Parser<'_> {
       self.cursor += 1;
       return Ok(());
     }
-    Err(Error::InvalidFormat(format!(
+    Err(Error::invalid_format(format!(
       "unexpected LVM metadata token at index {}: expected {:?}, got {}",
       self.cursor,
       kind,
@@ -420,7 +419,7 @@ impl Parser<'_> {
 fn as_object(node: &Node) -> Result<&BTreeMap<String, Node>> {
   match node {
     Node::Object(value) => Ok(value),
-    _ => Err(Error::InvalidFormat(
+    _ => Err(Error::invalid_format(
       "expected object in LVM metadata".to_string(),
     )),
   }
@@ -429,7 +428,7 @@ fn as_object(node: &Node) -> Result<&BTreeMap<String, Node>> {
 fn as_array(node: &Node) -> Result<&[Node]> {
   match node {
     Node::Array(value) => Ok(value),
-    _ => Err(Error::InvalidFormat(
+    _ => Err(Error::invalid_format(
       "expected array in LVM metadata".to_string(),
     )),
   }
@@ -438,7 +437,7 @@ fn as_array(node: &Node) -> Result<&[Node]> {
 fn as_string(node: &Node) -> Result<&str> {
   match node {
     Node::String(value) => Ok(value),
-    _ => Err(Error::InvalidFormat(
+    _ => Err(Error::invalid_format(
       "expected string in LVM metadata".to_string(),
     )),
   }
@@ -446,10 +445,9 @@ fn as_string(node: &Node) -> Result<&str> {
 
 fn as_number(node: &Node) -> Result<u64> {
   match node {
-    Node::Number(value) => u64::try_from(*value).map_err(|_| {
-      Error::InvalidFormat("expected a non-negative number in LVM metadata".to_string())
-    }),
-    _ => Err(Error::InvalidFormat(
+    Node::Number(value) => u64::try_from(*value)
+      .map_err(|_| Error::invalid_format("expected a non-negative number in LVM metadata")),
+    _ => Err(Error::invalid_format(
       "expected number in LVM metadata".to_string(),
     )),
   }
@@ -458,7 +456,7 @@ fn as_number(node: &Node) -> Result<u64> {
 fn get_number(map: &BTreeMap<String, Node>, key: &str) -> Result<u64> {
   let value = map
     .get(key)
-    .ok_or_else(|| Error::InvalidFormat(format!("missing key in LVM metadata: {key}")))?;
+    .ok_or_else(|| Error::invalid_format(format!("missing key in LVM metadata: {key}")))?;
   as_number(value)
 }
 

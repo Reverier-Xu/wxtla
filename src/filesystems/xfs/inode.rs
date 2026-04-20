@@ -22,10 +22,10 @@ pub(crate) struct XfsInode {
 impl XfsInode {
   pub(crate) fn parse(data: &[u8]) -> Result<Self> {
     if data.len() < 100 {
-      return Err(Error::InvalidFormat("xfs inode too small".to_string()));
+      return Err(Error::invalid_format("xfs inode too small"));
     }
     if &data[0..2] != INODE_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid xfs inode signature".to_string(),
       ));
     }
@@ -34,7 +34,7 @@ impl XfsInode {
     let format_version = data[4];
     let fork_type = data[5];
     if !matches!(format_version, 1..=3) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported xfs inode format version: {format_version}"
       )));
     }
@@ -57,7 +57,7 @@ impl XfsInode {
       100usize
     };
     if data.len() < core_size {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "xfs inode core is truncated".to_string(),
       ));
     }
@@ -65,7 +65,7 @@ impl XfsInode {
     let mut data_fork_size = data.len() - core_size;
     if attr_fork_offset > 0 {
       if attr_fork_offset >= data_fork_size {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "invalid xfs inode attribute fork offset".to_string(),
         ));
       }
@@ -75,7 +75,7 @@ impl XfsInode {
     let data_fork = data[core_size..core_size + data_fork_size].to_vec();
     let inline_data = if fork_type == FORK_INLINE {
       if size as usize > data_fork.len() {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "xfs inline data size is out of bounds".to_string(),
         ));
       }

@@ -56,19 +56,19 @@ pub fn parse(source: ByteSourceHandle) -> Result<ParsedQcow> {
 
 fn validate_supported_features(header: &QcowHeader) -> Result<()> {
   if header.encryption_method != QCOW_CRYPT_NONE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "encrypted qcow images are not supported yet".to_string(),
     ));
   }
   if header.uses_extended_l2() && header.cluster_bits < 14 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "qcow extended l2 entries require cluster sizes of at least 16384 bytes".to_string(),
     ));
   }
   if (header.incompatible_features & QCOW_INCOMPAT_COMPRESSION) != 0
     && header.compression_method != QCOW_COMPRESSION_ZSTD
   {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported qcow compressed-cluster method: {}",
       header.compression_method
     )));
@@ -76,18 +76,18 @@ fn validate_supported_features(header: &QcowHeader) -> Result<()> {
   if (header.incompatible_features & QCOW_INCOMPAT_COMPRESSION) == 0
     && header.compression_method != QCOW_COMPRESSION_ZLIB
   {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "qcow default compression mode must use zlib".to_string(),
     ));
   }
   if header.uses_external_data_file() {
     if header.snapshot_count != 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "qcow images with an external data file must not contain internal snapshots".to_string(),
       ));
     }
     if header.uses_non_default_compression() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "qcow images with an external data file must not use compressed clusters".to_string(),
       ));
     }
@@ -104,20 +104,20 @@ fn read_backing_file_name(source: &dyn ByteSource, header: &QcowHeader) -> Resul
   let data = source.read_bytes_at(
     header.backing_file_offset,
     usize::try_from(header.backing_file_size)
-      .map_err(|_| Error::InvalidRange("qcow backing file name is too large".to_string()))?,
+      .map_err(|_| Error::invalid_range("qcow backing file name is too large"))?,
   )?;
   let backing_file_name = String::from_utf8(data)
-    .map_err(|_| Error::InvalidFormat("qcow backing file name is not valid UTF-8".to_string()))?;
+    .map_err(|_| Error::invalid_format("qcow backing file name is not valid UTF-8"))?;
 
   Ok(Some(backing_file_name))
 }
 
 fn read_l1_table(source: &dyn ByteSource, header: &QcowHeader) -> Result<Arc<[u64]>> {
   let entry_count = usize::try_from(header.l1_entry_count)
-    .map_err(|_| Error::InvalidRange("qcow l1 entry count is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("qcow l1 entry count is too large"))?;
   let table_bytes = entry_count
     .checked_mul(8)
-    .ok_or_else(|| Error::InvalidRange("qcow l1 table size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("qcow l1 table size overflow"))?;
   let raw = source.read_bytes_at(header.l1_table_offset, table_bytes)?;
 
   let entries = raw
@@ -135,7 +135,7 @@ fn read_l1_table(source: &dyn ByteSource, header: &QcowHeader) -> Result<Arc<[u6
       if header.version != 1 {
         let reserved_bits = raw_entry & !(offset_mask | (1u64 << 63));
         if reserved_bits != 0 {
-          return Err(Error::InvalidFormat(format!(
+          return Err(Error::invalid_format(format!(
             "qcow l1 entry {index} uses reserved bits"
           )));
         }
@@ -166,12 +166,10 @@ fn read_header_extensions(
     let backing_file_end = header
       .backing_file_offset
       .checked_add(u64::from(header.backing_file_size))
-      .ok_or_else(|| Error::InvalidRange("qcow backing file name range overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("qcow backing file name range overflow"))?;
     let aligned_backing_file_end = backing_file_end
       .checked_add((8 - (backing_file_end % 8)) % 8)
-      .ok_or_else(|| {
-        Error::InvalidRange("qcow backing file name alignment overflow".to_string())
-      })?;
+      .ok_or_else(|| Error::invalid_range("qcow backing file name alignment overflow"))?;
     start = start.max(aligned_backing_file_end);
   }
   if start == 0 {
@@ -182,7 +180,7 @@ fn read_header_extensions(
     return Ok(Vec::new());
   }
   let size = usize::try_from(end - start)
-    .map_err(|_| Error::InvalidRange("qcow header extension region is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("qcow header extension region is too large"))?;
   let data = source.read_bytes_at(start, size)?;
 
   QcowHeaderExtension::parse_many(&data)

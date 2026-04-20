@@ -24,81 +24,81 @@ impl NtfsBootSector {
   }
 
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-    let sector: &[u8; BOOT_SECTOR_SIZE] = bytes.try_into().map_err(|_| {
-      Error::InvalidFormat("ntfs boot sector must be exactly 512 bytes".to_string())
-    })?;
+    let sector: &[u8; BOOT_SECTOR_SIZE] = bytes
+      .try_into()
+      .map_err(|_| Error::invalid_format("ntfs boot sector must be exactly 512 bytes"))?;
     Self::from_sector(sector)
   }
 
   pub fn from_sector(sector: &[u8; BOOT_SECTOR_SIZE]) -> Result<Self> {
     if !has_valid_boot_jump(sector) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs boot sector has an invalid jump instruction".to_string(),
       ));
     }
     if !has_boot_signature(sector) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs boot sector is missing the 0x55aa signature".to_string(),
       ));
     }
     if &sector[3..11] != NTFS_OEM_ID {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs boot sector is missing the NTFS OEM identifier".to_string(),
       ));
     }
 
     let bytes_per_sector = le_u16(&sector[11..13]);
     if !valid_bytes_per_sector(bytes_per_sector) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported ntfs bytes-per-sector value: {bytes_per_sector}"
       )));
     }
 
     let sectors_per_cluster = sector[13];
     if !valid_sectors_per_cluster(sectors_per_cluster) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported ntfs sectors-per-cluster value: {sectors_per_cluster}"
       )));
     }
 
     let reserved_sectors = le_u16(&sector[14..16]);
     if reserved_sectors != 0 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ntfs reserved sectors must be zero, got {reserved_sectors}"
       )));
     }
 
     let total_sectors = le_u64(&sector[40..48]);
     if total_sectors == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs total sector count must be non-zero".to_string(),
       ));
     }
 
     let mft_cluster = le_u64(&sector[48..56]);
     if mft_cluster == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs MFT cluster number must be non-zero".to_string(),
       ));
     }
 
     let mft_mirror_cluster = le_u64(&sector[56..64]);
     if mft_mirror_cluster == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs MFT mirror cluster number must be non-zero".to_string(),
       ));
     }
 
     let clusters_per_file_record = sector[64];
     if clusters_per_file_record == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs file-record size encoding must be non-zero".to_string(),
       ));
     }
 
     let clusters_per_index_buffer = sector[68];
     if clusters_per_index_buffer == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs index-buffer size encoding must be non-zero".to_string(),
       ));
     }
@@ -118,13 +118,13 @@ impl NtfsBootSector {
   pub fn cluster_size(&self) -> Result<u64> {
     u64::from(self.bytes_per_sector)
       .checked_mul(u64::from(self.sectors_per_cluster))
-      .ok_or_else(|| Error::InvalidRange("ntfs cluster size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ntfs cluster size overflow"))
   }
 
   pub fn total_size(&self) -> Result<u64> {
     u64::from(self.bytes_per_sector)
       .checked_mul(self.total_sectors)
-      .ok_or_else(|| Error::InvalidRange("ntfs total size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ntfs total size overflow"))
   }
 
   pub fn file_record_size(&self) -> Result<u64> {
@@ -147,7 +147,7 @@ impl NtfsBootSector {
     self
       .mft_cluster
       .checked_mul(self.cluster_size()?)
-      .ok_or_else(|| Error::InvalidRange("ntfs MFT offset overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ntfs MFT offset overflow"))
   }
 }
 
@@ -169,7 +169,7 @@ pub(crate) fn valid_sectors_per_cluster(value: u8) -> bool {
 
 fn decode_encoded_size(encoded: u8, cluster_size: u64, label: &str) -> Result<u64> {
   if encoded == 0 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "{label} encoding must be non-zero"
     )));
   }
@@ -178,11 +178,11 @@ fn decode_encoded_size(encoded: u8, cluster_size: u64, label: &str) -> Result<u6
   if signed > 0 {
     cluster_size
       .checked_mul(u64::from(encoded))
-      .ok_or_else(|| Error::InvalidRange(format!("{label} overflow")))
+      .ok_or_else(|| Error::invalid_range(format!("{label} overflow")))
   } else {
     1u64
       .checked_shl(u32::from(signed.unsigned_abs()))
-      .ok_or_else(|| Error::InvalidRange(format!("{label} overflow")))
+      .ok_or_else(|| Error::invalid_range(format!("{label} overflow")))
   }
 }
 

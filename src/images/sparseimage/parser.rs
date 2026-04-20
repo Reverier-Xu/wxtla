@@ -19,20 +19,20 @@ pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedSparseImage> {
   let media_size = header.media_size()?;
   let band_size = header.band_size()?;
   let band_count = usize::try_from(header.band_count())
-    .map_err(|_| Error::InvalidRange("sparseimage band count is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("sparseimage band count is too large"))?;
   let array_bytes = band_count
     .checked_mul(4)
-    .ok_or_else(|| Error::InvalidRange("sparseimage band array size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("sparseimage band array size overflow"))?;
   let array_end = 64usize
     .checked_add(array_bytes)
-    .ok_or_else(|| Error::InvalidRange("sparseimage band array end overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("sparseimage band array end overflow"))?;
   if array_end > HEADER_BLOCK_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "sparseimage band array does not fit in the header block".to_string(),
     ));
   }
   if header_block[array_end..].iter().any(|&byte| byte != 0) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "sparseimage header padding must be zero".to_string(),
     ));
   }
@@ -53,14 +53,14 @@ pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedSparseImage> {
     }
 
     let guest_index = usize::try_from(band_number - 1)
-      .map_err(|_| Error::InvalidRange("sparseimage band index is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("sparseimage band index is too large"))?;
     if guest_index >= band_count {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "sparseimage band number is out of bounds".to_string(),
       ));
     }
     if guest_to_file_offsets[guest_index].is_some() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "sparseimage band numbers must be unique".to_string(),
       ));
     }
@@ -68,18 +68,16 @@ pub(super) fn parse(source: ByteSourceHandle) -> Result<ParsedSparseImage> {
     let file_offset = (HEADER_BLOCK_SIZE as u64)
       .checked_add(
         u64::try_from(array_index)
-          .map_err(|_| Error::InvalidRange("sparseimage file band index is too large".to_string()))?
+          .map_err(|_| Error::invalid_range("sparseimage file band index is too large"))?
           .checked_mul(band_size)
-          .ok_or_else(|| {
-            Error::InvalidRange("sparseimage band file offset overflow".to_string())
-          })?,
+          .ok_or_else(|| Error::invalid_range("sparseimage band file offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("sparseimage band file offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("sparseimage band file offset overflow"))?;
     let band_end = file_offset
       .checked_add(band_size)
-      .ok_or_else(|| Error::InvalidRange("sparseimage band end overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("sparseimage band end overflow"))?;
     if band_end > source_size {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "sparseimage band data exceeds the source size".to_string(),
       ));
     }

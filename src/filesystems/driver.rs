@@ -43,7 +43,7 @@ pub(crate) trait FileSystem: Send + Sync {
     if *stream_id == NamespaceStreamId::data() {
       self.open_file(node_id)
     } else {
-      Err(crate::Error::NotFound(format!(
+      Err(crate::Error::not_found(format!(
         "{} does not expose stream {:?}",
         self.descriptor().id,
         stream_id

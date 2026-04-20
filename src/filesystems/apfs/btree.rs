@@ -37,17 +37,17 @@ impl ApfsBTree {
     let root_block = read_object_block(source.as_ref(), block_size, root_address, None)?;
     let root = ApfsBTreeNode::parse_root(&root_block)?;
     if (root.info.flags & BTREE_HASHED) != 0 || (root.header.flags & BTNODE_HASHED) != 0 {
-      return Err(Error::Unsupported(
+      return Err(Error::unsupported(
         "hashed APFS B-trees are not yet supported".to_string(),
       ));
     }
     if (root.info.flags & BTREE_NOHEADER) != 0 || (root.header.flags & BTNODE_NOHEADER) != 0 {
-      return Err(Error::Unsupported(
+      return Err(Error::unsupported(
         "headerless APFS B-trees are not yet supported".to_string(),
       ));
     }
     if (root.info.flags & BTREE_PHYSICAL) == 0 {
-      return Err(Error::Unsupported(
+      return Err(Error::unsupported(
         "non-physical APFS B-trees are not yet supported".to_string(),
       ));
     }
@@ -75,12 +75,12 @@ impl ApfsBTree {
     )?;
     let root = ApfsBTreeNode::parse_root(&root_block)?;
     if (root.info.flags & BTREE_HASHED) != 0 || (root.header.flags & BTNODE_HASHED) != 0 {
-      return Err(Error::Unsupported(
+      return Err(Error::unsupported(
         "hashed APFS B-trees are not yet supported".to_string(),
       ));
     }
     if (root.info.flags & BTREE_NOHEADER) != 0 || (root.header.flags & BTNODE_NOHEADER) != 0 {
-      return Err(Error::Unsupported(
+      return Err(Error::unsupported(
         "headerless APFS B-trees are not yet supported".to_string(),
       ));
     }
@@ -104,7 +104,7 @@ impl ApfsBTree {
   where
     F: Fn(&[u8]) -> Ordering, {
     let record = self.search_floor_at(self.root_address, &compare)?;
-    record.ok_or_else(|| Error::NotFound("apfs btree record was not found".to_string()))
+    record.ok_or_else(|| Error::not_found("apfs btree record was not found"))
   }
 
   pub(crate) fn walk_records(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
@@ -176,9 +176,9 @@ impl ApfsBTree {
         base_oid,
       } => lookup_omap_address(
         omap_tree,
-        base_oid.checked_add(child_identifier).ok_or_else(|| {
-          Error::InvalidRange("apfs virtual btree child oid overflow".to_string())
-        })?,
+        base_oid
+          .checked_add(child_identifier)
+          .ok_or_else(|| Error::invalid_range("apfs virtual btree child oid overflow"))?,
         *xid,
       ),
     }
@@ -202,7 +202,7 @@ impl ApfsBTreeNode {
     let footer_start = block
       .len()
       .checked_sub(BTREE_INFO_SIZE)
-      .ok_or_else(|| Error::InvalidFormat("invalid apfs btree root block size".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("invalid apfs btree root block size"))?;
     let info = ApfsBtreeInfo::parse(&block[footer_start..])?;
     Self::parse(block, info, true)
   }
@@ -213,9 +213,9 @@ impl ApfsBTreeNode {
 
   fn parse(block: &[u8], info: ApfsBtreeInfo, root: bool) -> Result<Self> {
     let node_size = usize::try_from(info.node_size)
-      .map_err(|_| Error::InvalidRange("apfs btree node size exceeds usize".to_string()))?;
+      .map_err(|_| Error::invalid_range("apfs btree node size exceeds usize"))?;
     if block.len() < node_size {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs btree block is shorter than the declared node size".to_string(),
       ));
     }
@@ -231,13 +231,13 @@ impl ApfsBTreeNode {
           | OBJECT_TYPE_FEXT_TREE
           | 0
       ) {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "invalid apfs btree root object type: 0x{:08x}",
           object_header.object_type
         )));
       }
     } else if type_code != OBJECT_TYPE_BTREE_NODE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid apfs btree node object type: 0x{:08x}",
         object_header.object_type
       )));
@@ -251,7 +251,7 @@ impl ApfsBTreeNode {
       "apfs btree node header",
     )?)?;
     let key_count = usize::try_from(header.key_count)
-      .map_err(|_| Error::InvalidRange("apfs btree key count exceeds usize".to_string()))?;
+      .map_err(|_| Error::invalid_range("apfs btree key count exceeds usize"))?;
     let entry_size = if (header.flags & BTNODE_FIXED_KV_SIZE) != 0 {
       4usize
     } else {
@@ -259,7 +259,7 @@ impl ApfsBTreeNode {
     };
     let table_length = usize::from(header.table_space_length);
     if table_length < key_count.saturating_mul(entry_size) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs btree table space is too small for the number of entries".to_string(),
       ));
     }
@@ -267,16 +267,16 @@ impl ApfsBTreeNode {
     let table_start = header_offset
       .checked_add(BTREE_NODE_HEADER_SIZE)
       .and_then(|value| value.checked_add(usize::from(header.table_space_offset)))
-      .ok_or_else(|| Error::InvalidRange("apfs btree table offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("apfs btree table offset overflow"))?;
     let key_start = table_start
       .checked_add(table_length)
-      .ok_or_else(|| Error::InvalidRange("apfs btree key offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("apfs btree key offset overflow"))?;
     let footer_size = if root { BTREE_INFO_SIZE } else { 0 };
     let value_end = node_size
       .checked_sub(footer_size)
-      .ok_or_else(|| Error::InvalidRange("apfs btree footer offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("apfs btree footer offset overflow"))?;
     if key_start > value_end {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apfs btree key area overlaps the value area".to_string(),
       ));
     }
@@ -291,16 +291,18 @@ impl ApfsBTreeNode {
       fixed_key_size: if info.key_size == 0 {
         None
       } else {
-        Some(usize::try_from(info.key_size).map_err(|_| {
-          Error::InvalidRange("apfs btree fixed key size exceeds usize".to_string())
-        })?)
+        Some(
+          usize::try_from(info.key_size)
+            .map_err(|_| Error::invalid_range("apfs btree fixed key size exceeds usize"))?,
+        )
       },
       fixed_value_size: if info.value_size == 0 {
         None
       } else {
-        Some(usize::try_from(info.value_size).map_err(|_| {
-          Error::InvalidRange("apfs btree fixed value size exceeds usize".to_string())
-        })?)
+        Some(
+          usize::try_from(info.value_size)
+            .map_err(|_| Error::invalid_range("apfs btree fixed value size exceeds usize"))?,
+        )
       },
     })
   }
@@ -329,14 +331,14 @@ impl ApfsBTreeNode {
     let start = self
       .value_end
       .checked_sub(usize::from(entry.value_offset))
-      .ok_or_else(|| Error::InvalidRange("apfs btree value offset underflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("apfs btree value offset underflow"))?;
     read_slice(self.block(), start, entry.value_length, "apfs btree value")
   }
 
   fn child_identifier(&self, index: usize) -> Result<u64> {
     let value = self.value(index)?;
     if value.len() < 8 {
-      return Err(Error::Unsupported(
+      return Err(Error::unsupported(
         "apfs btree branch values are too short to contain a child identifier".to_string(),
       ));
     }
@@ -371,7 +373,7 @@ impl ApfsBTreeNode {
 
   fn entry(&self, index: usize) -> Result<ApfsBTreeEntry> {
     if index >= self.key_count() {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "apfs btree key index {index} is out of bounds"
       )));
     }
@@ -384,17 +386,17 @@ impl ApfsBTreeNode {
     let offset = self
       .table_start
       .checked_add(index.saturating_mul(entry_size))
-      .ok_or_else(|| Error::InvalidRange("apfs btree toc offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("apfs btree toc offset overflow"))?;
     if (self.header.flags & BTNODE_FIXED_KV_SIZE) != 0 {
       let key_offset = read_u16_le(self.block(), offset)?;
       let value_offset = read_u16_le(self.block(), offset + 2)?;
       let key_length = self.fixed_key_size.ok_or_else(|| {
-        Error::InvalidFormat(
+        Error::invalid_format(
           "apfs btree fixed-size node is missing a declared key size".to_string(),
         )
       })?;
       let value_length = self.fixed_value_size.ok_or_else(|| {
-        Error::InvalidFormat(
+        Error::invalid_format(
           "apfs btree fixed-size node is missing a declared value size".to_string(),
         )
       })?;
@@ -432,12 +434,12 @@ fn read_blocks(
 ) -> Result<Vec<u8>> {
   let byte_offset = address
     .checked_mul(u64::from(block_size))
-    .ok_or_else(|| Error::InvalidRange("apfs block offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("apfs block offset overflow"))?;
   let byte_count = count
     .checked_mul(u64::from(block_size))
-    .ok_or_else(|| Error::InvalidRange("apfs block count overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("apfs block count overflow"))?;
   let byte_count = usize::try_from(byte_count)
-    .map_err(|_| Error::InvalidRange("apfs byte count exceeds usize".to_string()))?;
+    .map_err(|_| Error::invalid_range("apfs byte count exceeds usize"))?;
   source.read_bytes_at(byte_offset, byte_count)
 }
 
@@ -455,7 +457,7 @@ fn read_object_block(
   decryptor.unwrap().decrypt(
     address
       .checked_mul(sectors_per_block)
-      .ok_or_else(|| Error::InvalidRange("apfs metadata sector index overflow".to_string()))?,
+      .ok_or_else(|| Error::invalid_range("apfs metadata sector index overflow"))?,
     &mut decrypted,
   )?;
   Ok(decrypted)
@@ -476,7 +478,7 @@ fn read_slice_bytes<'a>(
 ) -> Result<&'a [u8]> {
   let start = base
     .checked_add(offset)
-    .ok_or_else(|| Error::InvalidRange(format!("{what} offset overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{what} offset overflow")))?;
   read_slice(bytes, start, length, what)
 }
 
@@ -484,19 +486,19 @@ fn lookup_omap_address(tree: &ApfsBTree, oid: u64, xid: u64) -> Result<u64> {
   let (key, value) = tree.search_floor(|other| compare_omap_key(other, oid, xid))?;
   let key_oid = read_u64_le(&key, 0)?;
   if key_oid != oid {
-    return Err(Error::NotFound(format!(
+    return Err(Error::not_found(format!(
       "apfs omap entry was not found for oid {oid}"
     )));
   }
   let flags = u32::from_le_bytes(
     value
       .get(0..4)
-      .ok_or_else(|| Error::InvalidFormat("apfs omap value is truncated".to_string()))?
+      .ok_or_else(|| Error::invalid_format("apfs omap value is truncated"))?
       .try_into()
-      .map_err(|_| Error::InvalidFormat("apfs omap value is truncated".to_string()))?,
+      .map_err(|_| Error::invalid_format("apfs omap value is truncated"))?,
   );
   if (flags & super::ondisk::OMAP_VAL_DELETED) != 0 {
-    return Err(Error::NotFound(format!(
+    return Err(Error::not_found(format!(
       "apfs omap entry for oid {oid} is marked deleted"
     )));
   }

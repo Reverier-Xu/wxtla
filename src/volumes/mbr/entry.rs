@@ -31,7 +31,7 @@ impl MbrPartitionEntry {
   /// Parse an MBR partition entry from exactly 16 bytes.
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() != 16 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "mbr partition entry must be 16 bytes, got {}",
         data.len()
       )));
@@ -39,7 +39,7 @@ impl MbrPartitionEntry {
 
     let boot_indicator = data[0];
     if boot_indicator != 0x00 && boot_indicator != 0x80 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "mbr partition entry has invalid boot indicator: 0x{boot_indicator:02x}"
       )));
     }
@@ -95,17 +95,17 @@ impl MbrPartitionEntry {
   /// Compute a byte span using an absolute LBA and bytes-per-sector value.
   pub fn span_at(self, absolute_start_lba: u64, bytes_per_sector: u32) -> Result<VolumeSpan> {
     if self.sector_count == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "mbr partition entry has zero sectors".to_string(),
       ));
     }
 
     let byte_offset = absolute_start_lba
       .checked_mul(u64::from(bytes_per_sector))
-      .ok_or_else(|| Error::InvalidRange("mbr partition offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("mbr partition offset overflow"))?;
     let byte_size = u64::from(self.sector_count)
       .checked_mul(u64::from(bytes_per_sector))
-      .ok_or_else(|| Error::InvalidRange("mbr partition size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("mbr partition size overflow"))?;
 
     Ok(VolumeSpan::new(byte_offset, byte_size))
   }

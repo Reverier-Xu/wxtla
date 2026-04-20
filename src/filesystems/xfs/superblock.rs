@@ -24,7 +24,7 @@ impl XfsSuperblock {
   pub(crate) fn read(source: &dyn ByteSource) -> Result<Self> {
     let data = read_exact_at(source, 0, 512)?;
     if &data[0..4] != SB_MAGIC {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid xfs superblock signature".to_string(),
       ));
     }
@@ -44,38 +44,38 @@ impl XfsSuperblock {
     let secondary_feature_flags = be_u32(&data[200..204]);
 
     if !(4..=5).contains(&format_version) {
-      return Err(Error::InvalidFormat("unsupported xfs version".to_string()));
+      return Err(Error::invalid_format("unsupported xfs version"));
     }
     if !(512..=32768).contains(&sector_size) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unsupported xfs sector size".to_string(),
       ));
     }
     if !(512..=65536).contains(&block_size) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unsupported xfs block size".to_string(),
       ));
     }
     if !(256..=2048).contains(&inode_size) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unsupported xfs inode size".to_string(),
       ));
     }
     if ag_blocks < 5 || ag_count == 0 {
-      return Err(Error::InvalidFormat("invalid xfs geometry".to_string()));
+      return Err(Error::invalid_format("invalid xfs geometry"));
     }
     if relative_block_bits == 0 || relative_block_bits > 31 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid allocation group size log2".to_string(),
       ));
     }
     if inodes_per_block_log2 == 0 || inodes_per_block_log2 > (32 - relative_block_bits) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid inodes per block log2".to_string(),
       ));
     }
     if (1u64 << inodes_per_block_log2) != u64::from(inodes_per_block) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "mismatch between inodes per block and log2 values".to_string(),
       ));
     }
@@ -87,16 +87,16 @@ impl XfsSuperblock {
         .checked_mul(
           1u32
             .checked_shl(u32::from(dir_blk_log2))
-            .ok_or_else(|| Error::InvalidRange("invalid xfs directory block log2".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("invalid xfs directory block log2"))?,
         )
-        .ok_or_else(|| Error::InvalidRange("xfs directory block size overflow".to_string()))?
+        .ok_or_else(|| Error::invalid_range("xfs directory block size overflow"))?
     };
 
     let relative_inode_bits = relative_block_bits
       .checked_add(inodes_per_block_log2)
-      .ok_or_else(|| Error::InvalidRange("xfs inode geometry overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("xfs inode geometry overflow"))?;
     if relative_inode_bits == 0 || relative_inode_bits >= 32 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "invalid xfs relative inode bits".to_string(),
       ));
     }

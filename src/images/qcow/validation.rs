@@ -9,17 +9,17 @@ pub(super) fn validate_header_layout(source: &dyn ByteSource, header: &QcowHeade
   let l2_entry_count = header.l2_entry_count()?;
 
   if header.l1_entry_count == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "qcow l1 table must contain at least one entry".to_string(),
     ));
   }
   if header.header_size < 48 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "qcow header size is smaller than the base header".to_string(),
     ));
   }
   if header.virtual_size == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "qcow virtual size must be non-zero".to_string(),
     ));
   }
@@ -33,7 +33,7 @@ pub(super) fn validate_header_layout(source: &dyn ByteSource, header: &QcowHeade
 
   if header.backing_file_size != 0 {
     if header.backing_file_offset < u64::from(header.header_size) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "qcow backing file name overlaps the header".to_string(),
       ));
     }
@@ -47,7 +47,7 @@ pub(super) fn validate_header_layout(source: &dyn ByteSource, header: &QcowHeade
 
   if header.version != QCOW_VERSION_1 {
     if header.refcount_table_clusters == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "qcow refcount table cluster count must be non-zero".to_string(),
       ));
     }
@@ -61,13 +61,13 @@ pub(super) fn validate_header_layout(source: &dyn ByteSource, header: &QcowHeade
       header.refcount_table_offset,
       u64::from(header.refcount_table_clusters)
         .checked_mul(cluster_size)
-        .ok_or_else(|| Error::InvalidRange("qcow refcount table size overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("qcow refcount table size overflow"))?,
       "qcow refcount table",
     )?;
   }
 
   if header.snapshot_count != 0 && header.snapshot_table_offset == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "qcow snapshot table offset is missing".to_string(),
     ));
   }
@@ -81,7 +81,7 @@ pub(super) fn validate_header_layout(source: &dyn ByteSource, header: &QcowHeade
   }
 
   if l2_entry_count == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "qcow l2 table must contain at least one entry".to_string(),
     ));
   }
@@ -93,7 +93,7 @@ pub(super) fn validate_cluster_alignment(
   offset: u64, cluster_size: u64, label: &str,
 ) -> Result<()> {
   if !offset.is_multiple_of(cluster_size) {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "{label} offset is not cluster aligned"
     )));
   }
@@ -103,9 +103,9 @@ pub(super) fn validate_cluster_alignment(
 pub(super) fn validate_range(file_size: u64, offset: u64, size: u64, label: &str) -> Result<()> {
   let end = offset
     .checked_add(size)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} range overflows")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} range overflows")))?;
   if end > file_size {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "{label} exceeds the source size"
     )));
   }

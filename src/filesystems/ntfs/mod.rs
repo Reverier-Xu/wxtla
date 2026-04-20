@@ -8,6 +8,7 @@ mod index;
 mod record;
 mod reparse;
 mod runlist;
+mod stream;
 
 pub use attribute_list::{NtfsAttributeListEntry, parse_attribute_list};
 pub use boot_sector::NtfsBootSector;

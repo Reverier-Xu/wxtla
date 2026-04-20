@@ -27,25 +27,25 @@ pub(crate) fn parse_runlist(bytes: &[u8], cluster_size: u64) -> Result<Vec<NtfsD
     let cluster_count_size = usize::from(header & 0x0F);
     let cluster_delta_size = usize::from(header >> 4);
     if cluster_count_size == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs runlist element has a zero-sized cluster count".to_string(),
       ));
     }
     let element_size = cluster_count_size
       .checked_add(cluster_delta_size)
-      .ok_or_else(|| Error::InvalidRange("ntfs runlist element size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs runlist element size overflow"))?;
     if cursor
       .checked_add(element_size)
       .is_none_or(|end| end > bytes.len())
     {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs runlist element exceeds the encoded runlist".to_string(),
       ));
     }
 
     let cluster_count = decode_unsigned(&bytes[cursor..cursor + cluster_count_size]);
     if cluster_count == 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs runlist element has a zero-length cluster span".to_string(),
       ));
     }
@@ -58,20 +58,19 @@ pub(crate) fn parse_runlist(bytes: &[u8], cluster_size: u64) -> Result<Vec<NtfsD
       cursor += cluster_delta_size;
       current_cluster = current_cluster
         .checked_add(delta)
-        .ok_or_else(|| Error::InvalidRange("ntfs runlist cluster delta overflow".to_string()))?;
-      let cluster_number = u64::try_from(current_cluster).map_err(|_| {
-        Error::InvalidFormat("ntfs runlist cluster number became negative".to_string())
-      })?;
+        .ok_or_else(|| Error::invalid_range("ntfs runlist cluster delta overflow"))?;
+      let cluster_number = u64::try_from(current_cluster)
+        .map_err(|_| Error::invalid_format("ntfs runlist cluster number became negative"))?;
       Some(
         cluster_number
           .checked_mul(cluster_size)
-          .ok_or_else(|| Error::InvalidRange("ntfs runlist offset overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("ntfs runlist offset overflow"))?,
       )
     };
 
     let length = cluster_count
       .checked_mul(cluster_size)
-      .ok_or_else(|| Error::InvalidRange("ntfs runlist length overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs runlist length overflow"))?;
     runs.push(NtfsDataRun {
       logical_offset,
       physical_offset,
@@ -79,7 +78,7 @@ pub(crate) fn parse_runlist(bytes: &[u8], cluster_size: u64) -> Result<Vec<NtfsD
     });
     logical_offset = logical_offset
       .checked_add(length)
-      .ok_or_else(|| Error::InvalidRange("ntfs runlist logical offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs runlist logical offset overflow"))?;
   }
 
   Ok(runs)
@@ -130,10 +129,10 @@ impl ByteSource for NtfsNonResidentDataSource {
     while written < limit {
       let absolute_offset = offset
         .checked_add(written as u64)
-        .ok_or_else(|| Error::InvalidRange("ntfs non-resident read overflow".to_string()))?;
-      let run = self.run_for_offset(absolute_offset).ok_or_else(|| {
-        Error::InvalidFormat("ntfs runlist does not cover the requested offset".to_string())
-      })?;
+        .ok_or_else(|| Error::invalid_range("ntfs non-resident read overflow"))?;
+      let run = self
+        .run_for_offset(absolute_offset)
+        .ok_or_else(|| Error::invalid_format("ntfs runlist does not cover the requested offset"))?;
       let run_offset = absolute_offset - run.logical_offset;
       let chunk = usize::try_from(run.length - run_offset)
         .unwrap_or(usize::MAX)
@@ -149,7 +148,7 @@ impl ByteSource for NtfsNonResidentDataSource {
           self.source.read_exact_at(
             physical_offset
               .checked_add(run_offset)
-              .ok_or_else(|| Error::InvalidRange("ntfs physical read overflow".to_string()))?,
+              .ok_or_else(|| Error::invalid_range("ntfs physical read overflow"))?,
             &mut buf[written..written + valid_len],
           )?;
         } else {
@@ -215,7 +214,7 @@ impl NtfsCompressedDataSource {
   fn read_unit(&self, unit_index: u64) -> Result<Vec<u8>> {
     let unit_start = unit_index
       .checked_mul(self.compression_unit_size)
-      .ok_or_else(|| Error::InvalidRange("ntfs compression-unit offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs compression-unit offset overflow"))?;
     let logical_size_u64 = (self.size - unit_start).min(self.compression_unit_size);
     if logical_size_u64 == 0 {
       return Ok(Vec::new());
@@ -223,16 +222,16 @@ impl NtfsCompressedDataSource {
 
     let unit_end = unit_start
       .checked_add(self.compression_unit_size)
-      .ok_or_else(|| Error::InvalidRange("ntfs compression-unit offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs compression-unit offset overflow"))?;
     let required_coverage_end = unit_start
       .checked_add(align_up(logical_size_u64, self.cluster_size)?)
-      .ok_or_else(|| Error::InvalidRange("ntfs compression-unit range overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs compression-unit range overflow"))?;
     let logical_size = usize::try_from(logical_size_u64)
-      .map_err(|_| Error::InvalidRange("ntfs compressed unit is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("ntfs compressed unit is too large"))?;
 
     let (segments, covered_end) = self.collect_unit_segments(unit_start, unit_end)?;
     if covered_end < required_coverage_end {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs compressed runlist does not cover the requested compression unit".to_string(),
       ));
     }
@@ -246,7 +245,7 @@ impl NtfsCompressedDataSource {
       .try_fold(0u64, |len, segment| {
         len
           .checked_add(segment.length)
-          .ok_or_else(|| Error::InvalidRange("ntfs compressed unit length overflow".to_string()))
+          .ok_or_else(|| Error::invalid_range("ntfs compressed unit length overflow"))
       })?;
     if non_sparse_len == 0 {
       return Ok(vec![0u8; logical_size]);
@@ -254,7 +253,7 @@ impl NtfsCompressedDataSource {
 
     if has_sparse {
       if covered_end != unit_end {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ntfs compressed unit does not cover the full compression range".to_string(),
         ));
       }
@@ -262,7 +261,7 @@ impl NtfsCompressedDataSource {
       let stored = self.read_segments(&segments, false)?;
       let mut unit = decompress_lznt1(&stored)?;
       if unit.len() < logical_size {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ntfs compressed unit expanded shorter than the logical stream size".to_string(),
         ));
       }
@@ -271,14 +270,14 @@ impl NtfsCompressedDataSource {
     }
 
     if covered_end != unit_end && logical_size_u64 == self.compression_unit_size {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs uncompressed compression unit does not cover the full logical range".to_string(),
       ));
     }
 
     let mut unit = self.read_segments(&segments, true)?;
     if unit.len() < logical_size {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs compression-unit storage is shorter than the logical stream size".to_string(),
       ));
     }
@@ -303,7 +302,7 @@ impl NtfsCompressedDataSource {
       let run_end = run
         .logical_offset
         .checked_add(run.length)
-        .ok_or_else(|| Error::InvalidRange("ntfs run logical range overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("ntfs run logical range overflow"))?;
       if run_end <= cursor {
         continue;
       }
@@ -317,7 +316,7 @@ impl NtfsCompressedDataSource {
       let physical_offset = run.physical_offset.map(|offset| {
         offset
           .checked_add(overlap_start - run.logical_offset)
-          .ok_or_else(|| Error::InvalidRange("ntfs compressed run offset overflow".to_string()))
+          .ok_or_else(|| Error::invalid_range("ntfs compressed run offset overflow"))
       });
       segments.push(NtfsUnitSegment {
         physical_offset: physical_offset.transpose()?,
@@ -334,27 +333,25 @@ impl NtfsCompressedDataSource {
 
   fn read_segments(&self, segments: &[NtfsUnitSegment], include_sparse: bool) -> Result<Vec<u8>> {
     let total_len = segments.iter().try_fold(0usize, |len, segment| {
-      let segment_len = usize::try_from(segment.length).map_err(|_| {
-        Error::InvalidRange("ntfs compressed unit segment is too large".to_string())
-      })?;
+      let segment_len = usize::try_from(segment.length)
+        .map_err(|_| Error::invalid_range("ntfs compressed unit segment is too large"))?;
       if segment.physical_offset.is_none() && !include_sparse {
         return Ok(len);
       }
       len
         .checked_add(segment_len)
-        .ok_or_else(|| Error::InvalidRange("ntfs compressed unit buffer overflow".to_string()))
+        .ok_or_else(|| Error::invalid_range("ntfs compressed unit buffer overflow"))
     })?;
     let mut bytes = Vec::with_capacity(total_len);
 
     for segment in segments {
-      let segment_len = usize::try_from(segment.length).map_err(|_| {
-        Error::InvalidRange("ntfs compressed unit segment is too large".to_string())
-      })?;
+      let segment_len = usize::try_from(segment.length)
+        .map_err(|_| Error::invalid_range("ntfs compressed unit segment is too large"))?;
       if let Some(physical_offset) = segment.physical_offset {
         let start = bytes.len();
         let end = start
           .checked_add(segment_len)
-          .ok_or_else(|| Error::InvalidRange("ntfs compressed unit buffer overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("ntfs compressed unit buffer overflow"))?;
         bytes.resize(end, 0);
         self
           .source
@@ -363,7 +360,7 @@ impl NtfsCompressedDataSource {
         let end = bytes
           .len()
           .checked_add(segment_len)
-          .ok_or_else(|| Error::InvalidRange("ntfs compressed unit buffer overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("ntfs compressed unit buffer overflow"))?;
         bytes.resize(end, 0);
       }
     }
@@ -386,16 +383,16 @@ impl ByteSource for NtfsCompressedDataSource {
     while written < limit {
       let absolute_offset = offset
         .checked_add(written as u64)
-        .ok_or_else(|| Error::InvalidRange("ntfs compressed read overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("ntfs compressed read overflow"))?;
       let unit_index = absolute_offset / self.compression_unit_size;
       let unit_start = unit_index
         .checked_mul(self.compression_unit_size)
-        .ok_or_else(|| Error::InvalidRange("ntfs compression-unit offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("ntfs compression-unit offset overflow"))?;
       let unit = self.read_unit(unit_index)?;
       let within_unit = usize::try_from(absolute_offset - unit_start)
-        .map_err(|_| Error::InvalidRange("ntfs compressed unit offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("ntfs compressed unit offset is too large"))?;
       if within_unit >= unit.len() {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ntfs compressed unit does not cover the requested offset".to_string(),
         ));
       }
@@ -444,7 +441,7 @@ fn decode_unsigned(bytes: &[u8]) -> u64 {
 
 fn decode_signed(bytes: &[u8]) -> Result<i64> {
   if bytes.is_empty() || bytes.len() > 8 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ntfs signed runlist values must be 1-8 bytes wide".to_string(),
     ));
   }
@@ -468,7 +465,7 @@ fn align_up(value: u64, alignment: u64) -> Result<u64> {
   } else {
     value
       .checked_add(alignment - remainder)
-      .ok_or_else(|| Error::InvalidRange("ntfs alignment overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ntfs alignment overflow"))
   }
 }
 
@@ -489,9 +486,9 @@ fn decompress_lznt1(bytes: &[u8]) -> Result<Vec<u8>> {
     let chunk_end = chunk_start
       .checked_add(payload_size)
       .and_then(|offset| offset.checked_add(3))
-      .ok_or_else(|| Error::InvalidRange("ntfs lznt1 block range overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs lznt1 block range overflow"))?;
     if chunk_end > bytes.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs lznt1 block exceeds the available compressed bytes".to_string(),
       ));
     }
@@ -511,7 +508,7 @@ fn decompress_lznt1(bytes: &[u8]) -> Result<Vec<u8>> {
             cursor += 1;
           } else {
             if cursor + 2 > chunk_end {
-              return Err(Error::InvalidFormat(
+              return Err(Error::invalid_format(
                 "ntfs lznt1 back-reference is truncated".to_string(),
               ));
             }
@@ -523,7 +520,7 @@ fn decompress_lznt1(bytes: &[u8]) -> Result<Vec<u8>> {
               .checked_sub(chunk_output_start)
               .and_then(|offset| offset.checked_sub(1))
               .ok_or_else(|| {
-                Error::InvalidFormat(
+                Error::invalid_format(
                   "ntfs lznt1 back-reference appears before any literal data".to_string(),
                 )
               })?;
@@ -531,17 +528,17 @@ fn decompress_lznt1(bytes: &[u8]) -> Result<Vec<u8>> {
             let symbol_offset = usize::from(pointer >> (12 - u32::from(displacement))) + 1;
             let symbol_length = usize::from(pointer & (0x0FFFu16 >> displacement)) + 3;
             let start_offset = output.len().checked_sub(symbol_offset).ok_or_else(|| {
-              Error::InvalidFormat(
+              Error::invalid_format(
                 "ntfs lznt1 back-reference exceeds the decompressed output".to_string(),
               )
             })?;
 
             for copy_index in 0..symbol_length {
-              let source_index = start_offset.checked_add(copy_index).ok_or_else(|| {
-                Error::InvalidRange("ntfs lznt1 back-reference overflow".to_string())
-              })?;
+              let source_index = start_offset
+                .checked_add(copy_index)
+                .ok_or_else(|| Error::invalid_range("ntfs lznt1 back-reference overflow"))?;
               let byte = *output.get(source_index).ok_or_else(|| {
-                Error::InvalidFormat(
+                Error::invalid_format(
                   "ntfs lznt1 back-reference exceeds the decompressed output".to_string(),
                 )
               })?;

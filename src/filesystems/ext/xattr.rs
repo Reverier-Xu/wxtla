@@ -31,7 +31,7 @@ where
   F: FnMut(u32, u32) -> Result<Arc<[u8]>>, {
   let offset = 128usize
     .checked_add(usize::from(extended_inode_size))
-    .ok_or_else(|| Error::InvalidRange("ext inode xattr offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ext inode xattr offset overflow"))?;
   if offset + 4 > inode.len() || le_u32(&inode[offset..offset + 4]) != ATTRIBUTE_MAGIC {
     return Ok(Vec::new());
   }
@@ -50,17 +50,17 @@ pub(crate) fn parse_external_attribute_block_with<F>(
 where
   F: FnMut(u32, u32) -> Result<Arc<[u8]>>, {
   if bytes.len() < BLOCK_HEADER_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ext extended-attribute block is truncated".to_string(),
     ));
   }
   if le_u32(&bytes[0..4]) != ATTRIBUTE_MAGIC {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ext extended-attribute block magic is invalid".to_string(),
     ));
   }
   if le_u32(&bytes[8..12]) != 1 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ext extended-attribute block count is unsupported".to_string(),
     ));
   }
@@ -75,7 +75,7 @@ where
 
 pub(crate) fn parse_attribute_descriptor(bytes: &[u8]) -> Result<ExtExtendedAttributeDescriptor> {
   if bytes.len() < ENTRY_HEADER_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ext extended-attribute entry is truncated".to_string(),
     ));
   }
@@ -84,10 +84,10 @@ pub(crate) fn parse_attribute_descriptor(bytes: &[u8]) -> Result<ExtExtendedAttr
   let entry_size = align_to_four(
     ENTRY_HEADER_SIZE
       .checked_add(name_size)
-      .ok_or_else(|| Error::InvalidRange("ext xattr entry size overflow".to_string()))?,
+      .ok_or_else(|| Error::invalid_range("ext xattr entry size overflow"))?,
   );
   if entry_size > bytes.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ext extended-attribute entry exceeds the available bytes".to_string(),
     ));
   }
@@ -125,19 +125,19 @@ fn parse_attribute_entries(
     } else {
       let value_offset = usize::from(descriptor.value_offset);
       if value_offset < minimum_value_offset {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "ext xattr value offset is smaller than the header size".to_string(),
         ));
       }
       let value_end = value_offset
         .checked_add(
           usize::try_from(descriptor.value_size)
-            .map_err(|_| Error::InvalidRange("ext xattr value size is too large".to_string()))?,
+            .map_err(|_| Error::invalid_range("ext xattr value size is too large"))?,
         )
-        .ok_or_else(|| Error::InvalidRange("ext xattr value end overflow".to_string()))?;
-      let value = bytes.get(value_offset..value_end).ok_or_else(|| {
-        Error::InvalidFormat("ext xattr value exceeds the available bytes".to_string())
-      })?;
+        .ok_or_else(|| Error::invalid_range("ext xattr value end overflow"))?;
+      let value = bytes
+        .get(value_offset..value_end)
+        .ok_or_else(|| Error::invalid_format("ext xattr value exceeds the available bytes"))?;
       Arc::from(value)
     };
 
@@ -147,7 +147,7 @@ fn parse_attribute_entries(
     });
     offset = offset
       .checked_add(descriptor.entry_size)
-      .ok_or_else(|| Error::InvalidRange("ext xattr offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ext xattr offset overflow"))?;
   }
 
   Ok(attributes)
@@ -164,13 +164,13 @@ fn build_attribute_name(name_index: u8, suffix: &[u8]) -> Result<String> {
     7 => "system.",
     8 => "system.richacl",
     other => {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported ext xattr name index: {other}"
       )));
     }
   };
   let suffix = String::from_utf8(suffix.to_vec())
-    .map_err(|_| Error::InvalidFormat("ext xattr name is not valid UTF-8".to_string()))?;
+    .map_err(|_| Error::invalid_format("ext xattr name is not valid UTF-8"))?;
   Ok(format!("{prefix}{suffix}"))
 }
 

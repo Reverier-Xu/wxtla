@@ -129,7 +129,7 @@ impl ExtFileSystem {
     let root_id = NamespaceNodeId::from_u64(u64::from(ROOT_INODE));
     let root = file_system.lookup_node(&root_id)?;
     if root.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext root inode is not a directory".to_string(),
       ));
     }
@@ -197,7 +197,7 @@ impl ExtFileSystem {
     let value = self.build_data_source(&inode)?.read_bytes_at(
       0,
       usize::try_from(value_size)
-        .map_err(|_| Error::InvalidRange("ext xattr value size is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("ext xattr value size is too large"))?,
     )?;
 
     Ok(Arc::from(value.into_boxed_slice()))
@@ -207,7 +207,7 @@ impl ExtFileSystem {
     let inode = decode_node_id(node_id)?;
     self
       .load_node(inode)?
-      .ok_or_else(|| Error::NotFound(format!("ext inode {inode} was not found")))
+      .ok_or_else(|| Error::not_found(format!("ext inode {inode} was not found")))
   }
 
   fn load_node(&self, inode: u64) -> Result<Option<Arc<ExtNode>>> {
@@ -221,8 +221,8 @@ impl ExtFileSystem {
       return Ok(Some(node));
     }
 
-    let inode_number = u32::try_from(inode)
-      .map_err(|_| Error::InvalidRange("ext inode number is too large".to_string()))?;
+    let inode_number =
+      u32::try_from(inode).map_err(|_| Error::invalid_range("ext inode number is too large"))?;
     let inode = read_inode(
       self.source.as_ref(),
       &self.superblock,
@@ -268,7 +268,7 @@ impl ExtFileSystem {
     for entry in entries {
       let child = self
         .load_node(u64::from(entry.inode))?
-        .ok_or_else(|| Error::NotFound(format!("ext inode {} was not found", entry.inode)))?;
+        .ok_or_else(|| Error::not_found(format!("ext inode {} was not found", entry.inode)))?;
       children.push(NamespaceDirectoryEntry::new(
         entry.name,
         child.record.id.clone(),
@@ -298,7 +298,7 @@ impl ExtFileSystem {
     }
     if inode.mode & MODE_TYPE_MASK == MODE_SYMLINK && inode.size <= 60 {
       let size = usize::try_from(inode.size)
-        .map_err(|_| Error::InvalidRange("ext inline symlink size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("ext inline symlink size is too large"))?;
       return Ok(Arc::new(BytesDataSource::new(Arc::<[u8]>::from(
         &inode.block_data[..size],
       ))) as ByteSourceHandle);
@@ -348,13 +348,13 @@ impl ExtFileSystem {
 
   fn collect_extent_runs(&self, node: &[u8], runs: &mut Vec<ExtByteRun>) -> Result<()> {
     if node.len() < 12 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext extent node is too small".to_string(),
       ));
     }
     let magic = le_u16(&node[0..2]);
     if magic != 0xF30A {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext extent header magic is invalid".to_string(),
       ));
     }
@@ -366,7 +366,7 @@ impl ExtFileSystem {
         let offset = 12 + index * 12;
         let extent = node
           .get(offset..offset + 12)
-          .ok_or_else(|| Error::InvalidFormat("ext extent record is truncated".to_string()))?;
+          .ok_or_else(|| Error::invalid_format("ext extent record is truncated"))?;
         let logical_block = u64::from(le_u32(&extent[0..4]));
         let length_raw = le_u16(&extent[4..6]);
         let block_count = u64::from(length_raw & 0x7FFF);
@@ -375,7 +375,7 @@ impl ExtFileSystem {
         }
         let length = block_count
           .checked_mul(self.superblock.block_size_u64())
-          .ok_or_else(|| Error::InvalidRange("ext extent length overflow".to_string()))?;
+          .ok_or_else(|| Error::invalid_range("ext extent length overflow"))?;
         let physical_block = if length_raw & 0x8000 != 0 {
           None
         } else {
@@ -387,7 +387,7 @@ impl ExtFileSystem {
         runs.push(ExtByteRun {
           logical_offset: logical_block
             .checked_mul(self.superblock.block_size_u64())
-            .ok_or_else(|| Error::InvalidRange("ext logical extent overflow".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("ext logical extent overflow"))?,
           physical_offset,
           length,
         });
@@ -399,7 +399,7 @@ impl ExtFileSystem {
       let offset = 12 + index * 12;
       let extent_index = node
         .get(offset..offset + 12)
-        .ok_or_else(|| Error::InvalidFormat("ext extent index is truncated".to_string()))?;
+        .ok_or_else(|| Error::invalid_format("ext extent index is truncated"))?;
       let child_block =
         u64::from(le_u16(&extent_index[8..10])) << 32 | u64::from(le_u32(&extent_index[4..8]));
       let child = self.read_block(child_block)?;
@@ -436,7 +436,7 @@ impl ExtFileSystem {
       append_pointer_tree(pointers[14], 3, &mut remaining, &mut blocks, self)?;
     }
     if remaining != 0 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext inode block pointers do not cover the recorded file size".to_string(),
       ));
     }
@@ -446,7 +446,7 @@ impl ExtFileSystem {
 
   fn read_block(&self, block: u64) -> Result<Vec<u8>> {
     let block_size = usize::try_from(self.superblock.block_size_u64())
-      .map_err(|_| Error::InvalidRange("ext block size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("ext block size is too large"))?;
     self
       .source
       .read_bytes_at(self.superblock.block_offset(block)?, block_size)
@@ -470,7 +470,7 @@ impl FileSystem for ExtFileSystem {
     let inode = decode_node_id(directory_id)?;
     let node = self.lookup_node(directory_id)?;
     if node.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "ext inode {inode} is not a directory"
       )));
     }
@@ -482,7 +482,7 @@ impl FileSystem for ExtFileSystem {
     let inode = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
     if node.record.kind != NamespaceNodeKind::File {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "ext inode {inode} is not a readable file"
       )));
     }
@@ -503,9 +503,9 @@ impl ByteSource for ExtBlockDataSource {
     while written < limit {
       let absolute_offset = offset
         .checked_add(written as u64)
-        .ok_or_else(|| Error::InvalidRange("ext file read overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("ext file read overflow"))?;
       let run = self.run_for_offset(absolute_offset).ok_or_else(|| {
-        Error::InvalidFormat("ext block map does not cover the requested offset".to_string())
+        Error::invalid_format("ext block map does not cover the requested offset")
       })?;
       let run_offset = absolute_offset - run.logical_offset;
       let chunk = usize::try_from(run.length - run_offset)
@@ -515,7 +515,7 @@ impl ByteSource for ExtBlockDataSource {
         self.source.read_exact_at(
           physical_offset
             .checked_add(run_offset)
-            .ok_or_else(|| Error::InvalidRange("ext physical read overflow".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("ext physical read overflow"))?,
           &mut buf[written..written + chunk],
         )?;
       } else {
@@ -545,16 +545,16 @@ fn read_inode(
   inode_number: u32,
 ) -> Result<ExtInode> {
   if inode_number == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ext inode numbers start at 1".to_string(),
     ));
   }
   let inode_index = inode_number - 1;
   let group_index = usize::try_from(inode_index / superblock.inodes_per_group)
-    .map_err(|_| Error::InvalidRange("ext inode group index is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("ext inode group index is too large"))?;
   let index_within_group = inode_index % superblock.inodes_per_group;
   let descriptor = groups.get(group_index).ok_or_else(|| {
-    Error::InvalidFormat(format!(
+    Error::invalid_format(format!(
       "ext inode {inode_number} group descriptor is missing"
     ))
   })?;
@@ -565,11 +565,11 @@ fn read_inode(
     .and_then(|offset| {
       offset.checked_add(u64::from(index_within_group) * u64::from(superblock.inode_size))
     })
-    .ok_or_else(|| Error::InvalidRange("ext inode offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("ext inode offset overflow"))?;
   let inode_size = usize::from(superblock.inode_size);
   let inode = source.read_bytes_at(inode_offset, inode_size)?;
   if inode.len() < 128 {
-    return Err(Error::InvalidFormat("ext inode is too small".to_string()));
+    return Err(Error::invalid_format("ext inode is too small"));
   }
 
   let mut block_data = [0u8; 60];
@@ -668,16 +668,16 @@ fn compress_pointer_blocks(blocks: &[Option<u64>], block_size: u64) -> Result<Ve
       length: u64::try_from(count)
         .unwrap_or(u64::MAX)
         .checked_mul(block_size)
-        .ok_or_else(|| Error::InvalidRange("ext block run length overflow".to_string()))?,
+        .ok_or_else(|| Error::invalid_range("ext block run length overflow"))?,
     });
     logical_offset = logical_offset
       .checked_add(
         u64::try_from(count)
           .unwrap_or(u64::MAX)
           .checked_mul(block_size)
-          .ok_or_else(|| Error::InvalidRange("ext logical run offset overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("ext logical run offset overflow"))?,
       )
-      .ok_or_else(|| Error::InvalidRange("ext logical run offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ext logical run offset overflow"))?;
     index += count;
   }
 
@@ -692,14 +692,14 @@ fn parse_directory_entries(bytes: &[u8]) -> Result<Vec<ExtDirectoryEntryRecord>>
     let inode = le_u32(&bytes[offset..offset + 4]);
     let rec_len = usize::from(le_u16(&bytes[offset + 4..offset + 6]));
     if rec_len < 8 || offset + rec_len > bytes.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext directory entry length is invalid".to_string(),
       ));
     }
 
     let name_len = usize::from(bytes[offset + 6]);
     if 8 + name_len > rec_len {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ext directory entry name exceeds its record length".to_string(),
       ));
     }
@@ -730,7 +730,7 @@ fn kind_from_mode(mode: u16) -> NamespaceNodeKind {
 fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "ext node identifiers must be encoded as 8-byte little-endian values".to_string(),
     ));
   }

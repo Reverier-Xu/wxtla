@@ -185,7 +185,7 @@ impl FatFileSystem {
       .nodes
       .get(&node_id)
       .cloned()
-      .ok_or_else(|| Error::NotFound(format!("fat node {node_id} was not found")))
+      .ok_or_else(|| Error::not_found(format!("fat node {node_id} was not found")))
   }
 
   fn directory_children(
@@ -254,7 +254,7 @@ impl FileSystem for FatFileSystem {
     let node_id = decode_node_id(directory_id)?;
     let node = self.lookup_node(directory_id)?;
     if node.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "fat node {node_id} is not a directory"
       )));
     }
@@ -265,7 +265,7 @@ impl FileSystem for FatFileSystem {
     let node_id = decode_node_id(file_id)?;
     let node = self.lookup_node(file_id)?;
     if node.record.kind != NamespaceNodeKind::File {
-      return Err(Error::NotFound(format!(
+      return Err(Error::not_found(format!(
         "fat node {node_id} is not a readable file"
       )));
     }
@@ -310,7 +310,7 @@ fn follow_cluster_chain(
     return Ok(Vec::new());
   }
   if start_cluster < 2 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "fat cluster chains must start at cluster 2 or later, got {start_cluster}"
     )));
   }
@@ -323,7 +323,7 @@ fn follow_cluster_chain(
 
   loop {
     if !visited.insert(cluster) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "fat cluster chain loops back to cluster {cluster}"
       )));
     }
@@ -341,12 +341,12 @@ fn follow_cluster_chain(
         break;
       }
       FatClusterStatus::Free => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "fat cluster chain unexpectedly ends at free cluster {cluster}"
         )));
       }
       FatClusterStatus::Bad => {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "fat cluster chain reaches bad cluster {cluster}"
         )));
       }
@@ -357,9 +357,9 @@ fn follow_cluster_chain(
     let covered = u64::try_from(chain.len())
       .unwrap_or(u64::MAX)
       .checked_mul(cluster_size)
-      .ok_or_else(|| Error::InvalidRange("fat cluster coverage overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("fat cluster coverage overflow"))?;
     if covered < size_hint {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "fat cluster chain is shorter than the recorded file size".to_string(),
       ));
     }
@@ -378,7 +378,7 @@ fn insert_directory_entries(
     state.next_node_id = state
       .next_node_id
       .checked_add(1)
-      .ok_or_else(|| Error::InvalidRange("fat node id overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("fat node id overflow"))?;
     let size = if entry.kind == NamespaceNodeKind::Directory {
       0
     } else {
@@ -431,7 +431,7 @@ fn read_cluster_chain_bytes(
   source: &dyn ByteSource, boot_sector: &FatBootSector, chain: &[u32],
 ) -> Result<Vec<u8>> {
   let cluster_size = usize::try_from(boot_sector.cluster_size()?)
-    .map_err(|_| Error::InvalidRange("fat cluster size is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("fat cluster size is too large"))?;
   let mut bytes = Vec::with_capacity(cluster_size.saturating_mul(chain.len()));
   for cluster in chain {
     bytes.extend_from_slice(
@@ -459,7 +459,7 @@ fn build_file_data_source(
     boot_sector: *boot_sector,
     clusters: Arc::from(chain.into_boxed_slice()),
     cluster_size: usize::try_from(boot_sector.cluster_size()?)
-      .map_err(|_| Error::InvalidRange("fat cluster size is too large".to_string()))?,
+      .map_err(|_| Error::invalid_range("fat cluster size is too large"))?,
     size,
   }) as ByteSourceHandle)
 }
@@ -471,11 +471,11 @@ impl FatTable {
         let offset = usize::try_from(
           (u64::from(cluster) * 3)
             .checked_div(2)
-            .ok_or_else(|| Error::InvalidRange("fat12 offset overflow".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("fat12 offset overflow"))?,
         )
-        .map_err(|_| Error::InvalidRange("fat12 offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("fat12 offset is too large"))?;
         let slice = self.bytes.get(offset..offset + 2).ok_or_else(|| {
-          Error::InvalidFormat(format!("fat12 table is truncated at cluster {cluster}"))
+          Error::invalid_format(format!("fat12 table is truncated at cluster {cluster}"))
         })?;
         let pair = u16::from_le_bytes([slice[0], slice[1]]);
         if cluster & 1 == 0 {
@@ -486,17 +486,17 @@ impl FatTable {
       }
       FatType::Fat16 => {
         let offset = usize::try_from(u64::from(cluster) * 2)
-          .map_err(|_| Error::InvalidRange("fat16 offset is too large".to_string()))?;
+          .map_err(|_| Error::invalid_range("fat16 offset is too large"))?;
         let slice = self.bytes.get(offset..offset + 2).ok_or_else(|| {
-          Error::InvalidFormat(format!("fat16 table is truncated at cluster {cluster}"))
+          Error::invalid_format(format!("fat16 table is truncated at cluster {cluster}"))
         })?;
         u32::from(u16::from_le_bytes([slice[0], slice[1]]))
       }
       FatType::Fat32 => {
         let offset = usize::try_from(u64::from(cluster) * 4)
-          .map_err(|_| Error::InvalidRange("fat32 offset is too large".to_string()))?;
+          .map_err(|_| Error::invalid_range("fat32 offset is too large"))?;
         let slice = self.bytes.get(offset..offset + 4).ok_or_else(|| {
-          Error::InvalidFormat(format!("fat32 table is truncated at cluster {cluster}"))
+          Error::invalid_format(format!("fat32 table is truncated at cluster {cluster}"))
         })?;
         u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]) & 0x0FFF_FFFF
       }
@@ -538,13 +538,13 @@ impl ByteSource for FatChainDataSource {
     while written < limit {
       let absolute = offset
         .checked_add(written as u64)
-        .ok_or_else(|| Error::InvalidRange("fat file read overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("fat file read overflow"))?;
       let cluster_index = usize::try_from(absolute / self.cluster_size as u64)
-        .map_err(|_| Error::InvalidRange("fat cluster index is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("fat cluster index is too large"))?;
       let cluster_offset = usize::try_from(absolute % self.cluster_size as u64)
-        .map_err(|_| Error::InvalidRange("fat cluster offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("fat cluster offset is too large"))?;
       let cluster = *self.clusters.get(cluster_index).ok_or_else(|| {
-        Error::InvalidFormat(
+        Error::invalid_format(
           "fat file cluster chain does not cover the requested offset".to_string(),
         )
       })?;
@@ -553,7 +553,7 @@ impl ByteSource for FatChainDataSource {
       self.source.read_exact_at(
         physical_offset
           .checked_add(cluster_offset as u64)
-          .ok_or_else(|| Error::InvalidRange("fat physical read overflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("fat physical read overflow"))?,
         &mut buf[written..written + chunk],
       )?;
       written += chunk;
@@ -658,7 +658,7 @@ struct LongNameFragment {
 fn parse_long_name_fragment(slot: &[u8]) -> Result<LongNameFragment> {
   let order = slot[0] & 0x1F;
   if order == 0 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "fat long-file-name entry has an invalid order value".to_string(),
     ));
   }
@@ -676,7 +676,7 @@ fn assemble_long_name(fragments: &[LongNameFragment]) -> Result<String> {
     name.push_str(&fragment.text);
   }
   if name.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "fat long-file-name sequence decoded to an empty name".to_string(),
     ));
   }
@@ -695,7 +695,7 @@ fn decode_long_name_component(slot: &[u8]) -> Result<String> {
     }
   }
   String::from_utf16(&units)
-    .map_err(|_| Error::InvalidFormat("fat long-file-name data is not valid UTF-16".to_string()))
+    .map_err(|_| Error::invalid_format("fat long-file-name data is not valid UTF-16"))
 }
 
 fn decode_short_name(slot: &[u8]) -> Result<String> {
@@ -720,7 +720,7 @@ fn decode_volume_label(slot: &[u8]) -> Result<String> {
     .take_while(|byte| *byte != b' ')
     .collect::<Vec<_>>();
   String::from_utf8(trimmed)
-    .map_err(|_| Error::InvalidFormat("fat volume label is not valid ASCII/UTF-8".to_string()))
+    .map_err(|_| Error::invalid_format("fat volume label is not valid ASCII/UTF-8"))
 }
 
 fn decode_short_component(bytes: &[u8], lowercase: bool) -> Result<String> {
@@ -730,7 +730,7 @@ fn decode_short_component(bytes: &[u8], lowercase: bool) -> Result<String> {
     .take_while(|byte| *byte != b' ')
     .collect::<Vec<_>>();
   let component = String::from_utf8(trimmed)
-    .map_err(|_| Error::InvalidFormat("fat short name is not valid ASCII/UTF-8".to_string()))?;
+    .map_err(|_| Error::invalid_format("fat short name is not valid ASCII/UTF-8"))?;
   if lowercase {
     Ok(component.to_ascii_lowercase())
   } else {
@@ -741,7 +741,7 @@ fn decode_short_component(bytes: &[u8], lowercase: bool) -> Result<String> {
 fn decode_node_id(node_id: &NamespaceNodeId) -> Result<u64> {
   let bytes = node_id.as_bytes();
   if bytes.len() != 8 {
-    return Err(Error::InvalidSourceReference(
+    return Err(Error::invalid_source_reference(
       "fat node identifiers must be encoded as 8-byte little-endian values".to_string(),
     ));
   }

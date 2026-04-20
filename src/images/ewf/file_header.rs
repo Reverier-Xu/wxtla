@@ -31,7 +31,7 @@ impl EwfFileHeader {
   /// Parse the file header from 13 bytes.
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() != FILE_HEADER_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf file header must be {FILE_HEADER_SIZE} bytes, got {}",
         data.len()
       )));
@@ -41,17 +41,17 @@ impl EwfFileHeader {
     } else if &data[0..8] == FILE_HEADER_MAGIC_LVF {
       EwfFileSignature::Lvf
     } else {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ewf file header signature is missing".to_string(),
       ));
     };
     if data[8] != 0x01 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ewf file header start-of-fields marker is invalid".to_string(),
       ));
     }
     if data[11..13] != [0x00, 0x00] {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ewf file header end-of-fields marker is invalid".to_string(),
       ));
     }

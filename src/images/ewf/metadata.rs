@@ -29,7 +29,7 @@ impl EwfMetadataSection {
     let mut decoded = Vec::new();
     decoder.read_to_end(&mut decoded).map_err(Error::Io)?;
     let text = String::from_utf8(decoded)
-      .map_err(|_| Error::InvalidFormat("ewf header is not valid ASCII/UTF-8 text".to_string()))?;
+      .map_err(|_| Error::invalid_format("ewf header is not valid ASCII/UTF-8 text"))?;
 
     Self::parse_text(&text)
   }
@@ -70,12 +70,10 @@ impl EwfMetadataSection {
     let lines: Vec<&str> = normalized.split('\n').collect();
     let category_count = lines
       .first()
-      .ok_or_else(|| {
-        Error::InvalidFormat("ewf metadata is missing the category count".to_string())
-      })?
+      .ok_or_else(|| Error::invalid_format("ewf metadata is missing the category count"))?
       .trim()
       .parse::<usize>()
-      .map_err(|_| Error::InvalidFormat("ewf metadata category count is invalid".to_string()))?;
+      .map_err(|_| Error::invalid_format("ewf metadata category count is invalid"))?;
 
     let mut cursor = 1usize;
     let mut categories = Vec::with_capacity(category_count);
@@ -105,7 +103,7 @@ impl EwfMetadataSection {
     }
 
     if categories.len() != category_count {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ewf metadata category count does not match the parsed categories".to_string(),
       ));
     }
@@ -116,7 +114,7 @@ impl EwfMetadataSection {
 
 fn decode_utf16_text(data: &[u8]) -> Result<String> {
   if !data.len().is_multiple_of(2) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ewf header2 decompressed data has an odd byte count".to_string(),
     ));
   }
@@ -127,7 +125,7 @@ fn decode_utf16_text(data: &[u8]) -> Result<String> {
     _ => (false, data),
   };
   if !data.len().is_multiple_of(2) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ewf header2 decompressed data is missing UTF-16 alignment".to_string(),
     ));
   }
@@ -144,7 +142,7 @@ fn decode_utf16_text(data: &[u8]) -> Result<String> {
     .collect::<Vec<_>>();
 
   String::from_utf16(&code_units)
-    .map_err(|_| Error::InvalidFormat("ewf header2 text is not valid UTF-16".to_string()))
+    .map_err(|_| Error::invalid_format("ewf header2 text is not valid UTF-16"))
 }
 
 #[cfg(test)]

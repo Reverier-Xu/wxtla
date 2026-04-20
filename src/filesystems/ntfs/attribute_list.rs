@@ -18,14 +18,14 @@ pub struct NtfsAttributeListEntry {
 impl NtfsAttributeListEntry {
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
     if bytes.len() < MIN_ENTRY_SIZE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs attribute-list entry is truncated".to_string(),
       ));
     }
 
     let entry_length = usize::from(le_u16(&bytes[4..6]));
     if entry_length < MIN_ENTRY_SIZE || entry_length > bytes.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "ntfs attribute-list entry length is invalid".to_string(),
       ));
     }
@@ -69,7 +69,7 @@ pub fn parse_attribute_list(bytes: &[u8]) -> Result<Vec<NtfsAttributeListEntry>>
     entries.push(entry);
     offset = offset
       .checked_add(entry_length)
-      .ok_or_else(|| Error::InvalidRange("ntfs attribute-list offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("ntfs attribute-list offset overflow"))?;
   }
 
   Ok(entries)
@@ -78,25 +78,25 @@ pub fn parse_attribute_list(bytes: &[u8]) -> Result<Vec<NtfsAttributeListEntry>>
 fn read_utf16le(bytes: &[u8], offset: usize, chars: usize, label: &str) -> Result<String> {
   let byte_len = chars
     .checked_mul(2)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} length overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} length overflow")))?;
   let end = offset
     .checked_add(byte_len)
-    .ok_or_else(|| Error::InvalidRange(format!("{label} offset overflow")))?;
+    .ok_or_else(|| Error::invalid_range(format!("{label} offset overflow")))?;
   let slice = bytes
     .get(offset..end)
-    .ok_or_else(|| Error::InvalidFormat(format!("{label} extends past the available bytes")))?;
+    .ok_or_else(|| Error::invalid_format(format!("{label} extends past the available bytes")))?;
   let units = slice
     .chunks_exact(2)
     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
     .collect::<Vec<_>>();
   String::from_utf16(&units)
-    .map_err(|_| Error::InvalidFormat(format!("{label} is not valid UTF-16")))
+    .map_err(|_| Error::invalid_format(format!("{label} is not valid UTF-16")))
 }
 
 fn decode_file_reference(bytes: &[u8]) -> Result<u64> {
   let bytes = bytes
     .get(..8)
-    .ok_or_else(|| Error::InvalidFormat("ntfs file reference is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("ntfs file reference is truncated"))?;
   let mut raw = [0u8; 8];
   raw[..6].copy_from_slice(&bytes[..6]);
   Ok(u64::from_le_bytes(raw))

@@ -84,7 +84,7 @@ impl ZipArchive {
     command.arg(&self.cache.source_path);
     let output = command.output()?;
     if !output.status.success() {
-      return Err(Error::InvalidSourceReference(if password.is_some() {
+      return Err(Error::invalid_source_reference(if password.is_some() {
         "zip archive password unlock failed".to_string()
       } else {
         format!(
@@ -115,7 +115,7 @@ impl ZipArchive {
     self
       .entries
       .get(index)
-      .ok_or_else(|| Error::NotFound(format!("missing zip archive entry index: {index}")))
+      .ok_or_else(|| Error::not_found(format!("missing zip archive entry index: {index}")))
   }
 }
 
@@ -135,7 +135,7 @@ impl Archive for ZipArchive {
   fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
     let entry = self.entry_ref(directory_id)?;
     if entry.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "zip directory reads require a directory entry".to_string(),
       ));
     }
@@ -144,18 +144,18 @@ impl Archive for ZipArchive {
 
   fn open_file(&self, entry_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
     if self.locked {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "zip archive is locked; unlock it with a password before opening files".to_string(),
       ));
     }
     let entry = self.entry_ref(entry_id)?;
     if entry.record.kind != NamespaceNodeKind::File {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "zip file opens require a regular file entry".to_string(),
       ));
     }
     let path = entry.extracted_path.as_ref().ok_or_else(|| {
-      Error::InvalidFormat("zip file entry does not have a cached extraction path".to_string())
+      Error::invalid_format("zip file entry does not have a cached extraction path")
     })?;
     Ok(std::sync::Arc::new(FileDataSource::open(path)?) as ByteSourceHandle)
   }
@@ -183,7 +183,7 @@ fn list_archive(source_path: &Path) -> Result<Vec<ZipListingEntry>> {
     .arg(source_path)
     .output()?;
   if !output.status.success() {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unable to list zip archive contents: {}",
       String::from_utf8_lossy(&output.stderr)
     )));
@@ -284,11 +284,11 @@ fn build_tree(
     extracted_path: None,
   });
   for path in &ordered_paths {
-    let entry = builders
-      .get(path)
-      .ok_or_else(|| Error::InvalidFormat(format!("missing zip entry builder for path: {path}")))?;
+    let entry = builders.get(path).ok_or_else(|| {
+      Error::invalid_format(format!("missing zip entry builder for path: {path}"))
+    })?;
     let id = path_to_id.get(path).cloned().ok_or_else(|| {
-      Error::InvalidFormat(format!("missing zip entry identifier for path: {path}"))
+      Error::invalid_format(format!("missing zip entry identifier for path: {path}"))
     })?;
     entries.push(ZipEntry {
       record: NamespaceNodeRecord::new(id, entry.kind, entry.size).with_path(path.clone()),
@@ -302,13 +302,13 @@ fn build_tree(
     let child_id = path_to_id
       .get(path)
       .cloned()
-      .ok_or_else(|| Error::InvalidFormat(format!("missing zip path mapping for path: {path}")))?;
+      .ok_or_else(|| Error::invalid_format(format!("missing zip path mapping for path: {path}")))?;
     let child_index = entry_id_to_index(&child_id)?;
     let child_kind = entries[child_index].record.kind;
     let name = relative_name(path);
     let parent_index = match parent_path(path) {
       Some(parent) => entry_id_to_index(path_to_id.get(parent).ok_or_else(|| {
-        Error::InvalidFormat(format!("missing zip parent directory mapping: {parent}"))
+        Error::invalid_format(format!("missing zip parent directory mapping: {parent}"))
       })?)?,
       None => 0,
     };
@@ -351,13 +351,13 @@ fn normalize_path(path: &str, is_dir: bool) -> Result<String> {
     .filter(|component| !component.is_empty() && *component != ".")
     .collect::<Vec<_>>();
   if components.contains(&"..") {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "zip paths must not contain parent directory traversals".to_string(),
     ));
   }
   let normalized = components.join("/");
   if normalized.is_empty() && !is_dir {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "zip file entries must have a non-empty path".to_string(),
     ));
   }
@@ -376,10 +376,10 @@ fn relative_name(path: &str) -> String {
 
 fn entry_id_to_index(entry_id: &NamespaceNodeId) -> Result<usize> {
   let bytes: [u8; 8] = entry_id.as_bytes().try_into().map_err(|_| {
-    Error::InvalidFormat("zip archive entry identifiers must be native u64 values".to_string())
+    Error::invalid_format("zip archive entry identifiers must be native u64 values")
   })?;
   usize::try_from(u64::from_le_bytes(bytes))
-    .map_err(|_| Error::InvalidRange("zip archive entry index is too large".to_string()))
+    .map_err(|_| Error::invalid_range("zip archive entry index is too large"))
 }
 
 #[cfg(test)]
@@ -396,7 +396,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

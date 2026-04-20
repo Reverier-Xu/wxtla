@@ -35,7 +35,7 @@ impl GptGuid {
   /// Parse a GPT GUID from 16 little-endian on-disk bytes.
   pub fn from_le_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != 16 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "gpt guid must be 16 bytes, got {}",
         data.len()
       )));

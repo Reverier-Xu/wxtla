@@ -35,7 +35,7 @@ impl EwfVolumeInfo {
   /// Parse an E01-style 1052-byte volume or data section payload.
   pub fn parse_e01(data: &[u8]) -> Result<Self> {
     if data.len() < E01_VOLUME_DATA_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf volume section must be at least {E01_VOLUME_DATA_SIZE} bytes, got {}",
         data.len()
       )));
@@ -45,7 +45,7 @@ impl EwfVolumeInfo {
     let stored_checksum = u32::from_le_bytes([data[1048], data[1049], data[1050], data[1051]]);
     let calculated_checksum = adler32_slice(&data[..1048]);
     if stored_checksum != 0 && stored_checksum != calculated_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf volume checksum mismatch: stored 0x{stored_checksum:08x}, calculated 0x{calculated_checksum:08x}"
       )));
     }
@@ -66,7 +66,7 @@ impl EwfVolumeInfo {
   /// Parse an S01-style 94-byte volume section payload.
   pub fn parse_s01(data: &[u8]) -> Result<Self> {
     if data.len() < S01_VOLUME_DATA_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf s01 volume section must be at least {S01_VOLUME_DATA_SIZE} bytes, got {}",
         data.len()
       )));
@@ -76,7 +76,7 @@ impl EwfVolumeInfo {
     let stored_checksum = u32::from_le_bytes([data[90], data[91], data[92], data[93]]);
     let calculated_checksum = adler32_slice(&data[..90]);
     if stored_checksum != calculated_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf s01 volume checksum mismatch: stored 0x{stored_checksum:08x}, calculated 0x{calculated_checksum:08x}"
       )));
     }
@@ -99,7 +99,7 @@ impl EwfVolumeInfo {
     self
       .sectors_per_chunk
       .checked_mul(self.bytes_per_sector)
-      .ok_or_else(|| Error::InvalidRange("ewf chunk size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ewf chunk size overflow"))
   }
 
   /// Return the logical media size in bytes.
@@ -107,13 +107,13 @@ impl EwfVolumeInfo {
     self
       .sector_count
       .checked_mul(u64::from(self.bytes_per_sector))
-      .ok_or_else(|| Error::InvalidRange("ewf media size overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ewf media size overflow"))
   }
 }
 
 fn copy_array<const N: usize>(data: &[u8]) -> Result<[u8; N]> {
   data.try_into().map_err(|_| {
-    Error::InvalidFormat(format!(
+    Error::invalid_format(format!(
       "ewf fixed-size array conversion failed: expected {N} bytes, got {}",
       data.len()
     ))

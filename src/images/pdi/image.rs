@@ -49,21 +49,21 @@ enum PdiLayerStorage {
 
 impl PdiImage {
   pub fn open(_source: ByteSourceHandle) -> Result<Self> {
-    Err(Error::InvalidSourceReference(
+    Err(Error::invalid_source_reference(
       "pdi images require source hints, a resolver, and a source identity".to_string(),
     ))
   }
 
   pub fn open_with_hints(source: ByteSourceHandle, hints: SourceHints<'_>) -> Result<Self> {
     let resolver = hints.resolver().ok_or_else(|| {
-      Error::InvalidSourceReference("pdi images require a related-source resolver".to_string())
+      Error::invalid_source_reference("pdi images require a related-source resolver")
     })?;
     let identity = hints.source_identity().ok_or_else(|| {
-      Error::InvalidSourceReference("pdi images require a source identity hint".to_string())
+      Error::invalid_source_reference("pdi images require a source identity hint")
     })?;
 
     let xml = String::from_utf8(source.read_all()?)
-      .map_err(|_| Error::InvalidFormat("pdi descriptors must be valid UTF-8".to_string()))?;
+      .map_err(|_| Error::invalid_format("pdi descriptors must be valid UTF-8"))?;
     let descriptor = PdiDescriptor::from_xml(&xml)?;
     let media_size = descriptor.media_size()?;
     let active_snapshot = select_active_snapshot(&descriptor)?;
@@ -141,7 +141,7 @@ impl PdiLayer {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("pdi read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("pdi read offset overflow"))?;
       if absolute_offset >= self.media_size {
         break;
       }
@@ -158,7 +158,7 @@ impl PdiLayer {
           .min(self.media_size - absolute_offset)
           .min((buf.len() - copied) as u64),
         )
-        .map_err(|_| Error::InvalidRange("pdi read chunk is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("pdi read chunk is too large"))?;
 
         match &extent.storage {
           PdiLayerStorage::Raw(source) => {
@@ -190,7 +190,7 @@ impl PdiLayer {
             .min(self.media_size - absolute_offset)
             .min((buf.len() - copied) as u64),
         )
-        .map_err(|_| Error::InvalidRange("pdi gap size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("pdi gap size is too large"))?;
         fill_from_parent_or_zero(
           self.parent.as_ref(),
           absolute_offset,
@@ -224,13 +224,13 @@ fn build_layer(
     return Ok(layer);
   }
   if !visiting.insert(snapshot_id.to_string()) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "pdi snapshot graph must not contain cycles".to_string(),
     ));
   }
 
   let snapshot = find_snapshot(descriptor, snapshot_id)
-    .ok_or_else(|| Error::InvalidFormat(format!("missing pdi snapshot: {snapshot_id}")))?;
+    .ok_or_else(|| Error::invalid_format(format!("missing pdi snapshot: {snapshot_id}")))?;
   let parent = match snapshot.parent_identifier.as_deref() {
     Some(parent_id) => Some(build_layer(
       parent_id,
@@ -258,9 +258,9 @@ fn build_layer(
     let left_end = pair[0]
       .guest_offset
       .checked_add(pair[0].size)
-      .ok_or_else(|| Error::InvalidRange("pdi extent end overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("pdi extent end overflow"))?;
     if left_end > pair[1].guest_offset {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "pdi layer extents must not overlap".to_string(),
       ));
     }
@@ -283,12 +283,12 @@ fn build_extent(
   let guest_offset = descriptor_extent
     .start_sector
     .checked_mul(FIXED_SECTOR_SIZE)
-    .ok_or_else(|| Error::InvalidRange("pdi extent guest offset overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("pdi extent guest offset overflow"))?;
   let size = descriptor_extent
     .end_sector
     .checked_sub(descriptor_extent.start_sector)
     .and_then(|sector_count| sector_count.checked_mul(FIXED_SECTOR_SIZE))
-    .ok_or_else(|| Error::InvalidRange("pdi extent size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("pdi extent size overflow"))?;
 
   let source = resolve_named_source(
     resolver,
@@ -297,7 +297,7 @@ fn build_extent(
     RelatedSourcePurpose::Extent,
   )?
   .ok_or_else(|| {
-    Error::NotFound(format!(
+    Error::not_found(format!(
       "missing pdi extent file: {}",
       descriptor_image.file_name
     ))
@@ -307,7 +307,7 @@ fn build_extent(
   let storage = match descriptor_image.image_type {
     PdiDescriptorImageType::Plain => {
       if source.size()? != size {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "pdi plain extent size does not match the descriptor range".to_string(),
         ));
       }
@@ -329,7 +329,7 @@ fn build_extent(
 
 fn select_active_snapshot(descriptor: &PdiDescriptor) -> Result<&str> {
   if descriptor.snapshots.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "pdi descriptors must contain at least one snapshot".to_string(),
     ));
   }
@@ -345,7 +345,7 @@ fn select_active_snapshot(descriptor: &PdiDescriptor) -> Result<&str> {
     .filter(|snapshot| !child_parents.contains(snapshot.identifier.as_str()))
     .collect::<Vec<_>>();
   if leaves.is_empty() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "pdi descriptor does not contain a leaf snapshot".to_string(),
     ));
   }
@@ -359,7 +359,7 @@ fn select_active_snapshot(descriptor: &PdiDescriptor) -> Result<&str> {
     match best {
       Some((_, best_depth)) if depth < best_depth => {}
       Some((_, best_depth)) if depth == best_depth => {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "pdi descriptors with multiple equally-deep snapshot leaves are ambiguous".to_string(),
         ));
       }
@@ -369,7 +369,7 @@ fn select_active_snapshot(descriptor: &PdiDescriptor) -> Result<&str> {
 
   best
     .map(|(id, _)| id)
-    .ok_or_else(|| Error::InvalidFormat("missing pdi active snapshot".to_string()))
+    .ok_or_else(|| Error::invalid_format("missing pdi active snapshot"))
 }
 
 fn snapshot_depth(snapshots: &[PdiSnapshot], snapshot_id: &str) -> Result<usize> {
@@ -378,14 +378,14 @@ fn snapshot_depth(snapshots: &[PdiSnapshot], snapshot_id: &str) -> Result<usize>
   let mut seen = HashSet::new();
   while let Some(identifier) = current {
     if !seen.insert(identifier.to_string()) {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "pdi snapshot graph must not contain cycles".to_string(),
       ));
     }
     let snapshot = snapshots
       .iter()
       .find(|snapshot| snapshot.identifier == identifier)
-      .ok_or_else(|| Error::InvalidFormat(format!("missing pdi snapshot: {identifier}")))?;
+      .ok_or_else(|| Error::invalid_format(format!("missing pdi snapshot: {identifier}")))?;
     current = snapshot.parent_identifier.as_deref();
     if current.is_some() {
       depth += 1;
@@ -474,7 +474,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

@@ -53,7 +53,7 @@ fn read_parent_locator_paths(
     let data = source.read_bytes_at(
       locator.data_offset,
       usize::try_from(locator.data_size)
-        .map_err(|_| Error::InvalidRange("vhd parent locator size is too large".to_string()))?,
+        .map_err(|_| Error::invalid_range("vhd parent locator size is too large"))?,
     )?;
     if locator.platform_code == *b"W2ku" || locator.platform_code == *b"W2ru" {
       paths.push(decode_utf16_le_string(&data)?);
@@ -65,7 +65,7 @@ fn read_parent_locator_paths(
 
 fn decode_utf16_le_string(data: &[u8]) -> Result<String> {
   if !data.len().is_multiple_of(2) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhd parent locator string has an odd byte count".to_string(),
     ));
   }
@@ -79,24 +79,24 @@ fn decode_utf16_le_string(data: &[u8]) -> Result<String> {
   }
 
   String::from_utf16(&code_units)
-    .map_err(|_| Error::InvalidFormat("vhd parent locator string is not valid UTF-16".to_string()))
+    .map_err(|_| Error::invalid_format("vhd parent locator string is not valid UTF-16"))
 }
 
 fn read_bat(source: &dyn ByteSource, header: &VhdDynamicHeader) -> Result<VhdBatLayout> {
   let entry_count = usize::try_from(header.block_count)
-    .map_err(|_| Error::InvalidRange("vhd BAT entry count is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("vhd BAT entry count is too large"))?;
   let table_bytes = entry_count
     .checked_mul(4)
-    .ok_or_else(|| Error::InvalidRange("vhd BAT size overflow".to_string()))?;
-  let table_end =
-    header
-      .block_allocation_table_offset
-      .checked_add(u64::try_from(table_bytes).map_err(|_| {
-        Error::InvalidRange("vhd BAT size does not fit in a file offset".to_string())
-      })?)
-      .ok_or_else(|| Error::InvalidRange("vhd BAT end overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("vhd BAT size overflow"))?;
+  let table_end = header
+    .block_allocation_table_offset
+    .checked_add(
+      u64::try_from(table_bytes)
+        .map_err(|_| Error::invalid_range("vhd BAT size does not fit in a file offset"))?,
+    )
+    .ok_or_else(|| Error::invalid_range("vhd BAT end overflow"))?;
   if table_end > source.size()? {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "vhd BAT exceeds the source size".to_string(),
     ));
   }

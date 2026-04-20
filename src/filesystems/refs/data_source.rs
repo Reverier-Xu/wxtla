@@ -42,9 +42,9 @@ impl ByteSource for RefsDataRunsDataSource {
     while written < limit {
       let absolute = offset
         .checked_add(written as u64)
-        .ok_or_else(|| Error::InvalidRange("refs read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("refs read offset overflow"))?;
       let run = self.run_for_offset(absolute).ok_or_else(|| {
-        Error::InvalidFormat("refs data run is missing for the requested offset".to_string())
+        Error::invalid_format("refs data run is missing for the requested offset")
       })?;
 
       let run_length = run.block_count * self.metadata_block_size;
@@ -64,7 +64,7 @@ impl ByteSource for RefsDataRunsDataSource {
             .physical_block_number
             .checked_mul(self.metadata_block_size)
             .and_then(|base| base.checked_add(run_offset))
-            .ok_or_else(|| Error::InvalidRange("refs physical read offset overflow".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("refs physical read offset overflow"))?,
           &mut buf[written..written + valid_chunk],
         )?;
       }

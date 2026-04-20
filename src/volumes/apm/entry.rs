@@ -46,13 +46,13 @@ impl ApmPartitionMapEntry {
   /// Parse a partition map entry from exactly 512 bytes.
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() != PARTITION_ENTRY_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "apm partition entry must be {PARTITION_ENTRY_SIZE} bytes, got {}",
         data.len()
       )));
     }
     if &data[0..2] != PARTITION_MAP_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "apm partition entry signature is missing".to_string(),
       ));
     }
@@ -80,10 +80,10 @@ impl ApmPartitionMapEntry {
     let block_size = u64::from(block_size);
     let byte_offset = u64::from(self.start_block)
       .checked_mul(block_size)
-      .ok_or_else(|| Error::InvalidRange("apm partition offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("apm partition offset overflow"))?;
     let byte_size = u64::from(self.block_count)
       .checked_mul(block_size)
-      .ok_or_else(|| Error::InvalidRange("apm partition size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("apm partition size overflow"))?;
     let mut record = VolumeRecord::new(
       index,
       VolumeSpan::new(byte_offset, byte_size),

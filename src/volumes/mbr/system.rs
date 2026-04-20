@@ -67,7 +67,7 @@ impl MbrVolumeSystem {
     let volume = self
       .volumes
       .get(index)
-      .ok_or_else(|| Error::NotFound(format!("mbr volume index {index} is out of bounds")))?;
+      .ok_or_else(|| Error::not_found(format!("mbr volume index {index} is out of bounds")))?;
     let slice: ByteSourceHandle = Arc::new(SliceDataSource::new(
       self.source.clone(),
       volume.span.byte_offset,

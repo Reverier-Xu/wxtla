@@ -31,18 +31,18 @@ impl VhdDynamicHeader {
 
   pub fn parse(data: &[u8]) -> Result<Self> {
     if data.len() != DYNAMIC_HEADER_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhd dynamic header must be {DYNAMIC_HEADER_SIZE} bytes, got {}",
         data.len()
       )));
     }
     if &data[0..8] != DYNAMIC_HEADER_COOKIE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhd dynamic header signature is missing".to_string(),
       ));
     }
     if read_u32_be(data, 24)? != VHD_FORMAT_VERSION {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unsupported vhd dynamic header version".to_string(),
       ));
     }
@@ -52,7 +52,7 @@ impl VhdDynamicHeader {
     checksum_input[36..40].fill(0);
     let calculated_checksum = ones_complement_checksum(&checksum_input);
     if stored_checksum != calculated_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhd dynamic header checksum mismatch: stored 0x{stored_checksum:08x}, calculated 0x{calculated_checksum:08x}"
       )));
     }
@@ -66,7 +66,7 @@ impl VhdDynamicHeader {
       parent_name_code_units.push(code_unit);
     }
     let parent_name = String::from_utf16(&parent_name_code_units)
-      .map_err(|_| Error::InvalidFormat("vhd parent name is not valid UTF-16".to_string()))?;
+      .map_err(|_| Error::invalid_format("vhd parent name is not valid UTF-16"))?;
 
     let mut parent_locators = Vec::new();
     for index in 0..8 {
@@ -85,7 +85,7 @@ impl VhdDynamicHeader {
 
     let block_size = read_u32_be(data, 32)?;
     if block_size == 0 || !block_size.is_multiple_of(DEFAULT_SECTOR_SIZE) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "invalid vhd block size: {block_size}"
       )));
     }
@@ -104,7 +104,7 @@ impl VhdDynamicHeader {
     let sectors_per_block = self
       .block_size
       .checked_div(512)
-      .ok_or_else(|| Error::InvalidFormat("vhd block size is smaller than a sector".to_string()))?;
+      .ok_or_else(|| Error::invalid_format("vhd block size is smaller than a sector"))?;
     let bitmap_bytes = u64::from(sectors_per_block).div_ceil(8);
     Ok(bitmap_bytes.div_ceil(512) * 512)
   }
@@ -119,23 +119,23 @@ fn ones_complement_checksum(data: &[u8]) -> u32 {
 
 fn read_u32_be(data: &[u8], offset: usize) -> Result<u32> {
   let bytes = data.get(offset..offset + 4).ok_or_else(|| {
-    Error::InvalidFormat(format!("vhd dynamic field at offset {offset} is truncated"))
+    Error::invalid_format(format!("vhd dynamic field at offset {offset} is truncated"))
   })?;
   Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn read_u64_be(data: &[u8], offset: usize) -> Result<u64> {
   let bytes = data.get(offset..offset + 8).ok_or_else(|| {
-    Error::InvalidFormat(format!("vhd dynamic field at offset {offset} is truncated"))
+    Error::invalid_format(format!("vhd dynamic field at offset {offset} is truncated"))
   })?;
   Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| {
-    Error::InvalidFormat(format!("vhd dynamic field at offset {offset} is truncated"))
+    Error::invalid_format(format!("vhd dynamic field at offset {offset} is truncated"))
   })?))
 }
 
 fn copy_array<const N: usize>(data: &[u8]) -> Result<[u8; N]> {
   data.try_into().map_err(|_| {
-    Error::InvalidFormat(format!(
+    Error::invalid_format(format!(
       "vhd fixed-size array conversion failed: expected {N} bytes, got {}",
       data.len()
     ))

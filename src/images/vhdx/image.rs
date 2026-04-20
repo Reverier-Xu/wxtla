@@ -42,7 +42,7 @@ impl VhdxImage {
   pub fn open(source: ByteSourceHandle) -> Result<Self> {
     let parsed = parse(source)?;
     if parsed.metadata.disk_type == VhdxDiskType::Differential {
-      return Err(Error::InvalidSourceReference(
+      return Err(Error::invalid_source_reference(
         "differential vhdx images require source hints and a related-source resolver".to_string(),
       ));
     }
@@ -53,27 +53,27 @@ impl VhdxImage {
     let parsed = parse(source)?;
     let parent_image = if parsed.metadata.disk_type == VhdxDiskType::Differential {
       let resolver = hints.resolver().ok_or_else(|| {
-        Error::InvalidSourceReference(
+        Error::invalid_source_reference(
           "differential vhdx images require a related-source resolver".to_string(),
         )
       })?;
       let identity = hints.source_identity().ok_or_else(|| {
-        Error::InvalidSourceReference(
+        Error::invalid_source_reference(
           "differential vhdx images require a source identity hint".to_string(),
         )
       })?;
       let locator = parsed.metadata.parent_locator.as_ref().ok_or_else(|| {
-        Error::InvalidFormat("differential vhdx images must provide a parent locator".to_string())
+        Error::invalid_format("differential vhdx images must provide a parent locator")
       })?;
       let expected_parent_identifier = locator.parent_identifier().ok_or_else(|| {
-        Error::InvalidFormat(
+        Error::invalid_format(
           "differential vhdx images must provide a parent linkage identifier".to_string(),
         )
       })?;
       let (parent_source, parent_path) = resolve_parent_source(locator, resolver, identity)?
-        .ok_or_else(|| Error::NotFound("unable to resolve the parent vhdx image".to_string()))?;
+        .ok_or_else(|| Error::not_found("unable to resolve the parent vhdx image"))?;
       if &parent_path == identity.logical_path() {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "vhdx parent locator resolves to the same image".to_string(),
         ));
       }
@@ -86,7 +86,7 @@ impl VhdxImage {
           .with_source_identity(&parent_identity),
       )?;
       if parent_image.data_write_identifier() != expected_parent_identifier {
-        return Err(Error::InvalidFormat(format!(
+        return Err(Error::invalid_format(format!(
           "resolved parent data write identifier {} does not match expected {}",
           parent_image.data_write_identifier(),
           expected_parent_identifier
@@ -103,9 +103,9 @@ impl VhdxImage {
 
   fn from_parsed(parsed: ParsedVhdx, parent_image: Option<ByteSourceHandle>) -> Result<Self> {
     let block_size = usize::try_from(parsed.metadata.block_size)
-      .map_err(|_| Error::InvalidRange("vhdx block size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vhdx block size is too large"))?;
     let sector_bitmap_size = usize::try_from(parsed.sector_bitmap_size)
-      .map_err(|_| Error::InvalidRange("vhdx sector bitmap size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vhdx sector bitmap size is too large"))?;
 
     Ok(Self {
       source: parsed.source,
@@ -167,7 +167,7 @@ impl VhdxImage {
       VhdxPayloadBlockState::FullyPresent | VhdxPayloadBlockState::PartiallyPresent => {
         let file_offset = bat_file_offset(entry)?;
         let block_size = usize::try_from(self.metadata.block_size)
-          .map_err(|_| Error::InvalidRange("vhdx block size is too large".to_string()))?;
+          .map_err(|_| Error::invalid_range("vhdx block size is too large"))?;
 
         self
           .block_cache
@@ -192,7 +192,7 @@ impl VhdxImage {
         self.entries_per_chunk,
       )?)?;
       if sector_bitmap_state(entry)? != VhdxSectorBitmapState::Present {
-        return Err(Error::InvalidFormat(
+        return Err(Error::invalid_format(
           "vhdx payload block requires a present sector bitmap".to_string(),
         ));
       }
@@ -201,11 +201,11 @@ impl VhdxImage {
         .checked_add(
           (block_index % self.entries_per_chunk)
             .checked_mul(self.sector_bitmap_size)
-            .ok_or_else(|| Error::InvalidRange("vhdx sector bitmap offset overflow".to_string()))?,
+            .ok_or_else(|| Error::invalid_range("vhdx sector bitmap offset overflow"))?,
         )
-        .ok_or_else(|| Error::InvalidRange("vhdx sector bitmap offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vhdx sector bitmap offset overflow"))?;
       let size = usize::try_from(self.sector_bitmap_size)
-        .map_err(|_| Error::InvalidRange("vhdx sector bitmap size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vhdx sector bitmap size is too large"))?;
       let data = self.source.read_bytes_at(offset, size)?;
       Ok(Arc::new(data))
     })
@@ -213,7 +213,7 @@ impl VhdxImage {
 
   fn sector_present(&self, bitmap: &[u8], sector_index: usize) -> Result<bool> {
     let byte = *bitmap.get(sector_index / 8).ok_or_else(|| {
-      Error::InvalidFormat("vhdx sector bitmap does not cover the requested sector".to_string())
+      Error::invalid_format("vhdx sector bitmap does not cover the requested sector")
     })?;
     Ok((byte & (1 << (sector_index % 8))) != 0)
   }
@@ -248,7 +248,7 @@ impl ByteSource for VhdxImage {
     while copied < buf.len() {
       let absolute_offset = offset
         .checked_add(copied as u64)
-        .ok_or_else(|| Error::InvalidRange("vhdx read offset overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("vhdx read offset overflow"))?;
       if absolute_offset >= self.metadata.virtual_disk_size {
         break;
       }
@@ -260,18 +260,18 @@ impl ByteSource for VhdxImage {
       let block_available = usize::try_from(
         block_size
           .checked_sub(within_block)
-          .ok_or_else(|| Error::InvalidRange("vhdx block range underflow".to_string()))?,
+          .ok_or_else(|| Error::invalid_range("vhdx block range underflow"))?,
       )
-      .map_err(|_| Error::InvalidRange("vhdx block size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("vhdx block size is too large"))?;
       let disk_available = usize::try_from(self.metadata.virtual_disk_size - absolute_offset)
-        .map_err(|_| Error::InvalidRange("vhdx remaining size is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("vhdx remaining size is too large"))?;
       let entry = self.payload_entry(block_index)?;
       let state = payload_block_state(entry)?;
 
       let available = match state {
         VhdxPayloadBlockState::PartiallyPresent => {
           let sector_available = usize::try_from(sector_size - (within_block % sector_size))
-            .map_err(|_| Error::InvalidRange("vhdx sector size is too large".to_string()))?;
+            .map_err(|_| Error::invalid_range("vhdx sector size is too large"))?;
           block_available
             .min(buf.len() - copied)
             .min(disk_available)
@@ -289,30 +289,29 @@ impl ByteSource for VhdxImage {
       match state {
         VhdxPayloadBlockState::FullyPresent => {
           let payload = self.read_payload_block(block_index)?.ok_or_else(|| {
-            Error::InvalidFormat("vhdx fully-present block is missing payload data".to_string())
+            Error::invalid_format("vhdx fully-present block is missing payload data")
           })?;
           let block_offset = usize::try_from(within_block)
-            .map_err(|_| Error::InvalidRange("vhdx block offset is too large".to_string()))?;
+            .map_err(|_| Error::invalid_range("vhdx block offset is too large"))?;
           buf[copied..copied + available]
             .copy_from_slice(&payload[block_offset..block_offset + available]);
         }
         VhdxPayloadBlockState::PartiallyPresent => {
           let payload = self.read_payload_block(block_index)?.ok_or_else(|| {
-            Error::InvalidFormat("vhdx partially-present block is missing payload data".to_string())
+            Error::invalid_format("vhdx partially-present block is missing payload data")
           })?;
           let bitmap = self.read_sector_bitmap(block_index)?;
-          let sector_index = usize::try_from(within_block / sector_size).map_err(|_| {
-            Error::InvalidRange("vhdx sector index conversion overflow".to_string())
-          })?;
+          let sector_index = usize::try_from(within_block / sector_size)
+            .map_err(|_| Error::invalid_range("vhdx sector index conversion overflow"))?;
           if self.sector_present(&bitmap, sector_index)? {
             let block_offset = usize::try_from(within_block)
-              .map_err(|_| Error::InvalidRange("vhdx block offset is too large".to_string()))?;
+              .map_err(|_| Error::invalid_range("vhdx block offset is too large"))?;
             buf[copied..copied + available]
               .copy_from_slice(&payload[block_offset..block_offset + available]);
           } else if self.parent_image.is_some() {
             self.fill_from_parent_or_zero(absolute_offset, &mut buf[copied..copied + available])?;
           } else {
-            return Err(Error::InvalidFormat(
+            return Err(Error::invalid_format(
               "vhdx partially-present block requires a resolved parent image".to_string(),
             ));
           }
@@ -423,7 +422,7 @@ mod tests {
   impl ByteSource for MemDataSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
       let offset = usize::try_from(offset)
-        .map_err(|_| Error::InvalidRange("test read offset is too large".to_string()))?;
+        .map_err(|_| Error::invalid_range("test read offset is too large"))?;
       if offset >= self.data.len() {
         return Ok(0);
       }

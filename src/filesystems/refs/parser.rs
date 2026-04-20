@@ -44,27 +44,27 @@ impl RefsVolumeHeader {
   }
 
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-    let header: &[u8; VOLUME_HEADER_SIZE] = bytes.try_into().map_err(|_| {
-      Error::InvalidFormat("refs volume header must be exactly 512 bytes".to_string())
-    })?;
+    let header: &[u8; VOLUME_HEADER_SIZE] = bytes
+      .try_into()
+      .map_err(|_| Error::invalid_format("refs volume header must be exactly 512 bytes"))?;
     Self::from_header(header)
   }
 
   pub fn from_header(header: &[u8; VOLUME_HEADER_SIZE]) -> Result<Self> {
     if &header[3..7] != b"ReFS" {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "refs volume header signature is missing".to_string(),
       ));
     }
     if &header[16..20] != b"FSRS" {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "refs secondary volume signature is missing".to_string(),
       ));
     }
 
     let bytes_per_sector = le_u32(&header[32..36]);
     if !matches!(bytes_per_sector, 256 | 512 | 1024 | 2048 | 4096) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported refs bytes-per-sector value: {bytes_per_sector}"
       )));
     }
@@ -72,9 +72,9 @@ impl RefsVolumeHeader {
     let sectors_per_cluster_block = le_u32(&header[36..40]);
     let cluster_block_size = sectors_per_cluster_block
       .checked_mul(bytes_per_sector)
-      .ok_or_else(|| Error::InvalidRange("refs cluster block size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("refs cluster block size overflow"))?;
     if !matches!(cluster_block_size, 4096 | 65536) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported refs cluster block size: {cluster_block_size}"
       )));
     }
@@ -82,7 +82,7 @@ impl RefsVolumeHeader {
     let major_version = header[40];
     let minor_version = header[41];
     if !matches!(major_version, 1 | 3) {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "unsupported refs major version: {major_version}.{minor_version}"
       )));
     }
@@ -91,7 +91,7 @@ impl RefsVolumeHeader {
     let volume_size = number_of_sectors
       .checked_mul(u64::from(bytes_per_sector))
       .and_then(|size| size.checked_add(u64::from(bytes_per_sector)))
-      .ok_or_else(|| Error::InvalidRange("refs volume size overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("refs volume size overflow"))?;
 
     Ok(Self {
       bytes_per_sector,
@@ -239,7 +239,7 @@ pub(crate) struct RefsAttribute {
 pub(crate) fn parse_metadata_block_header_v1(bytes: &[u8]) -> Result<RefsMetadataBlockHeaderV1> {
   let header = bytes
     .get(..METADATA_BLOCK_HEADER_V1_SIZE)
-    .ok_or_else(|| Error::InvalidFormat("refs metadata block header is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs metadata block header is truncated"))?;
   let mut object_identifier = [0u8; 16];
   object_identifier.copy_from_slice(&header[16..32]);
 
@@ -253,7 +253,7 @@ pub(crate) fn parse_metadata_block_header_v1(bytes: &[u8]) -> Result<RefsMetadat
 pub(crate) fn parse_superblock_metadata(bytes: &[u8], major_version: u8) -> Result<RefsSuperblock> {
   let header_size = metadata_header_size(major_version)?;
   if bytes.len() < header_size + SUPERBLOCK_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs superblock metadata is truncated".to_string(),
     ));
   }
@@ -263,7 +263,7 @@ pub(crate) fn parse_superblock_metadata(bytes: &[u8], major_version: u8) -> Resu
   let self_reference_data_offset = le_u32(&body[40..44]);
   let self_reference_data_size = le_u32(&body[44..48]);
   if number_of_checkpoints != 2 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "unsupported refs checkpoint count".to_string(),
     ));
   }
@@ -282,14 +282,14 @@ pub(crate) fn parse_superblock_metadata(bytes: &[u8], major_version: u8) -> Resu
     "refs superblock self reference",
   )?;
   if self_reference_data_offset + self_reference_data_size as usize > body.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs superblock self-reference data exceeds the metadata block".to_string(),
     ));
   }
 
   let checkpoint_data = body
     .get(checkpoints_data_offset..checkpoints_data_offset + 16)
-    .ok_or_else(|| Error::InvalidFormat("refs checkpoints data is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs checkpoints data is truncated"))?;
   let mut volume_identifier = [0u8; 16];
   volume_identifier.copy_from_slice(&body[0..16]);
 
@@ -304,7 +304,7 @@ pub(crate) fn parse_checkpoint_metadata(bytes: &[u8], major_version: u8) -> Resu
   let header_size = metadata_header_size(major_version)?;
   let checkpoint_trailer_size = checkpoint_trailer_size(major_version)?;
   if bytes.len() < header_size + CHECKPOINT_HEADER_SIZE + checkpoint_trailer_size {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs checkpoint metadata is truncated".to_string(),
     ));
   }
@@ -319,9 +319,9 @@ pub(crate) fn parse_checkpoint_metadata(bytes: &[u8], major_version: u8) -> Resu
   let offsets_data_offset = trailer_offset + checkpoint_trailer_size;
   let offsets_end = offsets_data_offset
     .checked_add(number_of_offsets * 4)
-    .ok_or_else(|| Error::InvalidRange("refs checkpoint offsets overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("refs checkpoint offsets overflow"))?;
   if offsets_end > body.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs checkpoint offset table exceeds the metadata block".to_string(),
     ));
   }
@@ -334,7 +334,7 @@ pub(crate) fn parse_checkpoint_metadata(bytes: &[u8], major_version: u8) -> Resu
     "refs checkpoint self reference",
   )?;
   if self_reference_data_offset + self_reference_data_size as usize > body.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs checkpoint self-reference data exceeds the metadata block".to_string(),
     ));
   }
@@ -367,7 +367,7 @@ pub(crate) fn parse_block_reference(bytes: &[u8], major_version: u8) -> Result<R
     1 => {
       let bytes = bytes
         .get(..BLOCK_REFERENCE_V1_SIZE)
-        .ok_or_else(|| Error::InvalidFormat("refs block reference is truncated".to_string()))?;
+        .ok_or_else(|| Error::invalid_format("refs block reference is truncated"))?;
 
       Ok(RefsBlockReference {
         block_numbers: [le_u64(&bytes[0..8]), 0, 0, 0],
@@ -379,14 +379,14 @@ pub(crate) fn parse_block_reference(bytes: &[u8], major_version: u8) -> Result<R
     3 => {
       let prefix = bytes
         .get(..BLOCK_REFERENCE_V3_MIN_SIZE)
-        .ok_or_else(|| Error::InvalidFormat("refs block reference is truncated".to_string()))?;
+        .ok_or_else(|| Error::invalid_format("refs block reference is truncated"))?;
       let checksum_data_size = le_u16(&prefix[36..38]);
       let total_size = BLOCK_REFERENCE_V3_MIN_SIZE
         .checked_add(usize::from(checksum_data_size))
-        .ok_or_else(|| Error::InvalidRange("refs block reference size overflow".to_string()))?;
+        .ok_or_else(|| Error::invalid_range("refs block reference size overflow"))?;
       let bytes = bytes
         .get(..total_size)
-        .ok_or_else(|| Error::InvalidFormat("refs block reference is truncated".to_string()))?;
+        .ok_or_else(|| Error::invalid_format("refs block reference is truncated"))?;
 
       Ok(RefsBlockReference {
         block_numbers: [
@@ -400,7 +400,7 @@ pub(crate) fn parse_block_reference(bytes: &[u8], major_version: u8) -> Result<R
         checksum_data_size,
       })
     }
-    other => Err(Error::InvalidFormat(format!(
+    other => Err(Error::invalid_format(format!(
       "unsupported refs metadata version: {other}"
     ))),
   }
@@ -409,7 +409,7 @@ pub(crate) fn parse_block_reference(bytes: &[u8], major_version: u8) -> Result<R
 pub(crate) fn parse_tree_header(bytes: &[u8]) -> Result<RefsTreeHeader> {
   let bytes = bytes
     .get(..TREE_HEADER_SIZE)
-    .ok_or_else(|| Error::InvalidFormat("refs tree header is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs tree header is truncated"))?;
   Ok(RefsTreeHeader {
     table_data_offset: le_u16(&bytes[0..2]),
   })
@@ -418,7 +418,7 @@ pub(crate) fn parse_tree_header(bytes: &[u8]) -> Result<RefsTreeHeader> {
 pub(crate) fn parse_node_header(bytes: &[u8]) -> Result<RefsNodeHeader> {
   let bytes = bytes
     .get(..NODE_HEADER_SIZE)
-    .ok_or_else(|| Error::InvalidFormat("refs node header is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs node header is truncated"))?;
   Ok(RefsNodeHeader {
     data_area_start_offset: le_u32(&bytes[0..4]),
     data_area_end_offset: le_u32(&bytes[4..8]),
@@ -433,17 +433,17 @@ pub(crate) fn parse_node_header(bytes: &[u8]) -> Result<RefsNodeHeader> {
 pub(crate) fn parse_node_record(bytes: &[u8]) -> Result<RefsNodeRecord> {
   let bytes = bytes
     .get(..)
-    .ok_or_else(|| Error::InvalidFormat("refs node record is missing".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs node record is missing"))?;
   if bytes.len() < NODE_RECORD_HEADER_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs node record is truncated".to_string(),
     ));
   }
 
   let size = usize::try_from(le_u32(&bytes[0..4]))
-    .map_err(|_| Error::InvalidRange("refs node record size is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("refs node record size is too large"))?;
   if size < NODE_RECORD_HEADER_SIZE || size > bytes.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs node record size is invalid".to_string(),
     ));
   }
@@ -454,16 +454,16 @@ pub(crate) fn parse_node_record(bytes: &[u8]) -> Result<RefsNodeRecord> {
   let value_data_size = usize::from(le_u16(&bytes[12..14]));
   let key_data_end = key_data_offset
     .checked_add(key_data_size)
-    .ok_or_else(|| Error::InvalidRange("refs node key end overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("refs node key end overflow"))?;
   let value_data_end = value_data_offset
     .checked_add(value_data_size)
-    .ok_or_else(|| Error::InvalidRange("refs node value end overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("refs node value end overflow"))?;
   if key_data_offset < NODE_RECORD_HEADER_SIZE
     || key_data_end > size
     || value_data_offset < NODE_RECORD_HEADER_SIZE
     || value_data_end > size
   {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs node record key/value bounds are invalid".to_string(),
     ));
   }
@@ -480,14 +480,14 @@ pub(crate) fn parse_ministore_node_data(
   bytes: &[u8], major_version: u8,
 ) -> Result<RefsMinistoreNode> {
   if bytes.len() < 4 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs ministore node is too small".to_string(),
     ));
   }
   let node_header_offset = usize::try_from(le_u32(&bytes[0..4]))
-    .map_err(|_| Error::InvalidRange("refs node header offset is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("refs node header offset is too large"))?;
   if node_header_offset < 4 || node_header_offset >= bytes.len().saturating_sub(4) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs node header offset is out of bounds".to_string(),
     ));
   }
@@ -507,27 +507,26 @@ pub(crate) fn parse_ministore_node_data(
     || node_header.data_area_end_offset < NODE_HEADER_SIZE as u32
     || node_header.data_area_end_offset > (bytes.len() - node_header_offset) as u32
   {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs node header data-area bounds are invalid".to_string(),
     ));
   }
 
   let record_offsets_start = node_header_offset
     .checked_add(
-      usize::try_from(node_header.record_offsets_start_offset).map_err(|_| {
-        Error::InvalidRange("refs record-offset table start is too large".to_string())
-      })?,
+      usize::try_from(node_header.record_offsets_start_offset)
+        .map_err(|_| Error::invalid_range("refs record-offset table start is too large"))?,
     )
-    .ok_or_else(|| Error::InvalidRange("refs record-offset table start overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("refs record-offset table start overflow"))?;
   let record_offsets_size = usize::try_from(node_header.number_of_record_offsets)
-    .map_err(|_| Error::InvalidRange("refs record count is too large".to_string()))?
+    .map_err(|_| Error::invalid_range("refs record count is too large"))?
     .checked_mul(4)
-    .ok_or_else(|| Error::InvalidRange("refs record-offset table size overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("refs record-offset table size overflow"))?;
   let record_offsets_end = record_offsets_start
     .checked_add(record_offsets_size)
-    .ok_or_else(|| Error::InvalidRange("refs record-offset table end overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("refs record-offset table end overflow"))?;
   if record_offsets_start > bytes.len() || record_offsets_end > bytes.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs record-offset table exceeds the node bounds".to_string(),
     ));
   }
@@ -537,33 +536,33 @@ pub(crate) fn parse_ministore_node_data(
   let mut offset_cursor = record_offsets_start;
   for _ in 0..node_header.number_of_record_offsets {
     let mut record_data_offset = usize::try_from(le_u32(&bytes[offset_cursor..offset_cursor + 4]))
-      .map_err(|_| Error::InvalidRange("refs record data offset is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("refs record data offset is too large"))?;
     offset_cursor += 4;
     if major_version == 3 {
       record_data_offset &= 0xFFFF;
     }
     let min_offset = usize::try_from(node_header.data_area_start_offset)
-      .map_err(|_| Error::InvalidRange("refs data area offset is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("refs data area offset is too large"))?;
     let max_offset = usize::try_from(node_header.data_area_end_offset)
-      .map_err(|_| Error::InvalidRange("refs data area offset is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("refs data area offset is too large"))?;
     if record_data_offset < min_offset || record_data_offset >= max_offset {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "refs record data offset is outside the node data area".to_string(),
       ));
     }
 
     let absolute_record_offset = node_header_offset
       .checked_add(record_data_offset)
-      .ok_or_else(|| Error::InvalidRange("refs absolute record offset overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("refs absolute record offset overflow"))?;
     let record_size = usize::try_from(le_u32(
       &bytes[absolute_record_offset..absolute_record_offset + 4],
     ))
-    .map_err(|_| Error::InvalidRange("refs record size is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("refs record size is too large"))?;
     let record_end = absolute_record_offset
       .checked_add(record_size)
-      .ok_or_else(|| Error::InvalidRange("refs record end overflow".to_string()))?;
+      .ok_or_else(|| Error::invalid_range("refs record end overflow"))?;
     if record_end > bytes.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "refs record extends past the node bounds".to_string(),
       ));
     }
@@ -582,7 +581,7 @@ pub(crate) fn parse_ministore_node_data(
 pub(crate) fn parse_directory_values(bytes: &[u8]) -> Result<RefsDirectoryValues> {
   let bytes = bytes
     .get(..DIRECTORY_VALUES_SIZE)
-    .ok_or_else(|| Error::InvalidFormat("refs directory values are truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs directory values are truncated"))?;
 
   Ok(RefsDirectoryValues {
     object_identifier: le_u64(&bytes[0..8]),
@@ -597,7 +596,7 @@ pub(crate) fn parse_directory_values(bytes: &[u8]) -> Result<RefsDirectoryValues
 pub(crate) fn parse_file_values(bytes: &[u8]) -> Result<RefsFileValues> {
   let bytes = bytes
     .get(..FILE_VALUES_SIZE)
-    .ok_or_else(|| Error::InvalidFormat("refs file values header is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs file values header is truncated"))?;
 
   Ok(RefsFileValues {
     creation_time: le_u64(&bytes[0..8]),
@@ -614,7 +613,7 @@ pub(crate) fn parse_file_values(bytes: &[u8]) -> Result<RefsFileValues> {
 
 pub(crate) fn parse_directory_entry_name(key_data: &[u8]) -> Result<String> {
   if key_data.len() < 4 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs directory entry key is truncated".to_string(),
     ));
   }
@@ -623,7 +622,7 @@ pub(crate) fn parse_directory_entry_name(key_data: &[u8]) -> Result<String> {
 
 pub(crate) fn parse_directory_entry_type(key_data: &[u8]) -> Result<u16> {
   if key_data.len() < 4 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs directory entry key is truncated".to_string(),
     ));
   }
@@ -632,25 +631,25 @@ pub(crate) fn parse_directory_entry_type(key_data: &[u8]) -> Result<u16> {
 
 pub(crate) fn parse_resident_attribute(bytes: &[u8]) -> Result<RefsAttributeValue> {
   if bytes.len() < ATTRIBUTE_RESIDENT_HEADER_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs resident attribute is truncated".to_string(),
     ));
   }
 
   let inline_data_offset = usize::try_from(le_u32(&bytes[4..8]))
-    .map_err(|_| Error::InvalidRange("refs inline data offset is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("refs inline data offset is too large"))?;
   let inline_data_size = usize::try_from(le_u32(&bytes[8..12]))
-    .map_err(|_| Error::InvalidRange("refs inline data size is too large".to_string()))?;
+    .map_err(|_| Error::invalid_range("refs inline data size is too large"))?;
   if inline_data_offset < ATTRIBUTE_RESIDENT_HEADER_SIZE {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs resident attribute inline-data offset is invalid".to_string(),
     ));
   }
   let inline_data_end = inline_data_offset
     .checked_add(inline_data_size)
-    .ok_or_else(|| Error::InvalidRange("refs inline data end overflow".to_string()))?;
+    .ok_or_else(|| Error::invalid_range("refs inline data end overflow"))?;
   if inline_data_end > bytes.len() {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs resident attribute inline data exceeds the record bounds".to_string(),
     ));
   }
@@ -663,7 +662,7 @@ pub(crate) fn parse_resident_attribute(bytes: &[u8]) -> Result<RefsAttributeValu
 pub(crate) fn parse_data_run(bytes: &[u8]) -> Result<RefsDataRun> {
   let bytes = bytes
     .get(..DATA_RUN_SIZE)
-    .ok_or_else(|| Error::InvalidFormat("refs data run is truncated".to_string()))?;
+    .ok_or_else(|| Error::invalid_format("refs data run is truncated"))?;
 
   Ok(RefsDataRun {
     logical_offset: le_u64(&bytes[0..8]),
@@ -681,7 +680,7 @@ pub(crate) fn build_object_key(object_identifier: u64) -> [u8; 16] {
 
 pub(crate) fn decode_utf16le_string(bytes: &[u8]) -> Result<String> {
   if !bytes.len().is_multiple_of(2) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "refs UTF-16LE string has an odd byte count".to_string(),
     ));
   }
@@ -698,7 +697,7 @@ fn relative_metadata_offset(
   raw_offset: u32, header_size: usize, body_size: usize, min_absolute_offset: usize, label: &str,
 ) -> Result<usize> {
   if raw_offset < min_absolute_offset as u32 || raw_offset >= (body_size + header_size) as u32 {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "{label} offset is out of bounds"
     )));
   }
@@ -709,7 +708,7 @@ pub(crate) fn metadata_header_size(major_version: u8) -> Result<usize> {
   match major_version {
     1 => Ok(METADATA_BLOCK_HEADER_V1_SIZE),
     3 => Ok(METADATA_BLOCK_HEADER_V3_SIZE),
-    other => Err(Error::InvalidFormat(format!(
+    other => Err(Error::invalid_format(format!(
       "unsupported refs metadata version: {other}"
     ))),
   }
@@ -719,7 +718,7 @@ fn checkpoint_trailer_size(major_version: u8) -> Result<usize> {
   match major_version {
     1 => Ok(CHECKPOINT_TRAILER_V1_SIZE),
     3 => Ok(CHECKPOINT_TRAILER_V3_SIZE),
-    other => Err(Error::InvalidFormat(format!(
+    other => Err(Error::invalid_format(format!(
       "unsupported refs metadata version: {other}"
     ))),
   }

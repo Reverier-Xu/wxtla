@@ -38,7 +38,7 @@ impl BitlockerEncryptionMethod {
       0x8003 => Ok(Self::Aes256Cbc),
       0x8004 => Ok(Self::Aes128Xts),
       0x8005 => Ok(Self::Aes256Xts),
-      other => Err(Error::InvalidFormat(format!(
+      other => Err(Error::invalid_format(format!(
         "unsupported bitlocker encryption method: 0x{other:04x}"
       ))),
     }
@@ -181,12 +181,12 @@ pub(super) struct MetadataEntry {
 impl BitlockerMetadataBlockHeader {
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() < 64 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker metadata block header must be 64 bytes".to_string(),
       ));
     }
     if &data[0..8] != BLOCK_SIGNATURE {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker metadata block signature is missing".to_string(),
       ));
     }
@@ -217,7 +217,7 @@ impl BitlockerMetadataBlockHeader {
         volume_header_offset: le_u64(&data[56..64])?,
         mft_mirror_cluster_block_number: None,
       }),
-      other => Err(Error::InvalidFormat(format!(
+      other => Err(Error::invalid_format(format!(
         "unsupported bitlocker metadata block version: {other}"
       ))),
     }
@@ -227,7 +227,7 @@ impl BitlockerMetadataBlockHeader {
 impl BitlockerMetadataHeader {
   pub fn from_bytes(data: &[u8]) -> Result<Self> {
     if data.len() < 48 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker metadata header must be 48 bytes".to_string(),
       ));
     }
@@ -235,7 +235,7 @@ impl BitlockerMetadataHeader {
     let metadata_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
     let header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
     if metadata_size < 48 || header_size != 48 {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "unsupported bitlocker metadata header layout".to_string(),
       ));
     }
@@ -247,9 +247,9 @@ impl BitlockerMetadataHeader {
       version: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
       header_size,
       metadata_size_copy: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
-      volume_identifier: data[16..32].try_into().map_err(|_| {
-        Error::InvalidFormat("bitlocker metadata identifier length mismatch".to_string())
-      })?,
+      volume_identifier: data[16..32]
+        .try_into()
+        .map_err(|_| Error::invalid_format("bitlocker metadata identifier length mismatch"))?,
       next_nonce_counter: u32::from_le_bytes([data[32], data[33], data[34], data[35]]),
       raw_encryption_method,
       encryption_method: parse_metadata_encryption_method(raw_encryption_method)?,
@@ -264,7 +264,7 @@ impl BitlockerMetadata {
       BitlockerMetadataBlockHeader::from_bytes(&source.read_bytes_at(offset, 64)?)?;
     let header = BitlockerMetadataHeader::from_bytes(&source.read_bytes_at(offset + 64, 48)?)?;
     let entry_size = usize::try_from(header.metadata_size.saturating_sub(header.header_size))
-      .map_err(|_| Error::InvalidRange("bitlocker metadata entry size is too large".to_string()))?;
+      .map_err(|_| Error::invalid_range("bitlocker metadata entry size is too large"))?;
     let entries = parse_entries(
       &source.read_bytes_at(offset + 64 + u64::from(header.header_size), entry_size)?,
     )?;
@@ -274,15 +274,13 @@ impl BitlockerMetadata {
   pub fn read_startup_key_file(source: &dyn crate::ByteSource) -> Result<BitlockerExternalKey> {
     let header = BitlockerMetadataHeader::from_bytes(&source.read_bytes_at(0, 48)?)?;
     let entry_size = usize::try_from(header.metadata_size.saturating_sub(header.header_size))
-      .map_err(|_| {
-        Error::InvalidRange("bitlocker startup key entry size is too large".to_string())
-      })?;
+      .map_err(|_| Error::invalid_range("bitlocker startup key entry size is too large"))?;
     let entries = parse_entries(&source.read_bytes_at(u64::from(header.header_size), entry_size)?)?;
     let startup = entries
       .iter()
       .find(|entry| entry.entry_type == ENTRY_TYPE_STARTUP_KEY)
       .ok_or_else(|| {
-        Error::InvalidFormat(
+        Error::invalid_format(
           "bitlocker startup key file is missing an external key entry".to_string(),
         )
       })?;
@@ -352,7 +350,7 @@ impl BitlockerMetadata {
         {
           let offset = le_u64(&entry.value_data[0..8])?;
           if offset != block_header.volume_header_offset {
-            return Err(Error::InvalidFormat(
+            return Err(Error::invalid_format(
               "bitlocker metadata volume header offset does not match the metadata block header"
                 .to_string(),
             ));
@@ -387,7 +385,7 @@ pub(super) fn parse_entries(data: &[u8]) -> Result<Vec<MetadataEntry>> {
     let value_type = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
     let version = u16::from_le_bytes([data[offset + 6], data[offset + 7]]);
     if !matches!(version, 1 | 3) || size < 8 || offset + size > data.len() {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "bitlocker metadata entry size is invalid".to_string(),
       ));
     }
@@ -404,7 +402,7 @@ pub(super) fn parse_entries(data: &[u8]) -> Result<Vec<MetadataEntry>> {
 
 fn parse_volume_master_key(entry: &MetadataEntry) -> Result<BitlockerVolumeMasterKey> {
   if entry.value_type != VALUE_TYPE_VOLUME_MASTER_KEY || entry.value_data.len() < 28 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker VMK metadata entry is malformed".to_string(),
     ));
   }
@@ -426,7 +424,7 @@ fn parse_volume_master_key(entry: &MetadataEntry) -> Result<BitlockerVolumeMaste
   Ok(BitlockerVolumeMasterKey {
     identifier: entry.value_data[0..16]
       .try_into()
-      .map_err(|_| Error::InvalidFormat("bitlocker VMK identifier length mismatch".to_string()))?,
+      .map_err(|_| Error::invalid_format("bitlocker VMK identifier length mismatch"))?,
     protection_type: BitlockerKeyProtectorKind::from_raw(u16::from_le_bytes([
       entry.value_data[26],
       entry.value_data[27],
@@ -439,7 +437,7 @@ fn parse_volume_master_key(entry: &MetadataEntry) -> Result<BitlockerVolumeMaste
 
 fn parse_external_key(entry: &MetadataEntry) -> Result<BitlockerExternalKey> {
   if entry.value_type != VALUE_TYPE_EXTERNAL_KEY || entry.value_data.len() < 24 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker external key metadata entry is malformed".to_string(),
     ));
   }
@@ -456,9 +454,9 @@ fn parse_external_key(entry: &MetadataEntry) -> Result<BitlockerExternalKey> {
   }
 
   Ok(BitlockerExternalKey {
-    identifier: entry.value_data[0..16].try_into().map_err(|_| {
-      Error::InvalidFormat("bitlocker external key identifier length mismatch".to_string())
-    })?,
+    identifier: entry.value_data[0..16]
+      .try_into()
+      .map_err(|_| Error::invalid_format("bitlocker external key identifier length mismatch"))?,
     key,
     description,
   })
@@ -466,7 +464,7 @@ fn parse_external_key(entry: &MetadataEntry) -> Result<BitlockerExternalKey> {
 
 fn parse_key_blob(entry: &MetadataEntry) -> Result<BitlockerKeyBlob> {
   if entry.value_type != VALUE_TYPE_KEY || entry.value_data.len() < 4 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker key entry is malformed".to_string(),
     ));
   }
@@ -478,35 +476,35 @@ fn parse_key_blob(entry: &MetadataEntry) -> Result<BitlockerKeyBlob> {
 
 fn parse_stretch_key(entry: &MetadataEntry) -> Result<BitlockerStretchKey> {
   if entry.value_type != VALUE_TYPE_STRETCH_KEY || entry.value_data.len() < 20 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker stretch key entry is malformed".to_string(),
     ));
   }
   Ok(BitlockerStretchKey {
     encryption_method: le_u32(&entry.value_data[0..4])?,
-    salt: entry.value_data[4..20].try_into().map_err(|_| {
-      Error::InvalidFormat("bitlocker stretch key salt length mismatch".to_string())
-    })?,
+    salt: entry.value_data[4..20]
+      .try_into()
+      .map_err(|_| Error::invalid_format("bitlocker stretch key salt length mismatch"))?,
   })
 }
 
 fn parse_aes_ccm_encrypted_key(entry: &MetadataEntry) -> Result<BitlockerAesCcmEncryptedKey> {
   if entry.value_type != VALUE_TYPE_AES_CCM_ENCRYPTED_KEY || entry.value_data.len() < 12 {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker AES-CCM key entry is malformed".to_string(),
     ));
   }
   Ok(BitlockerAesCcmEncryptedKey {
     nonce: entry.value_data[0..12]
       .try_into()
-      .map_err(|_| Error::InvalidFormat("bitlocker nonce length mismatch".to_string()))?,
+      .map_err(|_| Error::invalid_format("bitlocker nonce length mismatch"))?,
     data: entry.value_data[12..].to_vec(),
   })
 }
 
 fn parse_utf16le_string(data: &[u8]) -> Result<String> {
   if !data.len().is_multiple_of(2) {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "bitlocker UTF-16 string length must be even".to_string(),
     ));
   }
@@ -518,14 +516,14 @@ fn parse_utf16le_string(data: &[u8]) -> Result<String> {
     units.pop();
   }
   String::from_utf16(&units)
-    .map_err(|_| Error::InvalidFormat("bitlocker UTF-16 string is invalid".to_string()))
+    .map_err(|_| Error::invalid_format("bitlocker UTF-16 string is invalid"))
 }
 
 fn parse_metadata_encryption_method(raw: u32) -> Result<BitlockerEncryptionMethod> {
   let low = raw as u16;
   let high = (raw >> 16) as u16;
   if high != 0 && high != low {
-    return Err(Error::InvalidFormat(format!(
+    return Err(Error::invalid_format(format!(
       "unsupported bitlocker metadata encryption method layout: 0x{raw:08x}"
     )));
   }
@@ -534,13 +532,13 @@ fn parse_metadata_encryption_method(raw: u32) -> Result<BitlockerEncryptionMetho
 
 fn le_u32(data: &[u8]) -> Result<u32> {
   Ok(u32::from_le_bytes(data.try_into().map_err(|_| {
-    Error::InvalidFormat("bitlocker integer length mismatch".to_string())
+    Error::invalid_format("bitlocker integer length mismatch")
   })?))
 }
 
 fn le_u64(data: &[u8]) -> Result<u64> {
   Ok(u64::from_le_bytes(data.try_into().map_err(|_| {
-    Error::InvalidFormat("bitlocker integer length mismatch".to_string())
+    Error::invalid_format("bitlocker integer length mismatch")
   })?))
 }
 

@@ -52,7 +52,7 @@ impl EwfSectionDescriptor {
   /// Parse a section descriptor from 76 bytes.
   pub fn parse(data: &[u8], file_offset: u64) -> Result<Self> {
     if data.len() != SECTION_DESCRIPTOR_SIZE {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf section descriptor must be {SECTION_DESCRIPTOR_SIZE} bytes, got {}",
         data.len()
       )));
@@ -61,7 +61,7 @@ impl EwfSectionDescriptor {
     let stored_checksum = u32::from_le_bytes([data[72], data[73], data[74], data[75]]);
     let calculated_checksum = adler32_slice(&data[..72]);
     if stored_checksum != calculated_checksum {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "ewf section descriptor checksum mismatch: stored 0x{stored_checksum:08x}, calculated 0x{calculated_checksum:08x}"
       )));
     }
@@ -88,7 +88,7 @@ impl EwfSectionDescriptor {
     self
       .file_offset
       .checked_add(self.size)
-      .ok_or_else(|| Error::InvalidRange("ewf section end offset overflow".to_string()))
+      .ok_or_else(|| Error::invalid_range("ewf section end offset overflow"))
   }
 }
 
@@ -106,7 +106,7 @@ fn resolve_section_size(
     return Ok(declared_size);
   }
   if next_offset <= file_offset {
-    return Err(Error::InvalidFormat(
+    return Err(Error::invalid_format(
       "ewf section next offset does not advance".to_string(),
     ));
   }

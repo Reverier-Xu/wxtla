@@ -35,7 +35,7 @@ impl VhdxGuid {
   /// Parse a VHDX GUID from 16 little-endian on-disk bytes.
   pub fn from_le_bytes(data: &[u8]) -> Result<Self> {
     if data.len() != 16 {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx guid must be 16 bytes, got {}",
         data.len()
       )));
@@ -60,32 +60,32 @@ impl VhdxGuid {
       .unwrap_or(value);
     let mut parts = value.split('-');
     let Some(part1) = parts.next() else {
-      return Err(Error::InvalidFormat(
+      return Err(Error::invalid_format(
         "vhdx guid string is empty".to_string(),
       ));
     };
     let Some(part2) = parts.next() else {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx guid string is missing fields: {value}"
       )));
     };
     let Some(part3) = parts.next() else {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx guid string is missing fields: {value}"
       )));
     };
     let Some(part4) = parts.next() else {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx guid string is missing fields: {value}"
       )));
     };
     let Some(part5) = parts.next() else {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx guid string is missing fields: {value}"
       )));
     };
     if parts.next().is_some() {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx guid string has too many fields: {value}"
       )));
     }
@@ -96,7 +96,7 @@ impl VhdxGuid {
       || part4.len() != 4
       || part5.len() != 12
     {
-      return Err(Error::InvalidFormat(format!(
+      return Err(Error::invalid_format(format!(
         "vhdx guid string has invalid field widths: {value}"
       )));
     }
@@ -170,17 +170,17 @@ impl fmt::Display for VhdxGuid {
 
 fn parse_hex_u32(value: &str) -> Result<u32> {
   u32::from_str_radix(value, 16)
-    .map_err(|_| Error::InvalidFormat(format!("invalid vhdx guid field: {value}")))
+    .map_err(|_| Error::invalid_format(format!("invalid vhdx guid field: {value}")))
 }
 
 fn parse_hex_u16(value: &str) -> Result<u16> {
   u16::from_str_radix(value, 16)
-    .map_err(|_| Error::InvalidFormat(format!("invalid vhdx guid field: {value}")))
+    .map_err(|_| Error::invalid_format(format!("invalid vhdx guid field: {value}")))
 }
 
 fn parse_hex_byte(value: &str) -> Result<u8> {
   u8::from_str_radix(value, 16)
-    .map_err(|_| Error::InvalidFormat(format!("invalid vhdx guid field: {value}")))
+    .map_err(|_| Error::invalid_format(format!("invalid vhdx guid field: {value}")))
 }
 
 #[cfg(test)]
