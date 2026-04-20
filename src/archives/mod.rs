@@ -10,7 +10,3 @@ pub mod tar;
 pub mod zip;
 
 pub(crate) use driver::Archive;
-
-pub(crate) use crate::{
-  NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
-};

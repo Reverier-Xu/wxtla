@@ -2,13 +2,10 @@ mod support;
 
 use std::sync::Arc;
 
-use support::{FileDataSource, fixture_path};
+use support::{FileDataSource, child_named, fixture_path};
 use wxtla::{
-  ByteSourceHandle, SliceDataSource,
-  filesystems::{
-    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceSource, refs::RefsDriver,
-  },
-  images::ewf::EwfDriver,
+  ByteSourceHandle, NamespaceNodeKind, NamespaceSource, SliceDataSource,
+  filesystems::refs::RefsDriver, images::ewf::EwfDriver,
 };
 
 const REFS_VOLUME_OFFSET: u64 = 34_603_008;
@@ -26,16 +23,6 @@ fn open_fixture_file_system() -> wxtla::Result<wxtla::filesystems::refs::RefsFil
     REFS_VOLUME_OFFSET,
     volume_header.volume_size,
   )) as ByteSourceHandle)
-}
-
-fn child_named(
-  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
-) -> wxtla::Result<NamespaceDirectoryEntry> {
-  file_system
-    .read_dir(directory_id)?
-    .into_iter()
-    .find(|entry| entry.name == name)
-    .ok_or_else(|| wxtla::Error::NotFound(format!("missing directory entry: {name}")))
 }
 
 #[test]

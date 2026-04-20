@@ -13,11 +13,9 @@ use super::{
   },
 };
 use crate::{
-  ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, Error, Result,
-  SourceHints,
-  filesystems::{
-    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
-  },
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, Error,
+  NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord, Result,
+  SourceHints, filesystems::FileSystem,
 };
 
 const ROOT_INODE: u32 = 2;

@@ -7,7 +7,8 @@ use std::{
 };
 
 use wxtla::{
-  ByteSource, ByteSourceHandle, RelatedSourceRequest, RelatedSourceResolver, Result, SourceIdentity,
+  ByteSource, ByteSourceHandle, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceSource,
+  RelatedSourceRequest, RelatedSourceResolver, Result, SourceIdentity,
 };
 
 pub fn fixture_path(relative: impl AsRef<Path>) -> PathBuf {
@@ -18,6 +19,16 @@ pub fn fixture_path(relative: impl AsRef<Path>) -> PathBuf {
 
 pub fn fixture_identity(relative: impl AsRef<Path>) -> SourceIdentity {
   SourceIdentity::from_relative_path(&relative.as_ref().to_string_lossy()).unwrap()
+}
+
+pub fn child_named(
+  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
+) -> wxtla::Result<NamespaceDirectoryEntry> {
+  file_system
+    .read_dir(directory_id)?
+    .into_iter()
+    .find(|entry| entry.name == name)
+    .ok_or_else(|| wxtla::Error::NotFound(format!("missing directory entry: {name}")))
 }
 
 pub struct FileDataSource {

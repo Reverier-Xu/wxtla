@@ -7,10 +7,8 @@ use std::{
 
 use super::DESCRIPTOR;
 use crate::{
-  ByteSourceHandle, Error, Result, SliceDataSource, SourceHints,
-  archives::{
-    Archive, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
-  },
+  ByteSourceHandle, Error, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind,
+  NamespaceNodeRecord, Result, SliceDataSource, SourceHints, archives::Archive,
 };
 
 const BLOCK_SIZE: u64 = 512;

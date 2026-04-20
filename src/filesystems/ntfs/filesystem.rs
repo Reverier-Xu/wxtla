@@ -18,10 +18,8 @@ use super::{
   runlist::{NtfsCompressedDataSource, NtfsDataRun, NtfsNonResidentDataSource, parse_runlist},
 };
 use crate::{
-  ByteSourceHandle, BytesDataSource, Error, Result, SourceHints,
-  filesystems::{
-    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
-  },
+  ByteSourceHandle, BytesDataSource, Error, NamespaceDirectoryEntry, NamespaceNodeId,
+  NamespaceNodeKind, NamespaceNodeRecord, Result, SourceHints, filesystems::FileSystem,
 };
 
 const ROOT_FILE_RECORD_NUMBER: u64 = 5;

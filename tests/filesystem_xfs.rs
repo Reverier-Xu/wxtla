@@ -2,27 +2,12 @@ mod support;
 
 use std::sync::Arc;
 
-use support::{FileDataSource, fixture_path};
-use wxtla::{
-  ByteSourceHandle,
-  filesystems::{
-    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceSource, xfs::XfsDriver,
-  },
-};
+use support::{FileDataSource, child_named, fixture_path};
+use wxtla::{ByteSourceHandle, NamespaceNodeKind, NamespaceSource, filesystems::xfs::XfsDriver};
 
 fn open_fixture_file_system() -> wxtla::Result<wxtla::filesystems::xfs::XfsFileSystem> {
   let source: ByteSourceHandle = Arc::new(FileDataSource::open(fixture_path("xfs/xfs.raw"))?);
   XfsDriver::open(source)
-}
-
-fn child_named(
-  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
-) -> wxtla::Result<NamespaceDirectoryEntry> {
-  file_system
-    .read_dir(directory_id)?
-    .into_iter()
-    .find(|entry| entry.name == name)
-    .ok_or_else(|| wxtla::Error::NotFound(format!("missing directory entry: {name}")))
 }
 
 #[test]

@@ -7,11 +7,9 @@ use sha1_smol::Sha1;
 
 use super::{DESCRIPTOR, IMAGE_HEADER_SIGNATURE, MARGIN_SIZE, SEGMENT_MARGIN_SIGNATURE};
 use crate::{
-  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error, Result,
-  SourceHints,
-  archives::{
-    Archive, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
-  },
+  ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceSeekCost, Error,
+  NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord, Result,
+  SourceHints, archives::Archive,
 };
 
 const ROOT_ENTRY_ID: u64 = 0;

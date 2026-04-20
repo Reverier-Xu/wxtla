@@ -4,13 +4,11 @@ use std::{fs::File, io::Read, sync::Arc};
 
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
-use support::{FileDataSource, fixture_path};
+use support::{FileDataSource, child_named, fixture_path};
 use wxtla::{
-  ByteSourceHandle, BytesDataSource, Credential, DataSource, DataViewSelector, OpenOptions,
-  filesystems::{
-    ApfsSpecialFileKind, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceSource,
-    NamespaceStreamKind, apfs::ApfsDriver,
-  },
+  ByteSourceHandle, BytesDataSource, Credential, DataSource, DataViewSelector, NamespaceSource,
+  NamespaceStreamKind, OpenOptions,
+  filesystems::{ApfsSpecialFileKind, apfs::ApfsDriver},
   volumes::gpt::GptDriver,
 };
 
@@ -37,16 +35,6 @@ fn open_gzip_volume_with_password(
     &DataViewSelector::Index(0),
     OpenOptions::new().with_credentials(&credentials),
   )
-}
-
-fn child_named(
-  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
-) -> wxtla::Result<NamespaceDirectoryEntry> {
-  file_system
-    .read_dir(directory_id)?
-    .into_iter()
-    .find(|entry| entry.name == name)
-    .ok_or_else(|| wxtla::Error::NotFound(format!("missing directory entry: {name}")))
 }
 
 #[test]

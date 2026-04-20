@@ -11,9 +11,10 @@ use std::{
 
 use super::DESCRIPTOR;
 use crate::{
-  ByteSourceHandle, Error, FileDataSource, Result, SourceHints,
+  ByteSourceHandle, Error, FileDataSource, NamespaceDirectoryEntry, NamespaceNodeId,
+  NamespaceNodeKind, NamespaceNodeRecord, Result, SourceHints,
   archives::{
-    Archive, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
+    Archive,
     cache::{ArchiveCachePaths, ensure_cache_space, prepare_archive_cache, reset_extract_dir},
   },
 };

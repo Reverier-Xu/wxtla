@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use crate::{
-  ByteSource, ByteSourceHandle, Error, Result,
-  filesystems::{NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind},
+  ByteSource, ByteSourceHandle, Error, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind,
+  Result,
 };
 
 const ATTRIBUTE_TYPE_FILE_NAME: u32 = 0x0000_0030;

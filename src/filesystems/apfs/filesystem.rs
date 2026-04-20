@@ -29,9 +29,9 @@ use super::{
 use crate::{
   ByteSource, ByteSourceCapabilities, ByteSourceHandle, BytesDataSource, DataSource,
   DataSourceFacets, DataViewId, DataViewKind, DataViewRecord, DataViewSelector, Error,
-  NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
-  NamespaceSource, NamespaceStreamId, NamespaceStreamKind, NamespaceStreamRecord, OpenOptions,
-  Result,
+  FormatDescriptor, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind,
+  NamespaceNodeRecord, NamespaceSource, NamespaceStreamId, NamespaceStreamKind,
+  NamespaceStreamRecord, OpenOptions, Result, filesystems::driver::FileSystem,
 };
 
 type ApfsNodeMap = Arc<HashMap<u64, Arc<ApfsNode>>>;
@@ -876,7 +876,11 @@ impl ApfsVolume {
   }
 }
 
-impl NamespaceSource for ApfsVolume {
+impl FileSystem for ApfsVolume {
+  fn descriptor(&self) -> FormatDescriptor {
+    DESCRIPTOR
+  }
+
   fn root_node_id(&self) -> NamespaceNodeId {
     NamespaceNodeId::from_u64(APFS_ROOT_DIRECTORY_OBJECT_ID)
   }
@@ -914,39 +918,8 @@ impl NamespaceSource for ApfsVolume {
     )
   }
 
-  fn lookup_name(
-    &self, directory_id: &NamespaceNodeId, name: &str,
-  ) -> Result<NamespaceDirectoryEntry> {
-    let node = self.lookup_node(directory_id)?;
-    if node.record.kind != NamespaceNodeKind::Directory {
-      return Err(Error::InvalidFormat(
-        "apfs directory lookups require a directory inode".to_string(),
-      ));
-    }
-
-    let entries = self.read_dir(directory_id)?;
-    if !self.info().is_case_insensitive() && !self.info().is_normalization_insensitive() {
-      return entries
-        .into_iter()
-        .find(|entry| entry.name == name)
-        .ok_or_else(|| Error::NotFound(format!("apfs entry not found: {name}")));
-    }
-
-    let wanted = apfs_lookup_name_key(
-      name,
-      self.info().is_case_insensitive(),
-      self.info().is_normalization_insensitive(),
-    );
-    entries
-      .into_iter()
-      .find(|entry| {
-        apfs_lookup_name_key(
-          &entry.name,
-          self.info().is_case_insensitive(),
-          self.info().is_normalization_insensitive(),
-        ) == wanted
-      })
-      .ok_or_else(|| Error::NotFound(format!("apfs entry not found: {name}")))
+  fn open_file(&self, file_id: &NamespaceNodeId) -> Result<ByteSourceHandle> {
+    self.open_content_stream(file_id)
   }
 
   fn data_streams(&self, node_id: &NamespaceNodeId) -> Result<Vec<NamespaceStreamRecord>> {
@@ -1016,6 +989,65 @@ impl NamespaceSource for ApfsVolume {
         "apfs does not expose this stream kind".to_string(),
       )),
     }
+  }
+}
+
+impl NamespaceSource for ApfsVolume {
+  fn root_node_id(&self) -> NamespaceNodeId {
+    FileSystem::root_node_id(self)
+  }
+
+  fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {
+    FileSystem::node(self, node_id)
+  }
+
+  fn read_dir(&self, directory_id: &NamespaceNodeId) -> Result<Vec<NamespaceDirectoryEntry>> {
+    FileSystem::read_dir(self, directory_id)
+  }
+
+  fn lookup_name(
+    &self, directory_id: &NamespaceNodeId, name: &str,
+  ) -> Result<NamespaceDirectoryEntry> {
+    let node = self.lookup_node(directory_id)?;
+    if node.record.kind != NamespaceNodeKind::Directory {
+      return Err(Error::InvalidFormat(
+        "apfs directory lookups require a directory inode".to_string(),
+      ));
+    }
+
+    let entries = NamespaceSource::read_dir(self, directory_id)?;
+    if !self.info().is_case_insensitive() && !self.info().is_normalization_insensitive() {
+      return entries
+        .into_iter()
+        .find(|entry| entry.name == name)
+        .ok_or_else(|| Error::NotFound(format!("apfs entry not found: {name}")));
+    }
+
+    let wanted = apfs_lookup_name_key(
+      name,
+      self.info().is_case_insensitive(),
+      self.info().is_normalization_insensitive(),
+    );
+    entries
+      .into_iter()
+      .find(|entry| {
+        apfs_lookup_name_key(
+          &entry.name,
+          self.info().is_case_insensitive(),
+          self.info().is_normalization_insensitive(),
+        ) == wanted
+      })
+      .ok_or_else(|| Error::NotFound(format!("apfs entry not found: {name}")))
+  }
+
+  fn data_streams(&self, node_id: &NamespaceNodeId) -> Result<Vec<NamespaceStreamRecord>> {
+    FileSystem::data_streams(self, node_id)
+  }
+
+  fn open_stream(
+    &self, node_id: &NamespaceNodeId, stream_id: &NamespaceStreamId,
+  ) -> Result<ByteSourceHandle> {
+    FileSystem::open_stream(self, node_id, stream_id)
   }
 }
 

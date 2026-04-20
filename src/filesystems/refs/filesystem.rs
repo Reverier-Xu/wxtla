@@ -19,10 +19,8 @@ use super::{
   },
 };
 use crate::{
-  ByteSourceHandle, BytesDataSource, Error, Result, SourceHints,
-  filesystems::{
-    FileSystem, NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
-  },
+  ByteSourceHandle, BytesDataSource, Error, NamespaceDirectoryEntry, NamespaceNodeId,
+  NamespaceNodeKind, NamespaceNodeRecord, Result, SourceHints, filesystems::FileSystem,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

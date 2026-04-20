@@ -2,12 +2,10 @@ mod support;
 
 use std::{path::Path, sync::Arc};
 
-use support::{FileDataSource, fixture_path};
+use support::{FileDataSource, child_named, fixture_path};
 use wxtla::{
-  ByteSourceHandle, ObservedDataSource,
-  filesystems::{
-    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceSource, ntfs::NtfsDriver,
-  },
+  ByteSourceHandle, NamespaceNodeKind, NamespaceSource, ObservedDataSource,
+  filesystems::ntfs::NtfsDriver,
 };
 
 fn open_fixture_file_system() -> wxtla::Result<wxtla::filesystems::ntfs::NtfsFileSystem> {
@@ -26,16 +24,6 @@ fn open_observed_fixture_file_system() -> wxtla::Result<(
   let source: ByteSourceHandle = observed;
 
   Ok((NtfsDriver::open(source)?, stats))
-}
-
-fn child_named(
-  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
-) -> wxtla::Result<NamespaceDirectoryEntry> {
-  file_system
-    .read_dir(directory_id)?
-    .into_iter()
-    .find(|entry| entry.name == name)
-    .ok_or_else(|| wxtla::Error::NotFound(format!("missing directory entry: {name}")))
 }
 
 #[test]

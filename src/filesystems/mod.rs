@@ -24,8 +24,3 @@ pub use hfs::{HfsDriver, HfsExtendedAttribute, HfsFileSystem};
 pub use ntfs::{NtfsDriver, NtfsFileSystem};
 pub use refs::{RefsDataStreamInfo, RefsDriver, RefsFileSystem, RefsNodeDetails};
 pub use xfs::{XfsDriver, XfsFileSystem, XfsNodeDetails};
-
-pub use crate::{
-  NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceNodeRecord,
-  NamespaceSource, NamespaceStreamId, NamespaceStreamKind, NamespaceStreamRecord,
-};

@@ -2,13 +2,10 @@ mod support;
 
 use std::sync::Arc;
 
-use support::{FileDataSource, fixture_path};
+use support::{FileDataSource, child_named, fixture_path};
 use wxtla::{
-  ByteSourceHandle, ByteSourceReadStats, ObservedDataSource,
-  filesystems::{
-    NamespaceDirectoryEntry, NamespaceNodeId, NamespaceNodeKind, NamespaceSource, fat::FatDriver,
-  },
-  images::qcow::QcowDriver,
+  ByteSourceHandle, ByteSourceReadStats, NamespaceNodeKind, NamespaceSource, ObservedDataSource,
+  filesystems::fat::FatDriver, images::qcow::QcowDriver,
 };
 
 fn open_raw_fixture_file_system(
@@ -36,16 +33,6 @@ fn open_qcow_fixture_file_system(
   let source: ByteSourceHandle = Arc::new(FileDataSource::open(fixture_path(relative_path))?);
   let image = QcowDriver::open(source)?;
   FatDriver::open(Arc::new(image) as ByteSourceHandle)
-}
-
-fn child_named(
-  file_system: &dyn NamespaceSource, directory_id: &NamespaceNodeId, name: &str,
-) -> wxtla::Result<NamespaceDirectoryEntry> {
-  file_system
-    .read_dir(directory_id)?
-    .into_iter()
-    .find(|entry| entry.name == name)
-    .ok_or_else(|| wxtla::Error::NotFound(format!("missing directory entry: {name}")))
 }
 
 #[test]
