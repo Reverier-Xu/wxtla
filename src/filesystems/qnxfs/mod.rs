@@ -58,10 +58,7 @@ impl FormatProbe for QnxFsProbe {
     if size < QNX4_BLOCK_SIZE * 2 {
       return Ok(ProbeResult::rejected());
     }
-    let Ok(data) = context
-      .source()
-      .read_bytes_at(QNX4_BLOCK_SIZE, 16)
-    else {
+    let Ok(data) = context.source().read_bytes_at(QNX4_BLOCK_SIZE, 16) else {
       return Ok(ProbeResult::rejected());
     };
     if data[0] == b'/' && data[1..16].iter().all(|&b| b == 0) {

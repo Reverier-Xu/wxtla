@@ -11,8 +11,7 @@ use super::{
 use crate::{
   ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceReadConcurrency,
   ByteSourceSeekCost, BytesDataSource, Error, NamespaceDirectoryEntry, NamespaceNodeId,
-  NamespaceNodeKind, NamespaceNodeRecord, Result,
-  filesystems::FileSystem,
+  NamespaceNodeKind, NamespaceNodeRecord, Result, filesystems::FileSystem,
 };
 
 #[derive(Debug, Clone)]
@@ -39,13 +38,8 @@ impl Qnx4Inode {
     }
 
     let name_bytes = &data[0..QNX4_SHORT_NAME_MAX];
-    let name = String::from_utf8_lossy(
-      name_bytes
-        .split(|&b| b == 0)
-        .next()
-        .unwrap_or(b""),
-    )
-    .to_string();
+    let name =
+      String::from_utf8_lossy(name_bytes.split(|&b| b == 0).next().unwrap_or(b"")).to_string();
 
     let size = read_u32_le(data, 16)?;
     let first_extent_blk = read_u32_le(data, 20)?;
@@ -146,7 +140,10 @@ impl Qnx4Inode {
         );
 
         if ext_blk > 0 && ext_size > 0 {
-          extents.push(((ext_blk - 1) as u64 * QNX4_BLOCK_SIZE, ext_size as u64 * QNX4_BLOCK_SIZE));
+          extents.push((
+            (ext_blk - 1) as u64 * QNX4_BLOCK_SIZE,
+            ext_size as u64 * QNX4_BLOCK_SIZE,
+          ));
         }
       }
 
@@ -211,9 +208,7 @@ impl QnxFsFileSystem {
     let index = (inum % QNX4_INODES_PER_BLOCK) as usize;
 
     let offset = block as u64 * QNX4_BLOCK_SIZE + index as u64 * QNX4_DIR_ENTRY_SIZE as u64;
-    let data = self
-      .source
-      .read_bytes_at(offset, QNX4_DIR_ENTRY_SIZE)?;
+    let data = self.source.read_bytes_at(offset, QNX4_DIR_ENTRY_SIZE)?;
 
     let inode = Qnx4Inode::parse(&data, inum)?;
 
@@ -225,9 +220,7 @@ impl QnxFsFileSystem {
     Ok(inode)
   }
 
-  fn read_directory(
-    &self, inode: &Qnx4Inode,
-  ) -> Result<Vec<NamespaceDirectoryEntry>> {
+  fn read_directory(&self, inode: &Qnx4Inode) -> Result<Vec<NamespaceDirectoryEntry>> {
     if !inode.is_dir() {
       return Err(Error::invalid_format(
         "qnx4 directory reads require a directory inode",
@@ -263,8 +256,7 @@ impl QnxFsFileSystem {
                 .map_err(|_| Error::invalid_format("qnx4 link inode blk is truncated"))?,
             );
             let link_inode_ndx = data[52];
-            let child_inum =
-              (link_inode_blk - 1) * QNX4_INODES_PER_BLOCK + link_inode_ndx as u32;
+            let child_inum = (link_inode_blk - 1) * QNX4_INODES_PER_BLOCK + link_inode_ndx as u32;
 
             let lfn_blk = u32::from_le_bytes(
               data[56..60]
@@ -273,19 +265,12 @@ impl QnxFsFileSystem {
             );
 
             let name = if lfn_blk > 0 {
-              let lfn_data = self
-                .source
-                .read_bytes_at(
-                  (lfn_blk - 1) as u64 * QNX4_BLOCK_SIZE,
-                  QNX4_BLOCK_SIZE as usize,
-                )?;
-              String::from_utf8_lossy(
-                lfn_data[6..]
-                  .split(|&b| b == 0)
-                  .next()
-                  .unwrap_or(b""),
-              )
-              .to_string()
+              let lfn_data = self.source.read_bytes_at(
+                (lfn_blk - 1) as u64 * QNX4_BLOCK_SIZE,
+                QNX4_BLOCK_SIZE as usize,
+              )?;
+              String::from_utf8_lossy(lfn_data[6..].split(|&b| b == 0).next().unwrap_or(b""))
+                .to_string()
             } else {
               String::from_utf8_lossy(
                 data[0..QNX4_NAME_MAX]
@@ -360,11 +345,7 @@ impl FileSystem for QnxFsFileSystem {
       NamespaceNodeRecord::new(
         node_id.clone(),
         inode.node_kind(),
-        if inode.is_reg() {
-          inode.size as u64
-        } else {
-          0
-        },
+        if inode.is_reg() { inode.size as u64 } else { 0 },
       )
       .with_path(inode.name),
     )
@@ -430,9 +411,7 @@ impl ByteSource for Qnx4FileDataSource {
         break;
       }
 
-      let data = self
-        .source
-        .read_bytes_at(ext_offset + ext_relative, step)?;
+      let data = self.source.read_bytes_at(ext_offset + ext_relative, step)?;
       buf[written..written + step].copy_from_slice(&data[..step]);
       written += step;
       file_offset += step as u64;

@@ -129,8 +129,7 @@ mod tests {
     let mut data = vec![0u8; 65536 + SBLOCKSIZE];
     let sb_offset = 65536usize;
 
-    data[sb_offset + 0x21C..sb_offset + 0x220]
-      .copy_from_slice(&FS_UFS2_MAGIC.to_le_bytes());
+    data[sb_offset + 0x21C..sb_offset + 0x220].copy_from_slice(&FS_UFS2_MAGIC.to_le_bytes());
 
     data
   }
