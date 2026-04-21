@@ -3,11 +3,13 @@
 mod driver;
 
 pub mod apfs;
+pub mod cramfs;
 pub mod ext;
 pub mod fat;
 pub mod hfs;
 pub mod ntfs;
 pub mod refs;
+pub mod squashfs;
 pub mod xfs;
 
 pub use apfs::{
