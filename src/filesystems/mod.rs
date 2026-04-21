@@ -9,6 +9,7 @@ pub mod fat;
 pub mod ffs;
 pub mod hfs;
 pub mod ntfs;
+pub mod qnxfs;
 pub mod refs;
 pub mod squashfs;
 pub mod xfs;
