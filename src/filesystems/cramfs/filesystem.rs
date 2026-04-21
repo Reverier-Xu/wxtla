@@ -491,4 +491,24 @@ mod tests {
     assert!(inode.is_dir());
     assert_eq!(inode.name, "dir");
   }
+
+  #[test]
+  fn rejects_too_short_inode() {
+    let data = vec![0u8; 8];
+    assert!(CramFsInode::parse(&data, 0).is_err());
+  }
+
+  #[test]
+  fn inode_size_rounds_up_name() {
+    let mut data = vec![0u8; 20];
+    data[0..2].copy_from_slice(&(S_IFREG | 0o644).to_le_bytes());
+    data[4..8].copy_from_slice(&(100u32).to_le_bytes());
+    data[8..12].copy_from_slice(&(1u32).to_le_bytes());
+    data[12..17].copy_from_slice(b"abc\0\0");
+    data[17..20].copy_from_slice(b"\0\0\0");
+
+    let inode = CramFsInode::parse(&data, 0).unwrap();
+    assert_eq!(inode.name, "abc");
+    assert_eq!(inode.inode_size(), 16);
+  }
 }
