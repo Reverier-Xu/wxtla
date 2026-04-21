@@ -3,6 +3,7 @@
 mod driver;
 
 pub mod apfs;
+pub mod clfs;
 pub mod cramfs;
 pub mod ext;
 pub mod fat;
