@@ -23,7 +23,7 @@ pub(crate) const LDEV_INODE_SIZE: usize = 28;
 pub(crate) const SYMLINK_INODE_SIZE: usize = 24;
 pub(crate) const REG_INODE_SIZE: usize = 32;
 pub(crate) const LREG_INODE_SIZE: usize = 56;
-pub(crate) const DIR_INODE_SIZE: usize = 28;
+pub(crate) const DIR_INODE_SIZE: usize = 32;
 pub(crate) const LDIR_INODE_SIZE: usize = 40;
 
 pub(crate) const SQUASHFS_INVALID_FRAG: u32 = 0xFFFF_FFFF;

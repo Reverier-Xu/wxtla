@@ -7,8 +7,8 @@ use std::{
 use flate2::read::ZlibDecoder;
 
 use super::{
-  CRAMFS_BLOCK_SIZE, CRAMFS_FLAG_DIRECT_POINTER, CRAMFS_FLAG_UNCOMPRESSED_BLOCK,
-  CRAMFS_SUPERBLOCK_SIZE, DESCRIPTOR, read_slice, read_u32_le,
+  CRAMFS_BLOCK_SIZE, CRAMFS_FLAG_DIRECT_POINTER, CRAMFS_FLAG_UNCOMPRESSED_BLOCK, DESCRIPTOR,
+  read_slice, read_u32_le,
 };
 use crate::{
   ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceReadConcurrency,
@@ -134,7 +134,7 @@ pub(crate) struct CramFsSuperblock {
 
 impl CramFsSuperblock {
   pub(crate) fn parse(source: &dyn ByteSource) -> Result<Self> {
-    let data = source.read_bytes_at(0, CRAMFS_SUPERBLOCK_SIZE)?;
+    let data = source.read_bytes_at(0, 512)?;
 
     let magic = read_u32_le(&data, 0)?;
     if magic != super::CRAMFS_MAGIC {
@@ -148,7 +148,7 @@ impl CramFsSuperblock {
       return Err(Error::invalid_format("invalid cramfs signature"));
     }
 
-    let root_inode = CramFsInode::parse(&data[48..], 0)?;
+    let root_inode = CramFsInode::parse(&data[64..], 64)?;
 
     Ok(Self {
       size,
@@ -170,31 +170,6 @@ struct CramFsBlockReader {
 impl CramFsBlockReader {
   fn new(source: ByteSourceHandle) -> Self {
     Self { source }
-  }
-
-  fn read_block(&self, pointer: u32) -> Result<Vec<u8>> {
-    let is_uncompressed = (pointer & CRAMFS_FLAG_UNCOMPRESSED_BLOCK) != 0;
-    let is_direct = (pointer & CRAMFS_FLAG_DIRECT_POINTER) != 0;
-
-    if is_direct {
-      return Err(Error::unsupported(
-        "cramfs direct pointers are not yet supported",
-      ));
-    }
-
-    let offset = pointer & !(CRAMFS_FLAG_UNCOMPRESSED_BLOCK | CRAMFS_FLAG_DIRECT_POINTER);
-    let data = self
-      .source
-      .read_bytes_at(offset as u64, CRAMFS_BLOCK_SIZE as usize)?;
-
-    if is_uncompressed || data.is_empty() {
-      return Ok(data);
-    }
-
-    let mut decoder = ZlibDecoder::new(&data[..]);
-    let mut output = Vec::new();
-    decoder.read_to_end(&mut output)?;
-    Ok(output)
   }
 
   fn read_file_data(&self, data_offset: u32, file_size: u32) -> Result<Vec<Vec<u8>>> {
@@ -235,8 +210,17 @@ impl CramFsBlockReader {
       if size == 0 {
         blocks.push(vec![0u8; CRAMFS_BLOCK_SIZE as usize]);
       } else {
-        let block_data = self.read_block(pointer)?;
-        blocks.push(block_data);
+        let data = self.source.read_bytes_at(prev as u64, size)?;
+        let is_uncompressed = (pointer & CRAMFS_FLAG_UNCOMPRESSED_BLOCK) != 0;
+
+        if is_uncompressed {
+          blocks.push(data);
+        } else {
+          let mut decoder = ZlibDecoder::new(&data[..]);
+          let mut output = Vec::new();
+          decoder.read_to_end(&mut output)?;
+          blocks.push(output);
+        }
       }
 
       prev = raw_offset;
@@ -362,7 +346,7 @@ impl FileSystem for CramFsFileSystem {
   }
 
   fn root_node_id(&self) -> NamespaceNodeId {
-    NamespaceNodeId::from_u64(0)
+    NamespaceNodeId::from_u64(64)
   }
 
   fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {

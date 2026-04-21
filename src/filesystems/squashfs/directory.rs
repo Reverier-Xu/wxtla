@@ -57,12 +57,9 @@ pub(crate) fn parse_directory_block(data: &[u8]) -> Result<Vec<SquashFsDirEntry>
 
   while offset + DIR_HEADER_SIZE <= data.len() {
     let header = SquashFsDirHeader::parse(&data[offset..])?;
-    if header.count == 0 {
-      break;
-    }
     offset += DIR_HEADER_SIZE;
 
-    for _ in 0..header.count {
+    for _ in 0..(header.count + 1) {
       if offset + DIR_ENTRY_BASE_SIZE > data.len() {
         return Err(Error::invalid_format(
           "squashfs directory entry is truncated",
@@ -72,7 +69,7 @@ pub(crate) fn parse_directory_block(data: &[u8]) -> Result<Vec<SquashFsDirEntry>
       let entry_offset = read_u16_le(data, offset)?;
       let inode_diff = read_i16_le(data, offset + 2)?;
       let entry_type = read_u16_le(data, offset + 4)?;
-      let name_size = read_u16_le(data, offset + 6)? as usize;
+      let name_size = read_u16_le(data, offset + 6)? as usize + 1;
 
       let name_start = offset + DIR_ENTRY_BASE_SIZE;
       if name_start + name_size > data.len() {
@@ -136,13 +133,13 @@ mod tests {
   #[test]
   fn parses_simple_directory_block() {
     let mut data = Vec::new();
-    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&100u32.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0i16.to_le_bytes());
     data.extend_from_slice(&SQUASHFS_FILETYPE_REG.to_le_bytes());
-    data.extend_from_slice(&4u16.to_le_bytes());
+    data.extend_from_slice(&3u16.to_le_bytes());
     data.extend_from_slice(b"file");
 
     let entries = parse_directory_block(&data).unwrap();
@@ -156,18 +153,18 @@ mod tests {
   #[test]
   fn parses_multiple_directory_entries() {
     let mut data = Vec::new();
-    data.extend_from_slice(&2u32.to_le_bytes());
+    data.extend_from_slice(&1u32.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&200u32.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0i16.to_le_bytes());
     data.extend_from_slice(&SQUASHFS_FILETYPE_DIR.to_le_bytes());
-    data.extend_from_slice(&3u16.to_le_bytes());
+    data.extend_from_slice(&2u16.to_le_bytes());
     data.extend_from_slice(b"dir");
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&1i16.to_le_bytes());
     data.extend_from_slice(&SQUASHFS_FILETYPE_REG.to_le_bytes());
-    data.extend_from_slice(&4u16.to_le_bytes());
+    data.extend_from_slice(&3u16.to_le_bytes());
     data.extend_from_slice(b"file");
 
     let entries = parse_directory_block(&data).unwrap();

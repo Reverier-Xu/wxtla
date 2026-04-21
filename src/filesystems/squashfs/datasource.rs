@@ -50,8 +50,8 @@ impl SquashFsDataReader {
 
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn read_file_block(
-    &self, block_index: u64, block_size: u32, block_sizes: &[u32], file_size: u64,
-    fragment_idx: u32, fragment_offset: u32,
+    &self, block_index: u64, start_block: u64, block_size: u32, block_sizes: &[u32],
+    file_size: u64, fragment_idx: u32, fragment_offset: u32,
     fragment_blocks: &[super::superblock::SquashFsFragmentEntry],
   ) -> Result<Vec<u8>> {
     let block_count = block_sizes.len() as u64;
@@ -78,8 +78,9 @@ impl SquashFsDataReader {
       let is_uncompressed = (compressed_size & SQUASHFS_COMPRESSED_BIT) != 0;
       let actual_size = compressed_size & !SQUASHFS_COMPRESSED_BIT;
 
-      let physical_offset = block_index
-        .checked_mul(u64::from(block_size))
+      let physical_offset = start_block
+        .checked_add(block_index)
+        .and_then(|v| v.checked_mul(u64::from(block_size)))
         .ok_or_else(|| Error::invalid_range("squashfs data offset overflow"))?;
 
       let raw = self
@@ -196,6 +197,7 @@ pub(crate) struct SquashFsFileDataSource {
   block_sizes: Arc<[u32]>,
   fragment_blocks: Arc<[super::superblock::SquashFsFragmentEntry]>,
   file_size: u64,
+  start_block: u64,
   fragment_idx: u32,
   fragment_offset: u32,
 }
@@ -204,13 +206,14 @@ impl SquashFsFileDataSource {
   pub(crate) fn new(
     reader: Arc<SquashFsDataReader>, block_sizes: Arc<[u32]>,
     fragment_blocks: Arc<[super::superblock::SquashFsFragmentEntry]>, file_size: u64,
-    fragment_idx: u32, fragment_offset: u32,
+    start_block: u64, fragment_idx: u32, fragment_offset: u32,
   ) -> Self {
     Self {
       reader,
       block_sizes,
       fragment_blocks,
       file_size,
+      start_block,
       fragment_idx,
       fragment_offset,
     }
@@ -234,6 +237,7 @@ impl ByteSource for SquashFsFileDataSource {
 
       let data = self.reader.read_file_block(
         block_index as u64,
+        self.start_block,
         self.reader.block_size(),
         &self.block_sizes,
         self.file_size,

@@ -26,6 +26,7 @@ pub struct SquashFsFileSystem {
   superblock: SquashFsSuperblock,
   data_reader: Arc<SquashFsDataReader>,
   fragment_blocks: Arc<[SquashFsFragmentEntry]>,
+  root_inode_number: u32,
   inodes: Mutex<Option<HashMap<u32, SquashFsInode>>>,
   directory_cache: Mutex<HashMap<u32, Vec<NamespaceDirectoryEntry>>>,
 }
@@ -36,16 +37,31 @@ impl SquashFsFileSystem {
 
     let data_reader = Arc::new(SquashFsDataReader::new(source.clone(), superblock.clone()));
 
-    let fragment_blocks = if superblock.has_fragments() && superblock.fragment_count > 0 {
-      let fragment_table_size = superblock.fragment_count as usize * 16;
-      let raw = source.read_bytes_at(superblock.fragment_table_start, fragment_table_size)?;
-      let fragments: Vec<SquashFsFragmentEntry> = raw
-        .chunks_exact(16)
-        .filter_map(|chunk| SquashFsFragmentEntry::parse(chunk).ok())
-        .collect();
-      Arc::from(fragments.into_boxed_slice())
-    } else {
-      Arc::from(Vec::<SquashFsFragmentEntry>::new().into_boxed_slice())
+    let fragment_blocks: Arc<[SquashFsFragmentEntry]> =
+      if superblock.has_fragments() && superblock.fragment_count > 0 {
+        let fragment_table_size = superblock.fragment_count as usize * 16;
+        let raw = source.read_bytes_at(superblock.fragment_table_start, fragment_table_size)?;
+        let fragments: Vec<SquashFsFragmentEntry> = raw
+          .chunks_exact(16)
+          .filter_map(|chunk| SquashFsFragmentEntry::parse(chunk).ok())
+          .collect();
+        Arc::from(fragments.into_boxed_slice())
+      } else {
+        Arc::from(Vec::<SquashFsFragmentEntry>::new().into_boxed_slice())
+      };
+
+    let root_inode_number = {
+      let fs = Self {
+        source: source.clone(),
+        superblock: superblock.clone(),
+        data_reader: data_reader.clone(),
+        fragment_blocks: fragment_blocks.clone(),
+        root_inode_number: 0,
+        inodes: Mutex::new(None),
+        directory_cache: Mutex::new(HashMap::new()),
+      };
+      let inode = fs.read_inode_at_offset(superblock.root_inode_offset)?;
+      inode.inode_number
     };
 
     Ok(Self {
@@ -53,6 +69,7 @@ impl SquashFsFileSystem {
       superblock,
       data_reader,
       fragment_blocks,
+      root_inode_number,
       inodes: Mutex::new(None),
       directory_cache: Mutex::new(HashMap::new()),
     })
@@ -65,6 +82,29 @@ impl SquashFsFileSystem {
       return Ok(None);
     }
     Ok(Some(inode.symlink_target.clone()))
+  }
+
+  fn read_inode_at_offset(&self, target_offset: u64) -> Result<SquashFsInode> {
+    let block_size = u64::from(self.superblock.block_size);
+    let mut table_offset = self.superblock.inode_table_start;
+    let mut cumulative = 0u64;
+
+    loop {
+      let data = self.data_reader.read_metadata_block(table_offset)?;
+      if data.is_empty() {
+        return Err(Error::not_found(format!(
+          "squashfs inode at offset {target_offset} not found"
+        )));
+      }
+
+      if target_offset >= cumulative && target_offset < cumulative + data.len() as u64 {
+        let local_offset = (target_offset - cumulative) as usize;
+        return SquashFsInode::parse(&data[local_offset..], block_size);
+      }
+
+      cumulative += data.len() as u64;
+      table_offset += crate::filesystems::squashfs::superblock::METADATA_SIZE;
+    }
   }
 
   fn read_inode(&self, inode_number: u32) -> Result<SquashFsInode> {
@@ -134,8 +174,9 @@ impl SquashFsFileSystem {
       Vec::new()
     } else {
       let mut all_entries = Vec::new();
-      let mut dir_offset = inode.start_block;
+      let mut dir_offset = self.superblock.directory_table_start + inode.start_block;
       let dir_size = inode.file_size;
+      let mut skip_first = inode.fragment_offset as usize;
 
       let mut read = 0u64;
       while read < dir_size {
@@ -144,7 +185,17 @@ impl SquashFsFileSystem {
           break;
         }
 
-        let parsed = parse_directory_block(&data)?;
+        let effective_data = if skip_first < data.len() {
+          &data[skip_first..]
+        } else {
+          skip_first -= data.len();
+          read += data.len() as u64;
+          dir_offset += crate::filesystems::squashfs::superblock::METADATA_SIZE;
+          continue;
+        };
+        skip_first = 0;
+
+        let parsed = parse_directory_block(effective_data)?;
         let namespace_entries: Vec<NamespaceDirectoryEntry> = parsed
           .iter()
           .map(|entry| {
@@ -196,6 +247,7 @@ impl SquashFsFileSystem {
       block_sizes,
       self.fragment_blocks.clone(),
       inode.file_size,
+      inode.start_block,
       inode.fragment_block_index,
       inode.fragment_offset,
     )) as ByteSourceHandle)
@@ -208,7 +260,7 @@ impl FileSystem for SquashFsFileSystem {
   }
 
   fn root_node_id(&self) -> NamespaceNodeId {
-    NamespaceNodeId::from_u64(1)
+    NamespaceNodeId::from_u64(self.root_inode_number as u64)
   }
 
   fn node(&self, node_id: &NamespaceNodeId) -> Result<NamespaceNodeRecord> {

@@ -73,17 +73,29 @@ impl SquashFsSuperblock {
       ));
     }
 
-    let offset = source_size - SUPERBLOCK_SIZE_V4;
-    let data = source.read_bytes_at(offset, SUPERBLOCK_SIZE_V4 as usize)?;
-
-    if &data[0..4] != SQUASHFS_MAGIC {
-      return Err(Error::invalid_format(
-        "invalid squashfs superblock signature",
-      ));
+    let mut offset = source_size - SUPERBLOCK_SIZE_V4;
+    loop {
+      let data = source.read_bytes_at(offset, SUPERBLOCK_SIZE_V4 as usize)?;
+      if &data[0..4] == SQUASHFS_MAGIC {
+        return Self::parse_superblock(&data);
+      }
+      if offset == 0 {
+        break;
+      }
+      offset = offset.saturating_sub(SUPERBLOCK_SIZE_V4);
+      if offset < source_size.saturating_sub(1024 * 1024) {
+        break;
+      }
     }
 
-    let major_version = read_u16_le(&data, 28)?;
-    let minor_version = read_u16_le(&data, 30)?;
+    Err(Error::invalid_format(
+      "invalid squashfs superblock signature",
+    ))
+  }
+
+  fn parse_superblock(data: &[u8]) -> Result<Self> {
+    let major_version = read_u16_le(data, 28)?;
+    let minor_version = read_u16_le(data, 30)?;
 
     if major_version != 4 {
       return Err(Error::unsupported(format!(
@@ -91,8 +103,8 @@ impl SquashFsSuperblock {
       )));
     }
 
-    let block_size = read_u32_le(&data, 12)?;
-    let block_log2 = read_u16_le(&data, 20)?;
+    let block_size = read_u32_le(data, 12)?;
+    let block_log2 = read_u16_le(data, 22)?;
 
     if !block_size.is_power_of_two() || !(4096..=1_048_576).contains(&block_size) {
       return Err(Error::invalid_format(format!(
@@ -105,8 +117,8 @@ impl SquashFsSuperblock {
       ));
     }
 
-    let flags = read_u16_le(&data, 22)?;
-    let compression = read_u16_le(&data, 18)?;
+    let flags = read_u16_le(data, 24)?;
+    let compression = read_u16_le(data, 20)?;
 
     Ok(Self {
       block_size,
@@ -115,18 +127,18 @@ impl SquashFsSuperblock {
       flags,
       major_version,
       minor_version,
-      root_inode_offset: read_u64_le(&data, 32)?,
-      bytes_used: read_u64_le(&data, 40)?,
-      id_table_start: read_u64_le(&data, 48)?,
-      xattr_id_table_start: read_u64_le(&data, 56)?,
-      inode_table_start: read_u64_le(&data, 64)?,
-      directory_table_start: read_u64_le(&data, 72)?,
-      fragment_table_start: read_u64_le(&data, 80)?,
-      lookup_table_start: read_u64_le(&data, 88)?,
-      inode_count: read_u32_le(&data, 4)?,
-      mkfs_time: read_u32_le(&data, 8)?,
-      fragment_count: read_u32_le(&data, 16)?,
-      id_count: read_u16_le(&data, 24)?,
+      root_inode_offset: read_u64_le(data, 32)?,
+      bytes_used: read_u64_le(data, 40)?,
+      id_table_start: read_u64_le(data, 48)?,
+      xattr_id_table_start: read_u64_le(data, 56)?,
+      inode_table_start: read_u64_le(data, 64)?,
+      directory_table_start: read_u64_le(data, 72)?,
+      fragment_table_start: read_u64_le(data, 80)?,
+      lookup_table_start: read_u64_le(data, 88)?,
+      inode_count: read_u32_le(data, 4)?,
+      mkfs_time: read_u32_le(data, 8)?,
+      fragment_count: read_u32_le(data, 16)?,
+      id_count: read_u16_le(data, 26)?,
     })
   }
 

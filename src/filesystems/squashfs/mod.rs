@@ -68,8 +68,7 @@ mod tests {
     data[sb_offset..sb_offset + 4].copy_from_slice(SQUASHFS_MAGIC);
     data[sb_offset + 4..sb_offset + 8].copy_from_slice(&1u32.to_le_bytes());
     data[sb_offset + 12..sb_offset + 16].copy_from_slice(&4096u32.to_le_bytes());
-    data[sb_offset + 18..sb_offset + 20].copy_from_slice(&1u16.to_le_bytes());
-    data[sb_offset + 20..sb_offset + 22].copy_from_slice(&12u16.to_le_bytes());
+    data[sb_offset + 22..sb_offset + 24].copy_from_slice(&12u16.to_le_bytes());
     data[sb_offset + 28..sb_offset + 30].copy_from_slice(&4u16.to_le_bytes());
     data[sb_offset + 32..sb_offset + 40].copy_from_slice(&4096u64.to_le_bytes());
     data[sb_offset + 40..sb_offset + 48].copy_from_slice(&4096u64.to_le_bytes());
