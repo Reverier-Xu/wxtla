@@ -6,6 +6,7 @@ pub mod apfs;
 pub mod cramfs;
 pub mod ext;
 pub mod fat;
+pub mod ffs;
 pub mod hfs;
 pub mod ntfs;
 pub mod refs;
