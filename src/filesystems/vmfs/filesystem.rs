@@ -5,14 +5,13 @@ use std::{
 
 use super::{
   DESCRIPTOR, FS3_DESCRIPTOR_SIZE, FS3_DESCRIPTOR_TYPE_DIRECTORY, FS3_DESCRIPTOR_TYPE_REGFILE,
-  FS3_DESCRIPTOR_TYPE_SYMLINK, FS3_FS_HEADER_OFFSET, FS3_MAX_FILE_NAME_LENGTH,
-  ROOT_DIR_DESC_ADDR, S_IFDIR, S_IFLNK, S_IFMT, read_u32_le, read_u64_le,
+  FS3_DESCRIPTOR_TYPE_SYMLINK, FS3_FS_HEADER_OFFSET, FS3_MAX_FILE_NAME_LENGTH, ROOT_DIR_DESC_ADDR,
+  S_IFDIR, S_IFLNK, S_IFMT, read_u32_le, read_u64_le,
 };
 use crate::{
   ByteSource, ByteSourceCapabilities, ByteSourceHandle, ByteSourceReadConcurrency,
   ByteSourceSeekCost, BytesDataSource, Error, NamespaceDirectoryEntry, NamespaceNodeId,
-  NamespaceNodeKind, NamespaceNodeRecord, Result,
-  filesystems::FileSystem,
+  NamespaceNodeKind, NamespaceNodeRecord, Result, filesystems::FileSystem,
 };
 
 const FD_META_OFFSET: u64 = 512;
@@ -99,13 +98,9 @@ impl VmfsFileMetadata {
   }
 
   fn node_kind(&self) -> NamespaceNodeKind {
-    if self.desc_type == FS3_DESCRIPTOR_TYPE_DIRECTORY
-      || (self.mode & S_IFMT) == S_IFDIR
-    {
+    if self.desc_type == FS3_DESCRIPTOR_TYPE_DIRECTORY || (self.mode & S_IFMT) == S_IFDIR {
       NamespaceNodeKind::Directory
-    } else if self.desc_type == FS3_DESCRIPTOR_TYPE_SYMLINK
-      || (self.mode & S_IFMT) == S_IFLNK
-    {
+    } else if self.desc_type == FS3_DESCRIPTOR_TYPE_SYMLINK || (self.mode & S_IFMT) == S_IFLNK {
       NamespaceNodeKind::Symlink
     } else {
       NamespaceNodeKind::File
@@ -115,8 +110,7 @@ impl VmfsFileMetadata {
 
 fn sfd_offset(descriptor: &VmfsDescriptor, resource: u32) -> u64 {
   let fsd = descriptor;
-  let cg_offset = fsd.file_block_size
-    * ((fsd.file_block_size + 0x3FFFFF) / fsd.file_block_size)
+  let cg_offset = fsd.file_block_size * ((fsd.file_block_size + 0x3FFFFF) / fsd.file_block_size)
     + fsd.fdc_cluster_group_offset as u64;
   let resource_size = 1024u64;
   let resource_offset = (resource as u64) << 11;
@@ -131,10 +125,7 @@ pub struct VmfsFileSystem {
 
 impl VmfsFileSystem {
   pub fn open(source: ByteSourceHandle) -> Result<Self> {
-    let data = source.read_bytes_at(
-      FS3_FS_HEADER_OFFSET,
-      FS3_DESCRIPTOR_SIZE,
-    )?;
+    let data = source.read_bytes_at(FS3_FS_HEADER_OFFSET, FS3_DESCRIPTOR_SIZE)?;
     let descriptor = VmfsDescriptor::parse(&data)?;
 
     Ok(Self {
@@ -159,9 +150,7 @@ impl VmfsFileSystem {
     let _ = cluster;
     let offset = sfd_offset(&self.descriptor, resource);
 
-    let fd_data = self
-      .source
-      .read_bytes_at(offset, FD_SIZE as usize)?;
+    let fd_data = self.source.read_bytes_at(offset, FD_SIZE as usize)?;
     let meta_data = &fd_data[FD_META_OFFSET as usize..];
     let metadata = VmfsFileMetadata::parse(meta_data)?;
 
@@ -180,9 +169,7 @@ impl VmfsFileSystem {
     let _ = cluster;
     let offset = sfd_offset(&self.descriptor, resource);
 
-    let fd_data = self
-      .source
-      .read_bytes_at(offset, FD_SIZE as usize)?;
+    let fd_data = self.source.read_bytes_at(offset, FD_SIZE as usize)?;
     let data_area = &fd_data[FD_DATA_OFFSET as usize..];
 
     let num_entries = metadata.file_length as usize / DIR_ENTRY_SIZE;
@@ -203,13 +190,8 @@ impl VmfsFileSystem {
       }
 
       let name_bytes = &entry[0xC..0xC + FS3_MAX_FILE_NAME_LENGTH];
-      let name = String::from_utf8_lossy(
-        name_bytes
-          .split(|&b| b == 0)
-          .next()
-          .unwrap_or(b""),
-      )
-      .to_string();
+      let name =
+        String::from_utf8_lossy(name_bytes.split(|&b| b == 0).next().unwrap_or(b"")).to_string();
 
       if name.is_empty() {
         continue;
@@ -236,9 +218,7 @@ impl VmfsFileSystem {
     let _ = cluster;
     let offset = sfd_offset(&self.descriptor, resource);
 
-    let fd_data = self
-      .source
-      .read_bytes_at(offset, FD_SIZE as usize)?;
+    let fd_data = self.source.read_bytes_at(offset, FD_SIZE as usize)?;
     let data_area = &fd_data[FD_DATA_OFFSET as usize..];
 
     let block_addrs: Vec<u32> = data_area
@@ -302,9 +282,7 @@ impl FileSystem for VmfsFileSystem {
       let (cluster, resource) = ((fd_addr >> 22) & 0x3FF, fd_addr & 0x3FFFFF);
       let _ = cluster;
       let offset = sfd_offset(&self.descriptor, resource);
-      let fd_data = self
-        .source
-        .read_bytes_at(offset, FD_SIZE as usize)?;
+      let fd_data = self.source.read_bytes_at(offset, FD_SIZE as usize)?;
       let data = &fd_data[FD_DATA_OFFSET as usize..];
       return Ok(Arc::new(BytesDataSource::new(Arc::<[u8]>::from(
         data.to_vec().into_boxed_slice(),
@@ -352,8 +330,7 @@ impl ByteSource for VmfsFileDataSource {
         break;
       }
 
-      buf[written..written + step]
-        .copy_from_slice(&data[block_offset..block_offset + step]);
+      buf[written..written + step].copy_from_slice(&data[block_offset..block_offset + step]);
       written += step;
       file_offset += step as u64;
     }

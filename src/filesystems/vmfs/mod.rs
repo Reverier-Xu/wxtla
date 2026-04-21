@@ -79,10 +79,7 @@ impl FormatProbe for VmfsProbe {
     if size < FS3_FS_HEADER_OFFSET + 4 {
       return Ok(ProbeResult::rejected());
     }
-    let Ok(data) = context
-      .source()
-      .read_bytes_at(FS3_FS_HEADER_OFFSET, 4)
-    else {
+    let Ok(data) = context.source().read_bytes_at(FS3_FS_HEADER_OFFSET, 4) else {
       return Ok(ProbeResult::rejected());
     };
     let magic = u32::from_le_bytes(
