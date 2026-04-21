@@ -26,10 +26,11 @@ use super::{
   ondisk::ApfsIntegrityMetadata,
   records::{
     APFS_ROOT_DIRECTORY_OBJECT_ID, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_FILE_INFO,
-    APFS_TYPE_INODE, APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR, ApfsDirectoryRecord, ApfsFextRecord,
-    ApfsFileExtentRecord, ApfsFileInfoRecord, ApfsFsKeyHeader, ApfsInodeRecord,
-    ApfsSnapshotMetadataRecord, ApfsStreamStorageSpec, ApfsXattrRecord, UF_COMPRESSED,
-    XATTR_RESOURCE_FORK_NAME, XATTR_SYMLINK_NAME, directory_kind_from_flags, node_kind_from_mode,
+    APFS_TYPE_INODE, APFS_TYPE_SIBLING_LINK, APFS_TYPE_SNAP_METADATA, APFS_TYPE_XATTR,
+    ApfsDirectoryRecord, ApfsFextRecord, ApfsFileExtentRecord, ApfsFileInfoRecord, ApfsFsKeyHeader,
+    ApfsInodeRecord, ApfsSiblingLinkRecord, ApfsSnapshotMetadataRecord, ApfsStreamStorageSpec,
+    ApfsXattrRecord, UF_COMPRESSED, XATTR_RESOURCE_FORK_NAME, XATTR_SYMLINK_NAME,
+    directory_kind_from_flags, node_kind_from_mode,
   },
 };
 use crate::{
@@ -44,6 +45,7 @@ type ApfsChildrenMap = Arc<HashMap<u64, Arc<[NamespaceDirectoryEntry]>>>;
 type ApfsXattrMap = Arc<HashMap<u64, Arc<[ApfsStoredXattr]>>>;
 type ApfsExtentMap = Arc<HashMap<u64, Arc<[ApfsExtent]>>>;
 type ApfsPathMap = Arc<HashMap<u64, Arc<[String]>>>;
+type ApfsSiblingMap = Arc<HashMap<u64, Arc<[ApfsSiblingLinkRecord]>>>;
 
 #[derive(Clone)]
 pub struct ApfsExtendedAttribute {
@@ -152,6 +154,8 @@ pub(crate) struct ApfsVolumeIndex {
   xattrs: ApfsXattrMap,
   extents: ApfsExtentMap,
   paths: ApfsPathMap,
+  #[allow(dead_code)]
+  siblings: ApfsSiblingMap,
 }
 
 pub(super) struct ApfsNode {
@@ -520,6 +524,7 @@ impl ApfsVolume {
     let mut children = HashMap::new();
     let mut xattrs = HashMap::new();
     let mut extents = HashMap::new();
+    let mut siblings = HashMap::new();
 
     for (key, value) in fs_tree.walk_records()? {
       let header = ApfsFsKeyHeader::parse(&key)?;
@@ -597,6 +602,15 @@ impl ApfsVolume {
               crypto_id: extent.crypto_id,
             });
         }
+        APFS_TYPE_SIBLING_LINK => {
+          let Ok(record) = ApfsSiblingLinkRecord::parse(&key, &value) else {
+            continue;
+          };
+          siblings
+            .entry(record.object_id)
+            .or_insert_with(Vec::new)
+            .push(record);
+        }
         _ => {}
       }
     }
@@ -659,12 +673,20 @@ impl ApfsVolume {
       ));
     }
 
+    let siblings = Arc::new(
+      siblings
+        .into_iter()
+        .map(|(key, value)| (key, Arc::from(value.into_boxed_slice())))
+        .collect::<HashMap<_, _>>(),
+    );
+
     let built = Arc::new(ApfsVolumeIndex {
       nodes,
       children,
       xattrs,
       extents,
       paths,
+      siblings,
     });
     let mut cached = self
       .namespace_index

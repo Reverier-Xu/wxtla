@@ -6,10 +6,23 @@ use super::ondisk::{bytes_to_cstring, read_slice, read_u16_le, read_u32_le, read
 use crate::{Error, Result};
 
 pub(crate) const APFS_TYPE_SNAP_METADATA: u8 = 0x1;
+#[allow(dead_code)]
+pub(crate) const APFS_TYPE_EXTENT: u8 = 0x2;
 pub(crate) const APFS_TYPE_INODE: u8 = 0x3;
 pub(crate) const APFS_TYPE_XATTR: u8 = 0x4;
+pub(crate) const APFS_TYPE_SIBLING_LINK: u8 = 0x5;
+#[allow(dead_code)]
+pub(crate) const APFS_TYPE_DSTREAM_ID: u8 = 0x6;
+#[allow(dead_code)]
+pub(crate) const APFS_TYPE_CRYPTO_STATE: u8 = 0x7;
 pub(crate) const APFS_TYPE_FILE_EXTENT: u8 = 0x8;
 pub(crate) const APFS_TYPE_DIR_REC: u8 = 0x9;
+#[allow(dead_code)]
+pub(crate) const APFS_TYPE_DIR_STATS: u8 = 0xA;
+#[allow(dead_code)]
+pub(crate) const APFS_TYPE_SNAP_NAME: u8 = 0xB;
+#[allow(dead_code)]
+pub(crate) const APFS_TYPE_SIBLING_MAP: u8 = 0xC;
 pub(crate) const APFS_TYPE_FILE_INFO: u8 = 0xD;
 
 pub(crate) const APFS_ROOT_DIRECTORY_OBJECT_ID: u64 = 2;
@@ -522,9 +535,343 @@ fn align_8(value: usize) -> usize {
   (value + 7) & !7
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApfsSiblingLinkRecord {
+  pub object_id: u64,
+  pub sibling_id: u64,
+  pub parent_id: u64,
+  pub name: Option<String>,
+}
+
+impl ApfsSiblingLinkRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    let header = ApfsFsKeyHeader::parse(key)?;
+    if header.record_type != APFS_TYPE_SIBLING_LINK {
+      return Err(Error::invalid_format(
+        "apfs sibling link key has the wrong record type".to_string(),
+      ));
+    }
+    if key.len() < 16 {
+      return Err(Error::invalid_format(
+        "apfs sibling link key must be at least 16 bytes".to_string(),
+      ));
+    }
+    if value.len() < 10 {
+      return Err(Error::invalid_format(
+        "apfs sibling link value is too short".to_string(),
+      ));
+    }
+
+    let name_len = usize::from(read_u16_le(value, 8)?);
+    let name = if name_len > 0 && value.len() >= 10 + name_len {
+      Some(bytes_to_cstring(read_slice(
+        value,
+        10,
+        name_len,
+        "apfs sibling link name",
+      )?))
+    } else {
+      None
+    };
+
+    Ok(Self {
+      object_id: header.object_id,
+      sibling_id: read_u64_le(key, 8)?,
+      parent_id: read_u64_le(value, 0)?,
+      name,
+    })
+  }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApfsSiblingMapRecord {
+  pub object_id: u64,
+  pub file_id: u64,
+}
+
+#[allow(dead_code)]
+impl ApfsSiblingMapRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    let header = ApfsFsKeyHeader::parse(key)?;
+    if header.record_type != APFS_TYPE_SIBLING_MAP {
+      return Err(Error::invalid_format(
+        "apfs sibling map key has the wrong record type".to_string(),
+      ));
+    }
+    if value.len() < 8 {
+      return Err(Error::invalid_format(
+        "apfs sibling map value is too short".to_string(),
+      ));
+    }
+    Ok(Self {
+      object_id: header.object_id,
+      file_id: read_u64_le(value, 0)?,
+    })
+  }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApfsDstreamIdRecord {
+  pub object_id: u64,
+  pub refcount: u32,
+}
+
+#[allow(dead_code)]
+impl ApfsDstreamIdRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    let header = ApfsFsKeyHeader::parse(key)?;
+    if header.record_type != APFS_TYPE_DSTREAM_ID {
+      return Err(Error::invalid_format(
+        "apfs dstream-id key has the wrong record type".to_string(),
+      ));
+    }
+    if value.len() < 4 {
+      return Err(Error::invalid_format(
+        "apfs dstream-id value is too short".to_string(),
+      ));
+    }
+    Ok(Self {
+      object_id: header.object_id,
+      refcount: read_u32_le(value, 0)?,
+    })
+  }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApfsCryptoStateRecord {
+  pub object_id: u64,
+  pub refcount: u32,
+  pub crypto_state: Vec<u8>,
+}
+
+#[allow(dead_code)]
+impl ApfsCryptoStateRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    let header = ApfsFsKeyHeader::parse(key)?;
+    if header.record_type != APFS_TYPE_CRYPTO_STATE {
+      return Err(Error::invalid_format(
+        "apfs crypto state key has the wrong record type".to_string(),
+      ));
+    }
+    if value.len() < 4 {
+      return Err(Error::invalid_format(
+        "apfs crypto state value is too short".to_string(),
+      ));
+    }
+    Ok(Self {
+      object_id: header.object_id,
+      refcount: read_u32_le(value, 0)?,
+      crypto_state: value[4..].to_vec(),
+    })
+  }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApfsDirStatsRecord {
+  pub object_id: u64,
+  pub num_children: u64,
+  pub total_size: u64,
+  pub chained_key: u64,
+  pub gen_count: u64,
+}
+
+#[allow(dead_code)]
+impl ApfsDirStatsRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    let header = ApfsFsKeyHeader::parse(key)?;
+    if header.record_type != APFS_TYPE_DIR_STATS {
+      return Err(Error::invalid_format(
+        "apfs dir stats key has the wrong record type".to_string(),
+      ));
+    }
+    if value.len() < 32 {
+      return Err(Error::invalid_format(
+        "apfs dir stats value is too short".to_string(),
+      ));
+    }
+    Ok(Self {
+      object_id: header.object_id,
+      num_children: read_u64_le(value, 0)?,
+      total_size: read_u64_le(value, 8)?,
+      chained_key: read_u64_le(value, 16)?,
+      gen_count: read_u64_le(value, 24)?,
+    })
+  }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApfsSnapNameRecord {
+  pub xid: u64,
+  pub name: String,
+}
+
+#[allow(dead_code)]
+impl ApfsSnapNameRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    let header = ApfsFsKeyHeader::parse(key)?;
+    if header.record_type != APFS_TYPE_SNAP_NAME {
+      return Err(Error::invalid_format(
+        "apfs snap name key has the wrong record type".to_string(),
+      ));
+    }
+    if value.len() < 8 {
+      return Err(Error::invalid_format(
+        "apfs snap name value is too short".to_string(),
+      ));
+    }
+    let name_len = usize::from(read_u16_le(key, 8)?);
+    let name = bytes_to_cstring(read_slice(key, 10, name_len, "apfs snap name")?);
+    Ok(Self {
+      xid: read_u64_le(value, 0)?,
+      name,
+    })
+  }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApfsPhysExtentRecord {
+  pub object_id: u64,
+  pub logical_address: u64,
+  pub length: u64,
+  pub owning_obj_id: u64,
+  pub refcount: i32,
+}
+
+#[allow(dead_code)]
+impl ApfsPhysExtentRecord {
+  pub(crate) fn parse(key: &[u8], value: &[u8]) -> Result<Self> {
+    let header = ApfsFsKeyHeader::parse(key)?;
+    if header.record_type != APFS_TYPE_EXTENT {
+      return Err(Error::invalid_format(
+        "apfs phys extent key has the wrong record type".to_string(),
+      ));
+    }
+    if value.len() < 20 {
+      return Err(Error::invalid_format(
+        "apfs phys extent value is too short".to_string(),
+      ));
+    }
+    let len_and_kind = read_u64_le(value, 0)?;
+    Ok(Self {
+      object_id: header.object_id,
+      logical_address: read_u64_le(key, 8)?,
+      length: len_and_kind & 0x0FFF_FFFF_FFFF_FFFF,
+      owning_obj_id: read_u64_le(value, 8)?,
+      refcount: i32::from_le_bytes(value[16..20].try_into().unwrap()),
+    })
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn parses_sibling_link_record() {
+    let mut key = vec![0x34, 0x12, 0, 0, 0, 0, 0, 0x50];
+    key.extend_from_slice(&2u64.to_le_bytes());
+    let mut value = vec![0u8; 10 + 4];
+    value[0..8].copy_from_slice(&1u64.to_le_bytes());
+    value[8..10].copy_from_slice(&4u16.to_le_bytes());
+    value[10..14].copy_from_slice(b"node");
+
+    let record = ApfsSiblingLinkRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.object_id, 0x1234);
+    assert_eq!(record.sibling_id, 2);
+    assert_eq!(record.parent_id, 1);
+    assert_eq!(record.name.as_deref(), Some("node"));
+  }
+
+  #[test]
+  fn parses_sibling_map_record() {
+    let key = [0x34, 0x12, 0, 0, 0, 0, 0, 0xC0];
+    let value = 5u64.to_le_bytes();
+
+    let record = ApfsSiblingMapRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.object_id, 0x1234);
+    assert_eq!(record.file_id, 5);
+  }
+
+  #[test]
+  fn parses_dstream_id_record() {
+    let key = [0x34, 0x12, 0, 0, 0, 0, 0, 0x60];
+    let value = 3u32.to_le_bytes();
+
+    let record = ApfsDstreamIdRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.object_id, 0x1234);
+    assert_eq!(record.refcount, 3);
+  }
+
+  #[test]
+  fn parses_dir_stats_record() {
+    let key = [0x34, 0x12, 0, 0, 0, 0, 0, 0xA0];
+    let mut value = vec![0u8; 32];
+    value[0..8].copy_from_slice(&5u64.to_le_bytes());
+    value[8..16].copy_from_slice(&100u64.to_le_bytes());
+    value[16..24].copy_from_slice(&200u64.to_le_bytes());
+    value[24..32].copy_from_slice(&1u64.to_le_bytes());
+
+    let record = ApfsDirStatsRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.object_id, 0x1234);
+    assert_eq!(record.num_children, 5);
+    assert_eq!(record.total_size, 100);
+    assert_eq!(record.chained_key, 200);
+    assert_eq!(record.gen_count, 1);
+  }
+
+  #[test]
+  fn parses_snap_name_record() {
+    let mut key = vec![0x34, 0x12, 0, 0, 0, 0, 0, 0xB0];
+    key.extend_from_slice(&4u16.to_le_bytes());
+    key.extend_from_slice(b"snap");
+    let value = 42u64.to_le_bytes();
+
+    let record = ApfsSnapNameRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.xid, 42);
+    assert_eq!(record.name, "snap");
+  }
+
+  #[test]
+  fn parses_crypto_state_record() {
+    let key = [0x34, 0x12, 0, 0, 0, 0, 0, 0x70];
+    let mut value = vec![0u8; 20];
+    value[0..4].copy_from_slice(&1u32.to_le_bytes());
+
+    let record = ApfsCryptoStateRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.object_id, 0x1234);
+    assert_eq!(record.refcount, 1);
+    assert_eq!(record.crypto_state.len(), 16);
+  }
+
+  #[test]
+  fn parses_phys_extent_record() {
+    let mut key = vec![0x34, 0x12, 0, 0, 0, 0, 0, 0x20];
+    key.extend_from_slice(&0x1000u64.to_le_bytes());
+    let mut value = vec![0u8; 20];
+    value[0..8].copy_from_slice(&0x2000u64.to_le_bytes());
+    value[8..16].copy_from_slice(&7u64.to_le_bytes());
+    value[16..20].copy_from_slice(&2i32.to_le_bytes());
+
+    let record = ApfsPhysExtentRecord::parse(&key, &value).unwrap();
+
+    assert_eq!(record.object_id, 0x1234);
+    assert_eq!(record.logical_address, 0x1000);
+    assert_eq!(record.length, 0x2000);
+    assert_eq!(record.owning_obj_id, 7);
+    assert_eq!(record.refcount, 2);
+  }
 
   #[test]
   fn parses_fext_records() {

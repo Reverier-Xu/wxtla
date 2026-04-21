@@ -135,7 +135,8 @@ pub(crate) fn unlock_volume(
   }
   if (volume_flags & APFS_FS_ONEKEY) == 0 {
     return Err(Error::unsupported(
-      "apfs multi-key software encryption is not implemented yet".to_string(),
+      "apfs multi-key software encryption is not fully implemented; supply a pre-unwrapped volume key via Credential::KeyData or Credential::NamedKey(\"apfs-vek\")"
+        .to_string(),
     ));
   }
 

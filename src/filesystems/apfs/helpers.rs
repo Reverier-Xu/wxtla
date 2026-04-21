@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crc32c::crc32c;
 use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
@@ -36,6 +37,36 @@ pub(super) fn apfs_lookup_name_key(
   } else {
     normalized
   }
+}
+
+#[allow(dead_code)]
+const DREC_HASH_MASK: u32 = 0xFFFF_FC00;
+#[allow(dead_code)]
+const DREC_HASH_SHIFT: u32 = 10;
+
+#[allow(dead_code)]
+pub(super) fn hash_filename(name: &str, case_insensitive: bool) -> u32 {
+  let normalized: String = name.nfd().collect();
+  let folded = if case_insensitive {
+    normalized.case_fold().collect::<String>()
+  } else {
+    normalized
+  };
+  let utf32: Vec<u8> = folded
+    .chars()
+    .flat_map(|ch| {
+      let codepoint = ch as u32;
+      codepoint.to_le_bytes().to_vec()
+    })
+    .collect();
+  crc32c(&utf32) ^ 0xFFFF_FFFF
+}
+
+#[allow(dead_code)]
+pub(super) fn make_hashed_directory_name_key(name: &str, case_insensitive: bool) -> u32 {
+  let name_hash = hash_filename(name, case_insensitive);
+  let name_len = name.len() as u32;
+  (name_len & 0x3FF) | ((name_hash << DREC_HASH_SHIFT) & DREC_HASH_MASK)
 }
 
 pub(super) fn special_file_kind_from_mode(mode: u16) -> Option<ApfsSpecialFileKind> {
@@ -111,4 +142,30 @@ pub(super) fn build_path_index(children: &ApfsChildrenMap) -> HashMap<u64, Vec<S
     &mut paths,
   );
   paths
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn hashes_filenames_for_case_insensitive_volumes() {
+    let hash_ci = hash_filename("file", true);
+    let hash_cs = hash_filename("file", false);
+
+    assert_ne!(hash_ci, 0);
+    assert_ne!(hash_cs, 0);
+    assert_eq!(hash_filename("FILE", true), hash_ci);
+  }
+
+  #[test]
+  fn hashed_key_encodes_name_length_and_hash() {
+    let key = make_hashed_directory_name_key("test", true);
+
+    let name_len = key & 0x3FF;
+    let hash = (key >> 10) & 0x3F_FFFF;
+
+    assert_eq!(name_len, 4);
+    assert_ne!(hash, 0);
+  }
 }
