@@ -13,6 +13,7 @@ pub mod ntfs;
 pub mod qnxfs;
 pub mod refs;
 pub mod squashfs;
+pub mod vmfs;
 pub mod xfs;
 
 pub use apfs::{
