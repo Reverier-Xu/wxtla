@@ -8,6 +8,7 @@ pub mod ext;
 pub mod fat;
 pub mod ffs;
 pub mod hfs;
+pub mod jffs2;
 pub mod ntfs;
 pub mod qnxfs;
 pub mod refs;
